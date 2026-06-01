@@ -45,6 +45,24 @@ class TestDeadCodeRemoval:
         names = [s["name"] for s in BROWSER_TOOL_SCHEMAS]
         assert "browser_close" not in names
 
+    def test_browser_navigate_hides_web_hint_without_web_tools(self):
+        import tools.browser_tool as bt
+
+        with patch.object(bt.registry, "get_definitions", return_value=[]):
+            overrides = bt._browser_navigate_schema_overrides()
+
+        assert "description" in overrides
+        assert "web_search" not in overrides["description"]
+        assert "web_extract" not in overrides["description"]
+
+    def test_browser_navigate_keeps_web_hint_with_web_tools(self):
+        import tools.browser_tool as bt
+
+        with patch.object(bt.registry, "get_definitions", return_value=[{"type": "function", "function": {"name": "web_search"}}]):
+            overrides = bt._browser_navigate_schema_overrides()
+
+        assert overrides == {}
+
 
 # ---------------------------------------------------------------------------
 # Caching: _find_agent_browser

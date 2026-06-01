@@ -354,6 +354,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("XAI_API_KEY",),
         base_url_env_var="XAI_BASE_URL",
     ),
+    "groq": ProviderConfig(
+        id="groq",
+        name="Groq",
+        auth_type="api_key",
+        inference_base_url="https://api.groq.com/openai/v1",
+        api_key_env_vars=("GROQ_API_KEY",),
+        base_url_env_var="GROQ_BASE_URL",
+    ),
     "nvidia": ProviderConfig(
         id="nvidia",
         name="NVIDIA NIM",

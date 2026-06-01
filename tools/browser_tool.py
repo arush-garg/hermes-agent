@@ -1467,10 +1467,38 @@ atexit.register(_stop_browser_cleanup_thread)
 # Tool Schemas
 # ============================================================================
 
+_BROWSER_NAVIGATE_DESCRIPTION = (
+    "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. "
+    "For simple information retrieval, prefer web_search or web_extract (faster, cheaper). "
+    "For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer curl via the terminal tool or web_extract; the browser stack is overkill and much slower for these. "
+    "Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating."
+)
+
+_BROWSER_NAVIGATE_DESCRIPTION_NO_WEB_HINT = _BROWSER_NAVIGATE_DESCRIPTION.replace(
+    "For simple information retrieval, prefer web_search or web_extract (faster, cheaper). ",
+    "",
+).replace(
+    "prefer curl via the terminal tool or web_extract;",
+    "prefer curl via the terminal tool;",
+)
+
+
+def _browser_navigate_schema_overrides() -> dict:
+    """Hide web-search cross references when no web tools are available."""
+    try:
+        from tools.registry import registry as _registry
+
+        web_tools = _registry.get_definitions({"web_search", "web_extract"}, quiet=True)
+    except Exception:
+        web_tools = []
+    if web_tools:
+        return {}
+    return {"description": _BROWSER_NAVIGATE_DESCRIPTION_NO_WEB_HINT}
+
 BROWSER_TOOL_SCHEMAS = [
     {
         "name": "browser_navigate",
-        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). For plain-text endpoints — URLs ending in .md, .txt, .json, .yaml, .yml, .csv, .xml, raw.githubusercontent.com, or any documented API endpoint — prefer curl via the terminal tool or web_extract; the browser stack is overkill and much slower for these. Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating.",
+        "description": _BROWSER_NAVIGATE_DESCRIPTION,
         "parameters": {
             "type": "object",
             "properties": {
@@ -3785,6 +3813,7 @@ registry.register(
     schema=_BROWSER_SCHEMA_MAP["browser_navigate"],
     handler=lambda args, **kw: browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
+    dynamic_schema_overrides=_browser_navigate_schema_overrides,
     emoji="🌐",
 )
 registry.register(

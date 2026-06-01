@@ -214,6 +214,20 @@ class TestPoolRotationRoom:
         """With >1 credentials and at least one available, rotate instead of fallback."""
         assert _pool_may_recover_from_rate_limit(_pool(2)) is True
 
+    def test_nvidia_cloud_endpoint_still_uses_pool_rotation(self):
+        assert _pool_may_recover_from_rate_limit(
+            _pool(3),
+            provider="nvidia",
+            base_url="https://integrate.api.nvidia.com/v1",
+        ) is True
+
+    def test_groq_cloud_endpoint_still_uses_pool_rotation(self):
+        assert _pool_may_recover_from_rate_limit(
+            _pool(3),
+            provider="groq",
+            base_url="https://api.groq.com/openai/v1",
+        ) is True
+
     def test_multiple_credentials_all_in_cooldown_returns_false(self):
         """All credentials cooling down — fall back rather than wait."""
         assert _pool_may_recover_from_rate_limit(_pool(3, has_available=False)) is False

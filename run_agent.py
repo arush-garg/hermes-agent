@@ -232,9 +232,12 @@ def _pool_may_recover_from_rate_limit(
         return False
     if not pool.has_available():
         return False
-    # CloudCode / Gemini CLI quotas are account-wide — all pool entries share
-    # the same throttle window, so rotation can't recover.  Prefer fallback.
-    if provider == "google-gemini-cli" or str(base_url or "").startswith("cloudcode-pa://"):
+    base_url_lower = str(base_url or "").strip().lower()
+    provider_lower = (provider or "").strip().lower()
+    if (
+        provider_lower == "google-gemini-cli"
+        or base_url_lower.startswith("cloudcode-pa://")
+    ):
         return False
     return len(pool.entries()) > 1
 
