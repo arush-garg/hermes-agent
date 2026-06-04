@@ -9,8 +9,7 @@ import {
   setEnvVar,
   setModelAssignment,
   startOAuthLogin,
-  submitOAuthCode,
-  validateProviderCredential
+  submitOAuthCode
 } from '@/hermes'
 import { evaluateRuntimeReadiness, type RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { notify, notifyError } from '@/store/notifications'
@@ -18,6 +17,7 @@ import type { ModelOptionProvider, OAuthProvider, OAuthStartResponse } from '@/t
 
 type PkceStart = Extract<OAuthStartResponse, { flow: 'pkce' }>
 type DeviceStart = Extract<OAuthStartResponse, { flow: 'device_code' }>
+type LoopbackStart = Extract<OAuthStartResponse, { flow: 'loopback' }>
 
 export type OnboardingMode = 'apikey' | 'oauth'
 
@@ -26,6 +26,10 @@ export type OnboardingFlow =
   | { provider: OAuthProvider; status: 'starting' }
   | { code: string; provider: OAuthProvider; start: PkceStart; status: 'awaiting_user' }
   | { copied: boolean; provider: OAuthProvider; start: DeviceStart; status: 'polling' }
+  // Loopback PKCE (xAI Grok): browser opens, the local backend's 127.0.0.1
+  // listener catches the redirect, and we poll until the worker finishes.
+  // No code to paste and no user_code to show — just a waiting state.
+  | { provider: OAuthProvider; start: LoopbackStart; status: 'awaiting_browser' }
   | { provider: OAuthProvider; start: OAuthStartResponse; status: 'submitting' }
   | { copied: boolean; provider: OAuthProvider; status: 'external_pending' }
   | { provider: OAuthProvider; status: 'success' }
@@ -248,12 +252,16 @@ async function completeWithModelConfirm(
   ctx: OnboardingContext,
   providerLabel: string,
   preferredSlugs: string[],
-  onFail: (reason: null | string) => void
+  onFail: (reason: null | string) => void,
+  // When true, a failing runtime check no longer blocks progression — the
+  // user is allowed through onboarding regardless. Used by the API-key path,
+  // where we intentionally don't validate the key (it blocked too many users).
+  ignoreRuntimeGate = false
 ) {
   await ctx.requestGateway('reload.env').catch(() => undefined)
   const runtime = await checkRuntime(ctx)
 
-  if (!runtime.ready) {
+  if (!runtime.ready && !ignoreRuntimeGate) {
     onFail(runtime.reason)
 
     return
@@ -406,6 +414,26 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
   return false
 }
 
+// Open a sign-in URL via the desktop bridge, falling back to window.open
+// when the bridge isn't present (e.g. the web dashboard / dev preview) so
+// the flow never silently stalls in a waiting state. Mirrors the pattern in
+// apps/desktop/src/app/artifacts/index.tsx.
+async function openSignInUrl(url: string) {
+  if (window.hermesDesktop?.openExternal) {
+    try {
+      await window.hermesDesktop.openExternal(url)
+
+      return
+    } catch {
+      // Bridge present but failed (no OS handler, user denied, etc.). Fall
+      // through to window.open so the sign-in URL still opens and the flow
+      // doesn't strand a pending OAuth session in a waiting state.
+    }
+  }
+
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
 export async function startProviderOAuth(provider: OAuthProvider, ctx: OnboardingContext) {
   clearPoll()
 
@@ -419,7 +447,8 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
 
   try {
     const start = await startOAuthLogin(provider.id)
-    await window.hermesDesktop?.openExternal(start.flow === 'pkce' ? start.auth_url : start.verification_url)
+    const browserUrl = start.flow === 'device_code' ? start.verification_url : start.auth_url
+    await openSignInUrl(browserUrl)
 
     if (start.flow === 'pkce') {
       setFlow({ status: 'awaiting_user', provider, start, code: '' })
@@ -427,14 +456,26 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
       return
     }
 
+    if (start.flow === 'loopback') {
+      // No code to paste: the redirect lands on the backend's loopback
+      // listener. Just wait and poll the session until the worker finishes.
+      setFlow({ status: 'awaiting_browser', provider, start })
+      pollTimer = window.setInterval(() => void pollSession(provider, start, ctx), POLL_MS)
+
+      return
+    }
+
     setFlow({ status: 'polling', provider, start, copied: false })
-    pollTimer = window.setInterval(() => void pollDevice(provider, start, ctx), POLL_MS)
+    pollTimer = window.setInterval(() => void pollSession(provider, start, ctx), POLL_MS)
   } catch (error) {
     setFlow({ status: 'error', provider, message: `Could not start sign-in: ${errMessage(error)}` })
   }
 }
 
-async function pollDevice(provider: OAuthProvider, start: DeviceStart, ctx: OnboardingContext) {
+// Poll a session-backed flow (device_code or loopback) until it resolves.
+// Both shapes only need the session_id to poll; the start is threaded
+// through to the error flow so the user can retry from the same context.
+async function pollSession(provider: OAuthProvider, start: DeviceStart | LoopbackStart, ctx: OnboardingContext) {
   try {
     const { error_message, status } = await pollOAuthSession(provider.id, start.session_id)
 
@@ -578,23 +619,13 @@ export async function saveOnboardingApiKey(envKey: string, value: string, label:
     return { ok: false, message: 'Enter a value first.' }
   }
 
-  // Live-probe the credential BEFORE persisting so a mistyped key never lands
-  // in .env. A rejected key (reachable && !ok) hard-blocks; an unreachable
-  // probe (offline / provider down) falls through and saves with the usual
-  // runtime check, so we don't strand offline users.
-  try {
-    const probe = await validateProviderCredential(envKey, trimmed)
-    if (!probe.ok && probe.reachable) {
-      return { ok: false, message: probe.message || `That ${label} key was rejected.` }
-    }
-  } catch {
-    // Validation endpoint unavailable — don't block; fall through to save.
-  }
-
+  // No key validation here on purpose: we previously live-probed the key and
+  // hard-blocked on a runtime check after saving, which rejected too many
+  // legitimate users (corporate proxies, regional blocks, flaky/rate-limited
+  // provider probes, self-hosted endpoints). We now save the value as-is and
+  // let the user proceed; an actually-bad key surfaces later at chat time.
   try {
     await setEnvVar(envKey, trimmed)
-    let stillFailing = false
-    let runtimeFailure: null | string = null
     // For API-key flows we don't have a definitive provider id (the
     // user picked which API key they're entering, but the corresponding
     // backend slug — e.g. OPENROUTER_API_KEY → "openrouter" — is the
@@ -602,19 +633,8 @@ export async function saveOnboardingApiKey(envKey: string, value: string, label:
     // fetchProviderDefaultModel falls back to the first authenticated
     // provider returned by /api/model/options if none match.
     const slugCandidates = [envKey.replace(/_API_KEY$/, '').toLowerCase(), label.toLowerCase()]
-    await completeWithModelConfirm(ctx, label, slugCandidates, reason => {
-      stillFailing = true
-      runtimeFailure = reason
-    })
-
-    if (stillFailing) {
-      const failureDetail = (runtimeFailure ?? '').trim()
-
-      return {
-        ok: false,
-        message: failureDetail || `Saved, but Hermes still cannot reach ${label}. Double-check the value.`
-      }
-    }
+    // ignoreRuntimeGate=true: never block onboarding on the runtime check.
+    await completeWithModelConfirm(ctx, label, slugCandidates, () => undefined, true)
 
     return { ok: true }
   } catch (error) {

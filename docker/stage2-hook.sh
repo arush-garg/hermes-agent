@@ -154,20 +154,39 @@ if [ "$needs_chown" = true ]; then
                 echo "[stage2] Warning: chown $HERMES_HOME/$sub failed (rootless container?) — continuing"
         fi
     done
-    # Hermes-owned trees under $INSTALL_DIR must be re-chowned when the UID
-    # is remapped — otherwise:
-    #   - .venv: lazy_deps.py cannot install platform packages (discord.py,
-    #     telegram, slack, etc.) with EACCES (#15012, #21100)
-    #   - ui-tui: esbuild rebuilds dist/entry.js on every TUI launch (when
-    #     the source mtime is newer than dist/ or when HERMES_TUI_FORCE_BUILD
-    #     is set) and writes to ui-tui/dist/. Without this chown the new
-    #     hermes UID can't write the build output (#28851).
-    #   - node_modules: root-level dependencies (puppeteer, web tooling)
-    #     that runtime code may walk/update.
-    # The set mirrors the build-time `chown -R hermes:hermes` line in the
-    # Dockerfile — keep them in sync if the Dockerfile chown set changes.
-    # These are under $INSTALL_DIR (not $HERMES_HOME), so the bind-mount
-    # concern doesn't apply — recursive is fine.
+fi
+
+# --- Fix ownership of build trees under $INSTALL_DIR ---
+# Hermes-owned trees under $INSTALL_DIR must be re-chowned whenever the
+# runtime hermes UID no longer owns them — otherwise:
+#   - .venv: lazy_deps.py cannot install platform packages (discord.py,
+#     telegram, slack, etc.) with EACCES (#15012, #21100)
+#   - ui-tui: esbuild rebuilds dist/entry.js on every TUI launch (when
+#     the source mtime is newer than dist/ or when HERMES_TUI_FORCE_BUILD
+#     is set) and writes to ui-tui/dist/. Without this chown the new
+#     hermes UID can't write the build output (#28851).
+#   - node_modules: root-level dependencies (puppeteer, web tooling)
+#     that runtime code may walk/update.
+# The set mirrors the build-time `chown -R hermes:hermes` line in the
+# Dockerfile — keep them in sync if the Dockerfile chown set changes.
+# These are under $INSTALL_DIR (not $HERMES_HOME), so the bind-mount
+# concern doesn't apply — recursive is fine.
+#
+# This MUST be gated independently of the $HERMES_HOME ownership check
+# above. `usermod -u <new> hermes` re-chowns the hermes home dir
+# ($HERMES_HOME == /opt/data) to the new UID as a side effect, so after a
+# HERMES_UID/PUID remap `stat $HERMES_HOME` always already matches the new
+# UID and `needs_chown` is false — but the build trees under /opt/hermes
+# are NOT touched by usermod and remain owned by the build-time UID
+# (10000). Gating them on $HERMES_HOME ownership (as #35027 did) silently
+# skipped this chown on the common PUID/NAS path, regressing lazy installs
+# and TUI rebuilds. Probe the build trees directly instead: chown only
+# when the venv is not already owned by the runtime hermes UID. Idempotent
+# and skips the expensive recursive chown on every restart once ownership
+# is settled.
+venv_owner=$(stat -c %u "$INSTALL_DIR/.venv" 2>/dev/null || echo "")
+if [ -n "$venv_owner" ] && [ "$venv_owner" != "$actual_hermes_uid" ]; then
+    echo "[stage2] Fixing ownership of build trees under $INSTALL_DIR to hermes ($actual_hermes_uid)"
     chown -R hermes:hermes \
         "$INSTALL_DIR/.venv" \
         "$INSTALL_DIR/ui-tui" \
@@ -276,6 +295,38 @@ if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_BOOTSTRAP:-}" ]
     printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json"
     chown hermes:hermes "$HERMES_HOME/auth.json" 2>/dev/null || true
     chmod 600 "$HERMES_HOME/auth.json"
+fi
+
+# gateway_state.json: declare the gateway's INITIAL supervised state on a
+# fresh volume. Same first-boot-only env-seed pattern as auth.json above.
+#
+# On a blank volume there is no gateway_state.json, so the boot reconciler
+# (cont-init.d/02-reconcile-profiles → container_boot.reconcile_profile_gateways)
+# registers the gateway-default s6 slot but leaves it DOWN — it only
+# auto-starts when the last recorded state was "running". That means a
+# freshly-provisioned container comes up with the gateway down until
+# someone starts it (e.g. from the dashboard). An orchestrator that
+# provisions a fresh volume and wants the gateway running from first boot
+# can set HERMES_GATEWAY_BOOTSTRAP_STATE=running; we seed the state file
+# here, BEFORE 02-reconcile-profiles runs (cont-init.d scripts run in
+# lexicographic order), so the reconciler sees prior_state=running and
+# brings the supervised slot up on the very first boot.
+#
+# This is a generic container contract, not specific to any host: it seeds
+# the SAME gateway_state.json the reconciler already consults, exactly as
+# HERMES_AUTH_JSON_BOOTSTRAP seeds auth.json. The [ ! -f ] guard is the
+# load-bearing part — on every subsequent boot the persisted state wins,
+# so a gateway the operator deliberately stopped stays stopped across
+# restarts and we never clobber real runtime state.
+#
+# Only a literal "running" is honoured (the sole value in the reconciler's
+# _AUTOSTART_STATES); any other value is ignored so a typo can't write a
+# bogus state the reconciler would treat as "no prior state" anyway.
+if [ ! -f "$HERMES_HOME/gateway_state.json" ] && \
+        [ "${HERMES_GATEWAY_BOOTSTRAP_STATE:-}" = "running" ]; then
+    printf '{"gateway_state":"running"}\n' > "$HERMES_HOME/gateway_state.json"
+    chown hermes:hermes "$HERMES_HOME/gateway_state.json" 2>/dev/null || true
+    chmod 644 "$HERMES_HOME/gateway_state.json"
 fi
 
 # --- Sync bundled skills ---
