@@ -3208,7 +3208,19 @@ def probe_api_models(
     tried: list[str] = []
     headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
     if api_key and api_mode == "anthropic_messages":
-        headers["x-api-key"] = api_key
+        # OAuth / subscription tokens (sk-ant-oat*, cc-*, JWT) are rejected by
+        # x-api-key ("401 invalid x-api-key") and must use Bearer + the OAuth
+        # beta; only real Console keys (sk-ant-api*) use x-api-key.
+        try:
+            from agent.anthropic_adapter import _is_oauth_token
+            _oauth = _is_oauth_token(api_key)
+        except Exception:
+            _oauth = api_key.startswith(("sk-ant-oat", "cc-", "eyJ"))
+        if _oauth:
+            headers["Authorization"] = f"Bearer {api_key}"
+            headers["anthropic-beta"] = "oauth-2025-04-20"
+        else:
+            headers["x-api-key"] = api_key
         headers["anthropic-version"] = "2023-06-01"
     elif api_key:
         headers["Authorization"] = f"Bearer {api_key}"

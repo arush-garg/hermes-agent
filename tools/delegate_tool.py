@@ -2104,91 +2104,62 @@ def delegate_task(
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
 
-    if n_tasks == 1:
-        # Single task -- run directly (no thread pool overhead)
-        _i, _t, child = children[0]
-        result = _run_single_child(0, _t["goal"], child, parent_agent)
-        results.append(result)
-    else:
-        # Batch -- run in parallel with per-task progress lines
-        completed_count = 0
-        spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
+    # Run all tasks (single or batch) through the executor so the main thread
+    # wakes every 0.5s to check for interrupts instead of blocking for up to
+    # child_timeout_seconds with no interrupt polling.
+    completed_count = 0
+    spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
 
-        with ThreadPoolExecutor(max_workers=max_children) as executor:
-            futures = {}
-            for i, t, child in children:
-                future = executor.submit(
-                    _run_single_child,
-                    task_index=i,
-                    goal=t["goal"],
-                    child=child,
-                    parent_agent=parent_agent,
-                )
-                futures[future] = i
+    with ThreadPoolExecutor(max_workers=max_children) as executor:
+        futures = {}
+        for i, t, child in children:
+            future = executor.submit(
+                _run_single_child,
+                task_index=i,
+                goal=t["goal"],
+                child=child,
+                parent_agent=parent_agent,
+            )
+            futures[future] = i
 
-            # Poll futures with interrupt checking.  as_completed() blocks
-            # until ALL futures finish — if a child agent gets stuck,
-            # the parent blocks forever even after interrupt propagation.
-            # Instead, use wait() with a short timeout so we can bail
-            # when the parent is interrupted.
-            # Map task_index -> child agent, so fabricated entries for
-            # still-pending futures can carry the correct _delegate_role.
-            _child_by_index = {i: child for (i, _, child) in children}
+        # Poll futures with interrupt checking.  as_completed() blocks
+        # until ALL futures finish — if a child agent gets stuck,
+        # the parent blocks forever even after interrupt propagation.
+        # Instead, use wait() with a short timeout so we can bail
+        # when the parent is interrupted.
+        # Map task_index -> child agent, so fabricated entries for
+        # still-pending futures can carry the correct _delegate_role.
+        _child_by_index = {i: child for (i, _, child) in children}
 
-            pending = set(futures.keys())
-            while pending:
-                if getattr(parent_agent, "_interrupt_requested", False) is True:
-                    # Parent interrupted — collect whatever finished and
-                    # abandon the rest.  Children already received the
-                    # interrupt signal; we just can't wait forever.
-                    for f in pending:
-                        idx = futures[f]
-                        if f.done():
-                            try:
-                                entry = f.result()
-                            except Exception as exc:
-                                entry = {
-                                    "task_index": idx,
-                                    "status": "error",
-                                    "summary": None,
-                                    "error": str(exc),
-                                    "api_calls": 0,
-                                    "duration_seconds": 0,
-                                    "_child_role": getattr(
-                                        _child_by_index.get(idx), "_delegate_role", None
-                                    ),
-                                }
-                        else:
+        pending = set(futures.keys())
+        while pending:
+            if getattr(parent_agent, "_interrupt_requested", False) is True:
+                # Parent interrupted — collect whatever finished and
+                # abandon the rest.  Children already received the
+                # interrupt signal; we just can't wait forever.
+                for f in pending:
+                    idx = futures[f]
+                    if f.done():
+                        try:
+                            entry = f.result()
+                        except Exception as exc:
                             entry = {
                                 "task_index": idx,
-                                "status": "interrupted",
+                                "status": "error",
                                 "summary": None,
-                                "error": "Parent agent interrupted — child did not finish in time",
+                                "error": str(exc),
                                 "api_calls": 0,
                                 "duration_seconds": 0,
                                 "_child_role": getattr(
                                     _child_by_index.get(idx), "_delegate_role", None
                                 ),
                             }
-                        results.append(entry)
-                        completed_count += 1
-                    break
-
-                from concurrent.futures import wait as _cf_wait, FIRST_COMPLETED
-
-                done, pending = _cf_wait(
-                    pending, timeout=0.5, return_when=FIRST_COMPLETED
-                )
-                for future in done:
-                    try:
-                        entry = future.result()
-                    except Exception as exc:
-                        idx = futures[future]
+                    else:
                         entry = {
                             "task_index": idx,
-                            "status": "error",
+                            "status": "interrupted",
                             "summary": None,
-                            "error": str(exc),
+                            "error": "Parent agent interrupted — child did not finish in time",
                             "api_calls": 0,
                             "duration_seconds": 0,
                             "_child_role": getattr(
@@ -2197,36 +2168,61 @@ def delegate_task(
                         }
                     results.append(entry)
                     completed_count += 1
+                break
 
-                    # Print per-task completion line above the spinner
-                    idx = entry["task_index"]
-                    label = (
-                        task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
-                    )
-                    dur = entry.get("duration_seconds", 0)
-                    status = entry.get("status", "?")
-                    icon = "✓" if status == "completed" else "✗"
-                    remaining = n_tasks - completed_count
-                    completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
-                    if spinner_ref:
-                        try:
-                            spinner_ref.print_above(completion_line)
-                        except Exception:
-                            print(f"  {completion_line}")
-                    else:
+            from concurrent.futures import wait as _cf_wait, FIRST_COMPLETED
+
+            done, pending = _cf_wait(
+                pending, timeout=0.5, return_when=FIRST_COMPLETED
+            )
+            for future in done:
+                try:
+                    entry = future.result()
+                except Exception as exc:
+                    idx = futures[future]
+                    entry = {
+                        "task_index": idx,
+                        "status": "error",
+                        "summary": None,
+                        "error": str(exc),
+                        "api_calls": 0,
+                        "duration_seconds": 0,
+                        "_child_role": getattr(
+                            _child_by_index.get(idx), "_delegate_role", None
+                        ),
+                    }
+                results.append(entry)
+                completed_count += 1
+
+                # Print per-task completion line above the spinner
+                idx = entry["task_index"]
+                label = (
+                    task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
+                )
+                dur = entry.get("duration_seconds", 0)
+                status = entry.get("status", "?")
+                icon = "✓" if status == "completed" else "✗"
+                remaining = n_tasks - completed_count
+                completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
+                if spinner_ref:
+                    try:
+                        spinner_ref.print_above(completion_line)
+                    except Exception:
                         print(f"  {completion_line}")
+                else:
+                    print(f"  {completion_line}")
 
-                    # Update spinner text to show remaining count
-                    if spinner_ref and remaining > 0:
-                        try:
-                            spinner_ref.update_text(
-                                f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining"
-                            )
-                        except Exception as e:
-                            logger.debug("Spinner update_text failed: %s", e)
+                # Update spinner text to show remaining count
+                if spinner_ref and remaining > 0:
+                    try:
+                        spinner_ref.update_text(
+                            f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining"
+                        )
+                    except Exception as e:
+                        logger.debug("Spinner update_text failed: %s", e)
 
-        # Sort by task_index so results match input order
-        results.sort(key=lambda r: r["task_index"])
+    # Sort by task_index so results match input order
+    results.sort(key=lambda r: r["task_index"])
 
     # Notify parent's memory provider of delegation outcomes
     if (

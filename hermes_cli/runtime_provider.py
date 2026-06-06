@@ -1465,6 +1465,29 @@ def resolve_runtime_provider(
             "requested_provider": requested_provider,
         }
 
+    if provider == "claude-cli":
+        # External subprocess provider. The ClaudeCLIClient resolves the
+        # `claude` binary and the OAuth token itself (and exposes Hermes' full
+        # tool surface via an in-process MCP bridge); here we just pin routing.
+        import shutil as _shutil
+        _cmd = os.getenv("HERMES_CLAUDE_CLI_COMMAND", "").strip() or "claude"
+        if not _shutil.which(_cmd) and requested_provider != "auto":
+            raise AuthError(
+                f"Could not find the '{_cmd}' CLI. Install Claude Code "
+                "(npm install -g @anthropic-ai/claude-code) or set "
+                "HERMES_CLAUDE_CLI_COMMAND.",
+                provider="claude-cli",
+                code="missing_claude_cli",
+            )
+        return {
+            "provider": "claude-cli",
+            "api_mode": "chat_completions",
+            "base_url": "claude-cli://local",
+            "api_key": "no-key-required",
+            "source": "process",
+            "requested_provider": requested_provider,
+        }
+
     # Anthropic (native Messages API)
     if provider == "anthropic":
         # Allow base URL override from config.yaml model.base_url, but only

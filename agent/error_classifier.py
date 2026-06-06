@@ -561,6 +561,32 @@ def classify_api_error(
             should_compress=False,
         )
 
+    # Anthropic "third-party app" billing wall (400). When a Claude Code OAuth
+    # token is used for direct API calls by a third-party app (like Hermes'
+    # native anthropic path), Anthropic bills it against the separately-funded
+    # "extra usage" balance instead of the Pro/Max plan, and rejects with:
+    #   "Third-party apps now draw from your extra usage, not your plan limits."
+    # This is terminal for this request (retrying just reproduces it), so mark
+    # it non-retryable and surface the real fix: route through the first-party
+    # `claude` binary via `provider: claude-cli`, which draws from plan limits.
+    if (
+        status_code == 400
+        and "extra usage" in error_msg
+        and "plan limits" in error_msg
+    ):
+        return _result(
+            FailoverReason.billing,
+            retryable=False,
+            should_fallback=True,
+            message=(
+                "Anthropic rejected your subscription token for direct API use: "
+                "third-party apps draw from your extra-usage balance, not your "
+                "Pro/Max plan. To use plan credits instead, set "
+                "`model.provider: claude-cli` (runs the local `claude` binary, "
+                "first-party). Or fund extra usage at claude.ai/settings/usage."
+            ),
+        )
+
     # Anthropic long-context tier gate (429 "extra usage" + "long context")
     if (
         status_code == 429

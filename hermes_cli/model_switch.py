@@ -1435,6 +1435,24 @@ def list_authenticated_providers(
                     has_creds = True
             except Exception as exc:
                 logger.debug("Anthropic external creds check failed: %s", exc)
+        # For external-process providers (claude-cli): the credential is the
+        # claude binary itself plus any OAuth credential file, not an env var.
+        # Show the provider whenever the binary is installed.
+        if not has_creds and overlay.auth_type == "external_process":
+            try:
+                import shutil as _shutil_ep
+                _ep_cmd = os.getenv("HERMES_CLAUDE_CLI_COMMAND", "").strip() or "claude"
+                if _shutil_ep.which(_ep_cmd):
+                    from agent.anthropic_adapter import (
+                        read_claude_code_credentials,
+                        read_hermes_oauth_credentials,
+                    )
+                    _hc = read_hermes_oauth_credentials()
+                    _cc = read_claude_code_credentials()
+                    if (_hc and _hc.get("accessToken")) or (_cc and _cc.get("accessToken")):
+                        has_creds = True
+            except Exception as exc:
+                logger.debug("External-process creds check failed for %s: %s", hermes_slug, exc)
         if not has_creds:
             continue
 
@@ -1492,6 +1510,16 @@ def list_authenticated_providers(
                 # curated list alone (still correct, just may lag newly
                 # launched models, exactly like an offline CLI run).
                 pass
+        elif overlay.auth_type == "external_process":
+            # External-process providers (claude-cli, copilot-acp) own their
+            # model list — not in models.dev or the curated static dict. Ask
+            # the registered plugin profile directly.
+            try:
+                from providers import get_provider_profile as _gpp_ext
+                _ep = _gpp_ext(hermes_slug)
+                model_ids = (_ep.fetch_models() if _ep else None) or []
+            except Exception:
+                model_ids = []
         else:
             # Unified pathway — see Section 1 rationale. Fall back to the
             # curated dict (with models.dev merge for preferred providers)

@@ -94,6 +94,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="acp://copilot",
         base_url_env_var="COPILOT_ACP_BASE_URL",
     ),
+    "claude-cli": HermesOverlay(
+        transport="openai_chat",
+        auth_type="external_process",
+        extra_env_vars=("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_TOKEN"),
+        base_url_override="claude-cli://local",
+    ),
     "github-copilot": HermesOverlay(
         transport="openai_chat",
         extra_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN"),
@@ -278,7 +284,9 @@ ALIASES: Dict[str, str] = {
 
     # anthropic
     "claude": "anthropic",
-    "claude-code": "anthropic",
+    "claude-code": "claude-cli",
+    "claude-sub": "claude-cli",
+    "claude-oauth-cli": "claude-cli",
 
     # github-copilot (models.dev ID)
     "copilot": "github-copilot",
@@ -377,6 +385,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
+    "claude-cli": "Claude Code (CLI / subscription)",
 }
 
 

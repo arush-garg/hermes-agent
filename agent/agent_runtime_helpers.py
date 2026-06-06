@@ -1280,6 +1280,25 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent._client_log_context(),
         )
         return client
+    if agent.provider == "claude-cli" or str(client_kwargs.get("base_url", "")).startswith("claude-cli://"):
+        from agent.claude_cli_client import ClaudeCLIClient
+
+        # ClaudeCLIClient spawns the first-party `claude` binary and exposes
+        # Hermes' full tool surface to it via an in-process MCP bridge, so it
+        # needs a handle to the live agent.  Strip OpenAI-only kwargs it
+        # doesn't accept.
+        safe_kwargs = {
+            k: v for k, v in client_kwargs.items()
+            if k in {"api_key", "base_url", "default_headers", "timeout"}
+        }
+        client = ClaudeCLIClient(agent=agent, **safe_kwargs)
+        _ra().logger.info(
+            "Claude CLI client created (%s, shared=%s) %s",
+            reason,
+            shared,
+            agent._client_log_context(),
+        )
+        return client
     if agent.provider == "google-gemini-cli" or str(client_kwargs.get("base_url", "")).startswith("cloudcode-pa://"):
         from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
 

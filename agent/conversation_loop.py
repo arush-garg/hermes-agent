@@ -1320,6 +1320,13 @@ def run_conversation(
                     or str(agent.base_url or "").lower().startswith("acp+tcp://")
                 ):
                     _use_streaming = False
+                # ClaudeCLIClient spawns the `claude` binary and returns a
+                # plain SimpleNamespace (not a stream iterator) — same as ACP.
+                elif (
+                    agent.provider == "claude-cli"
+                    or str(agent.base_url or "").lower().startswith("claude-cli://")
+                ):
+                    _use_streaming = False
                 elif not agent._has_stream_consumers():
                     # No display/TTS consumer. Still prefer streaming for
                     # health checking, but skip for Mock clients in tests
@@ -2796,7 +2803,12 @@ def run_conversation(
                         provider=agent.provider,
                         base_url=getattr(agent, "base_url", None),
                     )
-                    if not pool_may_recover:
+                    # For transient rate limits (e.g. NIM per-minute RPM),
+                    # give the primary provider one retry with backoff before
+                    # falling back.  Billing errors are not transient and
+                    # should still fall back immediately.
+                    _billing_exhausted = classified.reason == FailoverReason.billing
+                    if not pool_may_recover and (has_retried_429 or _billing_exhausted):
                         if classified.reason == FailoverReason.billing:
                             agent._buffer_status(
                                 "⚠️ Billing or credits exhausted — switching to fallback provider..."
