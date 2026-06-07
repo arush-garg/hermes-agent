@@ -254,7 +254,24 @@ def main(argv: list[str] | None = None) -> None:
 
     agent = HermesACPAgent()
     try:
-        asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))
+        async def _run() -> None:
+            import os
+            import stat as _stat
+            # Bun's child_process.spawn uses Unix socket pairs instead of
+            # POSIX FIFOs.  asyncio's _UnixWritePipeTransport registers a
+            # read-watcher on the write-end fd; when Bun shuts down its end
+            # of the socket pair the watcher fires immediately (EOF on fd 1),
+            # causing the transport to self-close and silently discard every
+            # subsequent write.  Detect this case and use the thread-based
+            # stdin reader + direct stdout buffer writer instead.
+            if _stat.S_ISSOCK(os.fstat(sys.stdout.fileno()).st_mode):
+                from acp.stdio import _windows_stdio_streams
+                loop = asyncio.get_running_loop()
+                reader, writer = await _windows_stdio_streams(loop)
+                await acp.run_agent(agent, input_stream=writer, output_stream=reader, use_unstable_protocol=True)
+            else:
+                await acp.run_agent(agent, use_unstable_protocol=True)
+        asyncio.run(_run())
     except KeyboardInterrupt:
         logger.info("Shutting down (KeyboardInterrupt)")
     except Exception:

@@ -801,6 +801,32 @@ def try_recover_primary_transport(
         logger.warning("Primary transport recovery failed: %s", e)
         return False
 
+
+def try_turn_restart(
+    agent, api_error: Exception, messages: list,
+) -> bool:
+    """Restart the entire agent turn after a persistent transient transport failure.
+
+    Called after try_recover_primary_transport also fails.  Injects a
+    'Continue.' nudge into the conversation so the model resumes from
+    where it was, emits a user-facing status message, and signals the
+    caller to break from the inner retry loop so the outer iteration
+    loop rebuilds a fresh API call.
+
+    Only fires for transient transport errors — auth/billing/context
+    errors are not eligible because a fresh start would not help.
+    """
+    error_type = type(api_error).__name__
+    if error_type not in _TRANSIENT_TRANSPORT_ERRORS:
+        return False
+
+    provider = agent.provider or "unknown"
+    agent._emit_status(
+        f"🔁 Restarting turn after persistent timeout on {provider} — keeping going..."
+    )
+    messages.append({"role": "user", "content": "Continue."})
+    return True
+
 # ── End provider fallback ──────────────────────────────────────────────
 
 

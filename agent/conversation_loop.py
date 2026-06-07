@@ -735,6 +735,7 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
+    turn_restart_attempted = False
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
     # Per-turn file-mutation verifier state.  Keyed by resolved path;
@@ -1154,6 +1155,7 @@ def run_conversation(
         has_retried_429 = False
         restart_with_compressed_messages = False
         restart_with_length_continuation = False
+        restart_with_turn_recovery = False
 
         finish_reason = "stop"
         response = None  # Guard against UnboundLocalError if all retries fail
@@ -3356,6 +3358,16 @@ def run_conversation(
                         primary_recovery_attempted = True
                         retry_count = 0
                         continue
+                    # After primary-transport recovery also fails, try a
+                    # full turn restart with a continuation nudge before
+                    # attempting provider fallback.  Capped at one restart
+                    # per turn via turn_restart_attempted.
+                    if not turn_restart_attempted and agent._try_turn_restart(
+                        api_error, messages,
+                    ):
+                        turn_restart_attempted = True
+                        restart_with_turn_recovery = True
+                        break
                     # Try fallback before giving up entirely
                     if agent._has_pending_fallback():
                         agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
@@ -3521,6 +3533,10 @@ def run_conversation(
             # to fit the context window.
             retry_count += 1
             restart_with_compressed_messages = False
+            continue
+
+        if restart_with_turn_recovery:
+            restart_with_turn_recovery = False
             continue
 
         if restart_with_length_continuation:

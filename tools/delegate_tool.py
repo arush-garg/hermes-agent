@@ -1374,6 +1374,7 @@ def _run_single_child(
     # gateway inactivity timeout doesn't fire while the subagent is working.
     # Without this, the parent's _last_activity_ts freezes when delegate_task
     # starts and the gateway eventually kills the agent for "no activity".
+    child_timeout = _get_child_timeout()
     _heartbeat_stop = threading.Event()
     # Stale detection: track the child's (tool, iteration) pair across
     # heartbeat cycles. If neither advances, count the cycle as stale.
@@ -1381,6 +1382,12 @@ def _run_single_child(
     _last_seen_iter = [0]
     _last_seen_tool = [None]  # type: list
     _stale_count = [0]
+    # Inactivity timeout: track when the child last made API progress (new call
+    # or tool change). Reset continuously while a tool is running so long tool
+    # calls are not interrupted. Fire an interrupt when the child is idle
+    # (between API calls, no tool running) for longer than child_timeout.
+    _last_progress_ts = [time.time()]
+    _inactivity_exceeded = threading.Event()
 
     def _heartbeat_loop():
         while not _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
@@ -1409,14 +1416,36 @@ def _run_single_child(
                     _last_seen_iter[0] = child_iter
                     _last_seen_tool[0] = child_tool
                     _stale_count[0] = 0
-                else:
+                    _last_progress_ts[0] = time.time()
+                elif child_tool:
+                    # Actively inside a long-running tool — reset the inactivity
+                    # clock continuously so legitimate slow tools (builds,
+                    # downloads) are not interrupted while they are still running.
                     _stale_count[0] += 1
+                    _last_progress_ts[0] = time.time()
+                else:
+                    # Idle between API calls — accumulate inactivity.
+                    _stale_count[0] += 1
+                    idle_secs = time.time() - _last_progress_ts[0]
+                    if idle_secs >= child_timeout:
+                        logger.warning(
+                            "Subagent %d inactivity timeout: no API call for "
+                            "%.0fs (tool=<none>) — interrupting",
+                            task_index,
+                            idle_secs,
+                        )
+                        _inactivity_exceeded.set()
+                        try:
+                            if hasattr(child, "interrupt"):
+                                child.interrupt()
+                            elif hasattr(child, "_interrupt_requested"):
+                                child._interrupt_requested = True
+                        except Exception:
+                            pass
+                        break
 
-                # Pick threshold based on whether the child is currently
-                # inside a tool call. In-tool threshold is high enough to
-                # cover legitimately slow tools; idle threshold stays
-                # tight so the gateway timeout can fire on a truly wedged
-                # child.
+                # Stale-heartbeat fallback: stop touching the parent so the
+                # gateway inactivity timeout can fire on a truly wedged child.
                 stale_limit = (
                     _HEARTBEAT_STALE_CYCLES_IN_TOOL
                     if child_tool
@@ -1502,9 +1531,12 @@ def _run_single_child(
             list(file_state.known_reads(parent_task_id)) if parent_task_id else []
         )
 
-        # Run child with a hard timeout to prevent indefinite blocking
-        # when the child's API call or tool-level HTTP request hangs.
-        child_timeout = _get_child_timeout()
+        # Run child with a failsafe timeout. The primary kill mechanism is now
+        # the inactivity heartbeat above, which interrupts the child after
+        # child_timeout seconds of idle (no API call, no active tool). This
+        # failsafe only fires if the child hangs after the interrupt signal
+        # (e.g. stuck in blocking I/O that cannot be cancelled).
+        _failsafe_timeout = child_timeout * 10
         _timeout_executor = ThreadPoolExecutor(
             max_workers=1,
             # Install a non-interactive approval callback in the worker thread
@@ -1527,7 +1559,7 @@ def _run_single_child(
 
         _child_future = _timeout_executor.submit(_run_with_thread_capture)
         try:
-            result = _child_future.result(timeout=child_timeout)
+            result = _child_future.result(timeout=_failsafe_timeout)
         except Exception as _timeout_exc:
             # Signal the child to stop so its thread can exit cleanly.
             try:
@@ -1592,18 +1624,19 @@ def _run_single_child(
             if is_timeout:
                 if child_api_calls == 0:
                     _err = (
-                        f"Subagent timed out after {child_timeout}s without "
-                        f"making any API call — the child never reached its "
-                        f"first LLM request (prompt construction, credential "
-                        f"resolution, or transport may be stuck)."
+                        f"Subagent hit failsafe timeout ({_failsafe_timeout}s) "
+                        f"without making any API call — the child never reached "
+                        f"its first LLM request and did not exit after inactivity "
+                        f"interrupt (prompt construction, credential resolution, "
+                        f"or transport may be stuck)."
                     )
                     if diagnostic_path:
                         _err += f" Diagnostic: {diagnostic_path}"
                 else:
                     _err = (
-                        f"Subagent timed out after {child_timeout}s with "
-                        f"{child_api_calls} API call(s) completed — likely "
-                        f"stuck on a slow API call or unresponsive network request."
+                        f"Subagent hit failsafe timeout ({_failsafe_timeout}s) "
+                        f"with {child_api_calls} API call(s) completed — child "
+                        f"did not exit cleanly after inactivity interrupt."
                     )
             else:
                 _err = str(_timeout_exc)

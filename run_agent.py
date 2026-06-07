@@ -3937,6 +3937,11 @@ class AIAgent:
         from agent.agent_runtime_helpers import try_recover_primary_transport
         return try_recover_primary_transport(self, api_error, retry_count=retry_count, max_retries=max_retries)
 
+    def _try_turn_restart(self, api_error: Exception, messages: list) -> bool:
+        """Forwarder — see ``agent.agent_runtime_helpers.try_turn_restart``."""
+        from agent.agent_runtime_helpers import try_turn_restart
+        return try_turn_restart(self, api_error, messages)
+
     @staticmethod
     def _content_has_image_parts(content: Any) -> bool:
         if not isinstance(content, list):
