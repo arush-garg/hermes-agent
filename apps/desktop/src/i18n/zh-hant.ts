@@ -1184,12 +1184,14 @@ export const zhHant = defineLocale({
       export: '匯出',
       rename: '重新命名',
       archive: '封存',
+      newWindow: '新視窗',
       copyIdFailed: '無法複製工作階段 ID',
       actionsFor: title => `${title} 的動作`,
       sessionActions: '工作階段動作',
       sessionRunning: '工作階段執行中',
       needsInput: '需要您的輸入',
       waitingForAnswer: '等待您的回答',
+      handoffOrigin: platform => `從 ${platform} 轉接`,
       renamed: '已重新命名',
       renameFailed: '重新命名失敗',
       renameTitle: '重新命名工作階段',
@@ -1564,6 +1566,8 @@ export const zhHant = defineLocale({
       branch: branch => `分支 ${branch}`,
       closeCommandCenter: '關閉命令中心',
       openCommandCenter: '開啟命令中心',
+      showTerminal: '顯示終端機',
+      hideTerminal: '隱藏終端機',
       gateway: '閘道',
       gatewayReady: '就緒',
       gatewayNeedsSetup: '需要設定',
@@ -1619,8 +1623,7 @@ export const zhHant = defineLocale({
     tryAgain: '重試',
     loadingTree: '正在載入檔案樹',
     loadingFiles: '正在載入檔案',
-    terminalFocus: '聚焦終端機檢視',
-    terminalSplit: '返回分割檢視',
+    terminalHide: '隱藏終端機',
     addToChat: '新增至聊天'
   },
 
@@ -1726,7 +1729,8 @@ export const zhHant = defineLocale({
       restoreCheckpoint: '還原檢查點',
       restoreNext: '還原至下一個檢查點',
       goForward: '前進',
-      sendEdited: '傳送編輯後的訊息'
+      sendEdited: '傳送編輯後的訊息',
+      attachingFile: '正在附加…'
     },
     approval: {
       gatewayDisconnected: 'Hermes 閘道未連線',
