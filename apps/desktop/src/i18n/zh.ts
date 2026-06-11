@@ -297,7 +297,16 @@ export const zh: Translations = {
       technicalDesc: '包含原始工具参数/结果及底层细节。',
       themeTitle: '主题',
       themeDesc: '仅桌面端调色板。所选模式叠加其上。',
-      themeProfileNote: profile => `已为「${profile}」配置文件保存——每个配置文件保留各自的主题。`
+      themeProfileNote: profile => `已为「${profile}」配置文件保存——每个配置文件保留各自的主题。`,
+      installTitle: '从 VS Code 安装',
+      installDesc: '粘贴 Marketplace 扩展 ID（例如 dracula-theme.theme-dracula），将其配色主题转换为桌面调色板。',
+      installPlaceholder: 'publisher.extension',
+      installButton: '安装',
+      installing: '安装中…',
+      installError: '无法安装该主题。',
+      installed: name => `已安装「${name}」。`,
+      removeTheme: '移除主题',
+      importedBadge: '已导入'
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',
@@ -829,6 +838,17 @@ export const zh: Translations = {
     settings: '设置',
     changeTheme: '更改主题...',
     changeColorMode: '更改颜色模式...',
+    installTheme: {
+      title: '安装主题...',
+      placeholder: '搜索 VS Code Marketplace...',
+      loading: '正在搜索 Marketplace...',
+      error: '无法连接到 Marketplace。',
+      empty: '没有匹配的主题。',
+      install: '安装',
+      installing: '安装中...',
+      installed: '已安装',
+      installs: count => `${count} 次安装`
+    },
     settingsFields: '设置字段',
     mcpServers: 'MCP 服务器',
     archivedChats: '已归档对话',
@@ -1692,6 +1712,9 @@ export const zh: Translations = {
     terminal: '终端',
     noFolderSelected: '未选择文件夹',
     changeCwdTitle: '更改工作目录',
+    remotePickerTitle: '选择远程文件夹',
+    remotePickerDescription: '浏览已连接后端上的文件夹。',
+    remotePickerSelect: '选择文件夹',
     folderTip: cwd => `${cwd} — 点击更改文件夹`,
     openFolder: '打开文件夹',
     refreshTree: '刷新文件树',
@@ -1936,7 +1959,14 @@ export const zh: Translations = {
     clipboard: '剪贴板',
     noClipboardImage: '剪贴板中没有图片',
     clipboardPasteFailed: '粘贴剪贴板失败',
-    dropFiles: '拖放文件'
+    dropFiles: '拖放文件',
+    handoff: {
+      pickPlatform: '选择目标平台',
+      success: platform => `已移交到 ${platform}。随时可在此处恢复。`,
+      systemNote: platform => `↻ 已移交到 ${platform} — 随时可在此处恢复。`,
+      failed: error => `移交失败：${error}`,
+      timedOut: '等待网关超时。`hermes gateway` 是否正在运行？'
+    }
   },
 
   errors: {

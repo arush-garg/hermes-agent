@@ -302,7 +302,17 @@ export const en: Translations = {
       technicalDesc: 'Include raw tool args/results and low-level details.',
       themeTitle: 'Theme',
       themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
-      themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`
+      themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`,
+      installTitle: 'Install from VS Code',
+      installDesc:
+        'Paste a Marketplace extension id (e.g. dracula-theme.theme-dracula) to convert its color theme into a desktop palette.',
+      installPlaceholder: 'publisher.extension',
+      installButton: 'Install',
+      installing: 'Installing…',
+      installError: 'Could not install that theme.',
+      installed: name => `Installed “${name}”.`,
+      removeTheme: 'Remove theme',
+      importedBadge: 'Imported'
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
@@ -636,6 +646,17 @@ export const en: Translations = {
     settings: 'Settings',
     changeTheme: 'Change theme...',
     changeColorMode: 'Change color mode...',
+    installTheme: {
+      title: 'Install theme...',
+      placeholder: 'Search the VS Code Marketplace...',
+      loading: 'Searching the Marketplace...',
+      error: 'Could not reach the Marketplace.',
+      empty: 'No matching themes.',
+      install: 'Install',
+      installing: 'Installing...',
+      installed: 'Installed',
+      installs: count => `${count} installs`
+    },
     settingsFields: 'Settings fields',
     mcpServers: 'MCP servers',
     archivedChats: 'Archived chats',
@@ -1511,6 +1532,9 @@ export const en: Translations = {
     terminal: 'Terminal',
     noFolderSelected: 'No folder selected',
     changeCwdTitle: 'Change working directory',
+    remotePickerTitle: 'Choose remote folder',
+    remotePickerDescription: 'Browse folders on the connected backend.',
+    remotePickerSelect: 'Select folder',
     folderTip: cwd => `${cwd} — click to change folder`,
     openFolder: 'Open folder',
     refreshTree: 'Refresh tree',
@@ -1757,7 +1781,14 @@ export const en: Translations = {
     clipboard: 'Clipboard',
     noClipboardImage: 'No image found in clipboard',
     clipboardPasteFailed: 'Clipboard paste failed',
-    dropFiles: 'Drop files'
+    dropFiles: 'Drop files',
+    handoff: {
+      pickPlatform: 'Choose a destination',
+      success: platform => `Handed off to ${platform}. Resume here anytime.`,
+      systemNote: platform => `↻ Handed off to ${platform} — resume here anytime.`,
+      failed: error => `Handoff failed: ${error}`,
+      timedOut: 'Timed out waiting for the gateway. Is `hermes gateway` running?'
+    }
   },
 
   errors: {
