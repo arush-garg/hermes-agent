@@ -2552,7 +2552,7 @@ def run_conversation(
                     # falling back.  Billing errors are not transient and
                     # should still fall back immediately.
                     _billing_exhausted = classified.reason == FailoverReason.billing
-                    if not pool_may_recover and (has_retried_429 or _billing_exhausted):
+                    if not pool_may_recover and (_retry.has_retried_429 or _billing_exhausted):
                         if classified.reason == FailoverReason.billing:
                             agent._buffer_status(
                                 "⚠️ Billing or credits exhausted — switching to fallback provider..."

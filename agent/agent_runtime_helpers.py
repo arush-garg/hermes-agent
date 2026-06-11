@@ -2477,6 +2477,30 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     )
 
 
+def apply_pending_yolo_action(agent) -> None:
+    """Execute any queued /yolo toggle at a tool-batch boundary.
+
+    Called right after apply_pending_steer_to_tool_results so /yolo
+    shares the same "after next tool call" timing contract as /steer.
+    """
+    action = agent._drain_pending_yolo_action()
+    if not action:
+        return
+    session_key, enable = action
+    try:
+        from tools.approval import disable_session_yolo, enable_session_yolo
+        if enable:
+            enable_session_yolo(session_key)
+        else:
+            disable_session_yolo(session_key)
+        _ra().logger.info(
+            "/yolo steer applied for session %s: %s",
+            session_key,
+            "enabled" if enable else "disabled",
+        )
+    except Exception as exc:
+        _ra().logger.warning("apply_pending_yolo_action failed for session %s: %s", session_key, exc)
+
 
 def force_close_tcp_sockets(client: Any) -> int:
     """Abort in-flight TCP I/O by shutting down sockets WITHOUT closing FDs.
@@ -2554,6 +2578,7 @@ __all__ = [
     "cleanup_dead_connections",
     "extract_api_error_context",
     "apply_pending_steer_to_tool_results",
+    "apply_pending_yolo_action",
     "_iter_pool_sockets",
     "force_close_tcp_sockets",
 ]

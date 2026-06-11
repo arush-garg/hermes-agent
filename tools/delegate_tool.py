@@ -156,6 +156,11 @@ _active_subagents_lock = threading.Lock()
 # for the lifetime of the run; _run_single_child is the owner.
 _active_subagents: Dict[str, Dict[str, Any]] = {}
 
+_pending_jobs_lock = threading.Lock()
+# job_id -> {status, n_tasks, completed, results, started_at, done_event}
+# Populated by async delegate_task calls; consumed by get_delegate_result.
+_pending_jobs: Dict[str, Dict[str, Any]] = {}
+
 
 def set_spawn_paused(paused: bool) -> bool:
     """Globally block/unblock new delegate_task spawns.
@@ -2000,6 +2005,71 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+def _run_async_job(
+    job_id: str,
+    children: List,
+    task_list: List[Dict],
+    max_children: int,
+    parent_agent,
+) -> None:
+    """Background thread that runs async delegate_task children and stores results."""
+    from concurrent.futures import wait as _cf_wait, FIRST_COMPLETED
+
+    results = []
+    _child_by_index = {i: child for (i, _, child) in children}
+
+    with ThreadPoolExecutor(
+        max_workers=max_children,
+        initializer=_set_subagent_approval_cb,
+        initargs=(_get_subagent_approval_callback(),),
+    ) as executor:
+        futures = {}
+        for i, t, child in children:
+            future = executor.submit(
+                _run_single_child,
+                task_index=i,
+                goal=t["goal"],
+                child=child,
+                parent_agent=parent_agent,
+            )
+            futures[future] = i
+
+        pending = set(futures.keys())
+        while pending:
+            done, pending = _cf_wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
+            for future in done:
+                try:
+                    entry = future.result()
+                except Exception as exc:
+                    idx = futures[future]
+                    entry = {
+                        "task_index": idx,
+                        "status": "error",
+                        "summary": None,
+                        "error": str(exc),
+                        "api_calls": 0,
+                        "duration_seconds": 0,
+                        "_child_role": getattr(
+                            _child_by_index.get(idx), "_delegate_role", None
+                        ),
+                    }
+                results.append(entry)
+                with _pending_jobs_lock:
+                    if job_id in _pending_jobs:
+                        _pending_jobs[job_id]["completed"] += 1
+
+    results.sort(key=lambda r: r["task_index"])
+    for entry in results:
+        entry.pop("_child_role", None)
+        entry.pop("_child_cost_usd", None)
+
+    with _pending_jobs_lock:
+        if job_id in _pending_jobs:
+            _pending_jobs[job_id]["results"] = results
+            _pending_jobs[job_id]["status"] = "done"
+            _pending_jobs[job_id]["done_event"].set()
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -2009,6 +2079,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    async_mode: bool = False,
     parent_agent=None,
 ) -> str:
     """
@@ -2173,6 +2244,41 @@ def delegate_task(
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
+
+    # Async mode: fire children in a daemon thread and return immediately.
+    if async_mode:
+        import uuid as _uuid
+        job_id = f"djob-{int(time.monotonic() * 1000) % 100000000}-{_uuid.uuid4().hex[:8]}"
+        done_event = threading.Event()
+        with _pending_jobs_lock:
+            _pending_jobs[job_id] = {
+                "status": "running",
+                "n_tasks": n_tasks,
+                "completed": 0,
+                "results": None,
+                "started_at": time.time(),
+                "done_event": done_event,
+            }
+        bg_thread = threading.Thread(
+            target=_run_async_job,
+            args=(job_id, children, task_list, max_children, parent_agent),
+            daemon=True,
+            name=f"delegate-async-{job_id}",
+        )
+        bg_thread.start()
+        return json.dumps(
+            {
+                "job_id": job_id,
+                "status": "started",
+                "task_count": n_tasks,
+                "message": (
+                    f"Async delegation started ({n_tasks} task(s)). "
+                    f"Call get_delegate_result with job_id='{job_id}' to collect results. "
+                    f"Children continue running even if the parent turn ends."
+                ),
+            },
+            ensure_ascii=False,
+        )
 
     # Run all tasks (single or batch) through the executor so the main thread
     # wakes every 0.5s to check for interrupts instead of blocking for up to
@@ -2683,21 +2789,26 @@ def _build_top_level_description() -> str:
         f"items concurrently for this user (configured via "
         f"delegation.max_concurrent_children in config.yaml). "
         f"All run in parallel and results are returned together. {nesting_clause}\n\n"
+        "BLOCKING vs ASYNC:\n"
+        "- Default (async_mode=false): parent blocks until all children finish. "
+        "If the parent turn is interrupted, children are cancelled.\n"
+        "- async_mode=true: returns immediately with a job_id. Children keep "
+        "running in the background even if the parent turn ends or the user "
+        "sends a new message. Collect results later with get_delegate_result(job_id). "
+        "Use async mode for slow tasks (model latency, long research) where you "
+        "want the parent to continue working or respond to the user immediately.\n\n"
         "WHEN TO USE delegate_task:\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
         "- Tasks that would flood your context with intermediate data\n"
-        "- Parallel independent workstreams (research A and B simultaneously)\n\n"
+        "- Parallel independent workstreams (research A and B simultaneously)\n"
+        "- Slow tasks where you want to stay responsive (use async_mode=true)\n\n"
         "WHEN NOT TO USE (use these instead):\n"
         "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
         "- Single tool call -> just call the tool directly\n"
         "- Tasks needing user interaction -> subagents cannot use clarify\n"
-        "- Durable long-running work that must outlive the current turn -> "
-        "use cronjob (action='create') or terminal(background=True, "
-        "notify_on_complete=True) instead. delegate_task runs SYNCHRONOUSLY "
-        "inside the parent turn: if the parent is interrupted (user sends a "
-        "new message, /stop, /new) the child is cancelled with status="
-        "'interrupted' and its work is discarded. Children cannot continue "
-        "in the background.\n\n"
+        "- Truly durable work that must survive process restart -> "
+        "use cronjob (action='create') instead. Async delegate_task children "
+        "are daemon threads — they die if the Hermes process exits.\n\n"
         "IMPORTANT:\n"
         "- Subagents have NO memory of your conversation. Pass all relevant "
         "info (file paths, error messages, constraints) via the 'context' field.\n"
@@ -2913,6 +3024,16 @@ DELEGATE_TASK_SCHEMA = {
                     "Leave empty unless acp_command is explicitly provided."
                 ),
             },
+            "async_mode": {
+                "type": "boolean",
+                "description": (
+                    "When true, children run in a background thread and this call "
+                    "returns immediately with a job_id. The parent turn can continue "
+                    "or end — children keep running. Use get_delegate_result(job_id) "
+                    "to collect results. When false (default), the parent blocks until "
+                    "all children finish."
+                ),
+            },
         },
         "required": [],
     },
@@ -2935,9 +3056,119 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        async_mode=bool(args.get("async_mode", False)),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,
+)
+
+
+# ---------------------------------------------------------------------------
+# get_delegate_result — collect results from an async delegate_task call
+# ---------------------------------------------------------------------------
+
+
+def get_delegate_result(
+    job_id: str,
+    wait: bool = True,
+    parent_agent=None,
+) -> str:
+    """Collect or poll the result of an async delegate_task invocation.
+
+    When wait=True (default) blocks until all children finish (or timeout).
+    When wait=False returns immediately with current status.
+    """
+    with _pending_jobs_lock:
+        job = _pending_jobs.get(job_id)
+
+    if job is None:
+        return tool_error(
+            f"No async job found with id '{job_id}'. "
+            "Job may have already been collected, expired, or the id is wrong."
+        )
+
+    if job["status"] == "done":
+        results = job.get("results", [])
+        duration = round(time.time() - job["started_at"], 2)
+        with _pending_jobs_lock:
+            _pending_jobs.pop(job_id, None)
+        return json.dumps(
+            {"results": results, "total_duration_seconds": duration},
+            ensure_ascii=False,
+        )
+
+    if not wait:
+        return json.dumps(
+            {
+                "job_id": job_id,
+                "status": "running",
+                "completed": job.get("completed", 0),
+                "total": job.get("n_tasks", 0),
+            },
+            ensure_ascii=False,
+        )
+
+    # Block until done or timeout
+    timeout = _get_child_timeout()
+    job["done_event"].wait(timeout=timeout)
+
+    with _pending_jobs_lock:
+        job = _pending_jobs.get(job_id)
+
+    if job is None or job["status"] == "done":
+        results = (job or {}).get("results", [])
+        duration = round(time.time() - (job or {}).get("started_at", time.time()), 2)
+        with _pending_jobs_lock:
+            _pending_jobs.pop(job_id, None)
+        return json.dumps(
+            {"results": results, "total_duration_seconds": duration},
+            ensure_ascii=False,
+        )
+
+    return tool_error(
+        f"Job '{job_id}' timed out after {timeout}s waiting for children to finish."
+    )
+
+
+GET_DELEGATE_RESULT_SCHEMA = {
+    "name": "get_delegate_result",
+    "description": (
+        "Collect the result of an async delegate_task call. "
+        "Pass the job_id returned by delegate_task(async_mode=True). "
+        "By default blocks until all children finish (wait=true). "
+        "Set wait=false to poll without blocking — returns status='running' "
+        "with completed/total counts when children are still working."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "job_id": {
+                "type": "string",
+                "description": "The job_id returned by delegate_task(async_mode=True).",
+            },
+            "wait": {
+                "type": "boolean",
+                "description": (
+                    "When true (default) blocks until all children finish. "
+                    "When false, returns immediately with current status."
+                ),
+            },
+        },
+        "required": ["job_id"],
+    },
+}
+
+registry.register(
+    name="get_delegate_result",
+    toolset="delegation",
+    schema=GET_DELEGATE_RESULT_SCHEMA,
+    handler=lambda args, **kw: get_delegate_result(
+        job_id=args.get("job_id", ""),
+        wait=bool(args.get("wait", True)),
+        parent_agent=kw.get("parent_agent"),
+    ),
+    check_fn=check_delegate_requirements,
+    emoji="🔀",
 )

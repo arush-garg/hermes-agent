@@ -1036,6 +1036,31 @@ def switch_model(
                     if isinstance(entry_models, dict) and new_model in entry_models:
                         override = True
                         break
+        # Check the live-model disk cache for user-defined providers (providers: block).
+        # validate_requested_model probes with api_key="no-key-required" (the sentinel
+        # assigned when no key is configured), which causes keyless endpoints like
+        # omniroute to return 0 models and reject a valid selection. If the model
+        # appears in the cached live listing for this provider slug, accept it.
+        if not override and user_providers and target_provider in user_providers:
+            try:
+                from hermes_cli.models import (
+                    _load_provider_models_cache,
+                    _PROVIDER_MODELS_CACHE_TTL,
+                )
+                import time as _time_ms
+                _cache = _load_provider_models_cache()
+                _cache_key = f"user:{target_provider}"
+                _entry = _cache.get(_cache_key)
+                if (
+                    isinstance(_entry, dict)
+                    and isinstance(_entry.get("models"), list)
+                    and _entry["models"]
+                    and (_time_ms.time() - float(_entry.get("at", 0))) < _PROVIDER_MODELS_CACHE_TTL
+                    and new_model in _entry["models"]
+                ):
+                    override = True
+            except Exception:
+                pass
         if override:
             validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
         else:
@@ -1749,13 +1774,55 @@ def list_authenticated_providers(
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
             if api_url and discover and (api_key or not models_list):
+                # Cache key for user-defined providers uses a "user:" prefix so
+                # it doesn't collide with built-in provider entries. Stale cache
+                # is always used as a fallback when the live probe fails so that
+                # keyless local endpoints (e.g. omniroute) survive gateway
+                # restarts and transient network hiccups.
+                _cache_key = f"user:{ep_name}"
+                _live_fetched: list = []
                 try:
-                    from hermes_cli.models import fetch_api_models
-                    live_models = fetch_api_models(api_key, api_url)
-                    if live_models:
-                        models_list = live_models
+                    from hermes_cli.models import (
+                        fetch_api_models as _fam,
+                        _load_provider_models_cache,
+                        _save_provider_models_cache,
+                        _PROVIDER_MODELS_CACHE_TTL,
+                    )
+                    import time as _time
+                    _cache = _load_provider_models_cache()
+                    _entry = _cache.get(_cache_key)
+                    _now = _time.time()
+                    _cache_fresh = (
+                        isinstance(_entry, dict)
+                        and isinstance(_entry.get("models"), list)
+                        and _entry["models"]
+                        and (_now - float(_entry.get("at", 0))) < _PROVIDER_MODELS_CACHE_TTL
+                        and _entry.get("url") == api_url
+                    )
+                    if _cache_fresh:
+                        _live_fetched = list(_entry["models"])
+                    else:
+                        _probed = _fam(api_key, api_url)
+                        if _probed:
+                            _live_fetched = _probed
+                            _cache[_cache_key] = {
+                                "at": _now,
+                                "url": api_url,
+                                "models": list(_probed),
+                            }
+                            _save_provider_models_cache(_cache)
+                        elif (
+                            isinstance(_entry, dict)
+                            and isinstance(_entry.get("models"), list)
+                            and _entry["models"]
+                            and _entry.get("url") == api_url
+                        ):
+                            # Probe failed — serve stale cache rather than 0 models
+                            _live_fetched = list(_entry["models"])
                 except Exception:
                     pass
+                if _live_fetched:
+                    models_list = _live_fetched
 
             results.append({
                 "slug": ep_name,

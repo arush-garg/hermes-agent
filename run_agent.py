@@ -2359,14 +2359,13 @@ class AIAgent:
                     _set_interrupt(False, _wtid)
                 except Exception:
                     pass
-        # A hard interrupt supersedes any pending /steer — the steer was
-        # meant for the agent's next tool-call iteration, which will no
-        # longer happen. Drop it instead of surprising the user with a
-        # late injection on the post-interrupt turn.
+        # A hard interrupt supersedes any pending /steer or /yolo-steer —
+        # neither will have a tool-call boundary to fire at.
         _steer_lock = getattr(self, "_pending_steer_lock", None)
         if _steer_lock is not None:
             with _steer_lock:
                 self._pending_steer = None
+                self._pending_yolo_action = None
 
     def steer(self, text: str) -> bool:
         """
@@ -2419,6 +2418,45 @@ class AIAgent:
             text = self._pending_steer
             self._pending_steer = None
         return text
+
+    def steer_yolo(self, session_key: str, enable: bool) -> bool:
+        """Queue a /yolo toggle to fire after the next tool call.
+
+        Same timing contract as steer(): the action executes at the next
+        tool-batch boundary rather than immediately, so it never interrupts
+        a running tool. Thread-safe.
+
+        Args:
+            session_key: Gateway session key passed to enable/disable helpers.
+            enable: True to enable yolo, False to disable.
+
+        Returns:
+            Always True (action accepted).
+        """
+        _lock = getattr(self, "_pending_steer_lock", None)
+        if _lock is None:
+            self._pending_yolo_action = (session_key, enable)
+        else:
+            with _lock:
+                self._pending_yolo_action = (session_key, enable)
+        return True
+
+    def _drain_pending_yolo_action(self) -> Optional[tuple]:
+        """Return pending (session_key, enable) yolo action and clear it."""
+        _lock = getattr(self, "_pending_steer_lock", None)
+        if _lock is None:
+            action = getattr(self, "_pending_yolo_action", None)
+            self._pending_yolo_action = None
+            return action
+        with _lock:
+            action = self._pending_yolo_action
+            self._pending_yolo_action = None
+        return action
+
+    def _apply_pending_yolo_action(self) -> None:
+        """Execute any queued yolo toggle. Called at tool-batch boundaries."""
+        from agent.agent_runtime_helpers import apply_pending_yolo_action
+        apply_pending_yolo_action(self)
 
     def _record_file_mutation_result(
         self,

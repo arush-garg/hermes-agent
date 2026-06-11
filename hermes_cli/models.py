@@ -3336,23 +3336,28 @@ def probe_api_models(
 
     tried: list[str] = []
     headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
-    if api_key and api_mode == "anthropic_messages":
+    # "no-key-required" is a sentinel used by runtime_provider when no real
+    # credentials are configured.  Treat it as absent so keyless endpoints
+    # (e.g. local proxies like omniroute) don't receive an Authorization header
+    # that causes them to return 0 models or a 401.
+    _effective_key = api_key if api_key and api_key != "no-key-required" else None
+    if _effective_key and api_mode == "anthropic_messages":
         # OAuth / subscription tokens (sk-ant-oat*, cc-*, JWT) are rejected by
         # x-api-key ("401 invalid x-api-key") and must use Bearer + the OAuth
         # beta; only real Console keys (sk-ant-api*) use x-api-key.
         try:
             from agent.anthropic_adapter import _is_oauth_token
-            _oauth = _is_oauth_token(api_key)
+            _oauth = _is_oauth_token(_effective_key)
         except Exception:
-            _oauth = api_key.startswith(("sk-ant-oat", "cc-", "eyJ"))
+            _oauth = _effective_key.startswith(("sk-ant-oat", "cc-", "eyJ"))
         if _oauth:
-            headers["Authorization"] = f"Bearer {api_key}"
+            headers["Authorization"] = f"Bearer {_effective_key}"
             headers["anthropic-beta"] = "oauth-2025-04-20"
         else:
-            headers["x-api-key"] = api_key
+            headers["x-api-key"] = _effective_key
         headers["anthropic-version"] = "2023-06-01"
-    elif api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+    elif _effective_key:
+        headers["Authorization"] = f"Bearer {_effective_key}"
     if normalized.startswith(COPILOT_BASE_URL):
         headers.update(copilot_default_headers())
 

@@ -6749,15 +6749,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return await self._handle_subgoal_command(event)
 
             # Session-level toggles that are safe to run mid-agent —
-            # /yolo can unblock a pending approval prompt, /verbose cycles
-            # the tool-progress display mode for the ongoing stream.
-            # Both modify session state without needing agent interaction
-            # and must not be queued (the safety net would discard them).
+            # /yolo steers the toggle after the next tool call (same timing
+            # contract as /steer) so it never races a pending approval prompt
+            # mid-tool. Falls back to immediate toggle if no steer-capable
+            # agent is running. /verbose cycles the tool-progress display mode
+            # for the ongoing stream. Both must not be queued (the safety net
+            # would discard them).
             # /fast and /reasoning are config-only and take effect next
             # message, so they fall through to the catch-all busy response
             # below — users should wait and set them between turns.
             if _cmd_def_inner and _cmd_def_inner.name in {"yolo", "verbose"}:
                 if _cmd_def_inner.name == "yolo":
+                    running_agent = self._running_agents.get(_quick_key)
+                    if (
+                        running_agent is not None
+                        and running_agent is not _AGENT_PENDING_SENTINEL
+                        and hasattr(running_agent, "steer_yolo")
+                    ):
+                        from tools.approval import is_session_yolo_enabled
+                        current = is_session_yolo_enabled(_quick_key)
+                        running_agent.steer_yolo(_quick_key, not current)
+                        state = "off" if current else "on"
+                        return EphemeralReply(
+                            t("gateway.yolo.enabled") if not current else t("gateway.yolo.disabled"),
+                        )
                     return await self._handle_yolo_command(event)
                 if _cmd_def_inner.name == "verbose":
                     return await self._handle_verbose_command(event)
