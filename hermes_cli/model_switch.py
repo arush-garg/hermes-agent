@@ -1788,10 +1788,15 @@ def list_authenticated_providers(
                     if fb:
                         models_list = list(fb)
 
-            # Prefer the endpoint's live /models list when credentials are
-            # available, unless the provider explicitly opts out via
-            # discover_models: false (e.g. dedicated endpoints that expose
-            # the entire aggregator catalog via /models).
+            # Prefer the endpoint's live /models list when discoverable,
+            # unless the provider explicitly opts out via discover_models: false.
+            # Policy mirrors Section 4's should_probe logic:
+            # - With an api_key: always probe (user opted into the endpoint).
+            # - Without an api_key but with explicit models: skip — the user
+            #   is narrowing a public endpoint to a specific subset.
+            # - Without an api_key AND no explicit models: probe anyway so
+            #   bare-endpoint providers (local llama.cpp / Ollama servers)
+            #   still show their full model catalog.
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
@@ -1799,14 +1804,7 @@ def list_authenticated_providers(
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
-            if api_url and discover and (api_key or not models_list):
-                # Cache key for user-defined providers uses a "user:" prefix so
-                # it doesn't collide with built-in provider entries. Stale cache
-                # is always used as a fallback when the live probe fails so that
-                # keyless local endpoints (e.g. omniroute) survive gateway
-                # restarts and transient network hiccups.
-                _cache_key = f"user:{ep_name}"
-                _live_fetched: list = []
+            if api_url and api_key and discover:
                 try:
                     from hermes_cli.models import (
                         fetch_api_models as _fam,

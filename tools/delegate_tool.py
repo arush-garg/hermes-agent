@@ -402,6 +402,38 @@ def _get_max_concurrent_children() -> int:
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
 
 
+_DEFAULT_MAX_ASYNC_CHILDREN = 3
+
+
+def _get_max_async_children() -> int:
+    """Read delegation.max_async_children from config (floor 1, no ceiling).
+
+    Caps how many background (``background=true``) subagents can run at once.
+    When at capacity, a new async dispatch is REJECTED (not queued) so a
+    runaway model can't pile up unbounded background work. Separate from
+    max_concurrent_children, which bounds a single synchronous batch.
+    """
+    cfg = _load_config()
+    val = cfg.get("max_async_children")
+    if val is not None:
+        try:
+            return max(1, int(val))
+        except (TypeError, ValueError):
+            logger.warning(
+                "delegation.max_async_children=%r is not a valid integer; "
+                "using default %d",
+                val, _DEFAULT_MAX_ASYNC_CHILDREN,
+            )
+            return _DEFAULT_MAX_ASYNC_CHILDREN
+    env_val = os.getenv("DELEGATION_MAX_ASYNC_CHILDREN")
+    if env_val:
+        try:
+            return max(1, int(env_val))
+        except (TypeError, ValueError):
+            return _DEFAULT_MAX_ASYNC_CHILDREN
+    return _DEFAULT_MAX_ASYNC_CHILDREN
+
+
 def _get_child_timeout() -> Optional[float]:
     """Read delegation.child_timeout_seconds from config.
 
@@ -838,6 +870,15 @@ def _build_child_progress_callback(
 
         if event_type == "subagent.complete":
             _relay("subagent.complete", preview=preview, **kwargs)
+            return
+
+        if event_type == "subagent.text":
+            # Streamed assistant reply text from the child. Relay verbatim so a
+            # gateway watch window can mirror the child "talking" as it streams.
+            # No spinner echo — the CLI shows the child via the tree, and the
+            # CLI/TUI progress handlers ignore non-tool event types, so this is
+            # inert there; only a gateway watch window consumes it.
+            _relay("subagent.text", preview=preview)
             return
 
         # Normalise legacy strings, new-style "delegate.*" strings, and
@@ -1627,11 +1668,23 @@ def _run_single_child(
         # Python stack (see #14726 — 0-API-call hangs are opaque without it).
         _worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}
 
+        def _relay_child_text(delta: str) -> None:
+            # Forward the child's streamed reply text up the progress relay so
+            # gateway watch windows mirror it live (subagent.text → message.delta).
+            # Inert under CLI/TUI: their progress handlers ignore non-tool events.
+            if not delta or not child_progress_cb:
+                return
+            try:
+                child_progress_cb("subagent.text", preview=delta)
+            except Exception as e:
+                logger.debug("Child text relay failed: %s", e)
+
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
             return child.run_conversation(
                 user_message=goal,
                 task_id=child_task_id,
+                stream_callback=_relay_child_text,
             )
 
         _child_future = _timeout_executor.submit(_run_with_thread_capture)
@@ -2117,7 +2170,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
-    async_mode: bool = False,
+    background: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2148,6 +2201,19 @@ def delegate_task(
 
     # Normalise the top-level role once; per-task overrides re-normalise.
     top_role = _normalize_role(role)
+
+    # Async (background) delegation is single-task only in v1. A batch carries
+    # fan-out semantics (N handles, partial completion) that double the state
+    # model — reject early with a clear message rather than silently running
+    # the batch synchronously.
+    background = is_truthy_value(background, default=False) if background is not None else False
+    if background and tasks and isinstance(tasks, list) and len(tasks) > 1:
+        return tool_error(
+            "background=true is single-task only. Dispatch one background "
+            "subagent per delegate_task call (each returns its own handle and "
+            "re-enters the conversation independently), or run the batch "
+            "synchronously with background=false."
+        )
 
     # Depth limit — configurable via delegation.max_spawn_depth,
     # default 2 for parity with the original MAX_DEPTH constant.
@@ -2283,46 +2349,15 @@ def delegate_task(
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
 
-    # Async mode: fire children in a daemon thread and return immediately.
-    if async_mode:
-        import uuid as _uuid
-        job_id = f"djob-{int(time.monotonic() * 1000) % 100000000}-{_uuid.uuid4().hex[:8]}"
-        done_event = threading.Event()
-        with _pending_jobs_lock:
-            _pending_jobs[job_id] = {
-                "status": "running",
-                "n_tasks": n_tasks,
-                "completed": 0,
-                "results": None,
-                "started_at": time.time(),
-                "done_event": done_event,
-            }
-        bg_thread = threading.Thread(
-            target=_run_async_job,
-            args=(job_id, children, task_list, max_children, parent_agent),
-            daemon=True,
-            name=f"delegate-async-{job_id}",
-        )
-        bg_thread.start()
-        return json.dumps(
-            {
-                "job_id": job_id,
-                "status": "started",
-                "task_count": n_tasks,
-                "message": (
-                    f"Async delegation started ({n_tasks} task(s)). "
-                    f"Call get_delegate_result with job_id='{job_id}' to collect results. "
-                    f"Children continue running even if the parent turn ends."
-                ),
-            },
-            ensure_ascii=False,
-        )
-
-    # Run all tasks (single or batch) through the executor so the main thread
-    # wakes every 0.5s to check for interrupts instead of blocking for up to
-    # child_timeout_seconds with no interrupt polling.
-    completed_count = 0
-    spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
+    if n_tasks == 1:
+        # Single task -- run directly (no thread pool overhead)
+        _i, _t, child = children[0]
+        result = _run_single_child(0, _t["goal"], child, parent_agent)
+        results.append(result)
+    else:
+        # Batch -- run in parallel with per-task progress lines
+        completed_count = 0
+        spinner_ref = getattr(parent_agent, "_delegate_spinner", None)
 
     with ThreadPoolExecutor(max_workers=max_children) as executor:
         futures = {}
@@ -3040,6 +3075,24 @@ DELEGATE_TASK_SCHEMA = {
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
             },
+            "background": {
+                "type": "boolean",
+                "description": (
+                    "Run the subagent asynchronously in the BACKGROUND "
+                    "instead of blocking this turn. When true, delegate_task "
+                    "returns immediately with a delegation_id; you and the "
+                    "user keep working while the subagent runs, and its full "
+                    "result re-enters the conversation as a new message when "
+                    "it finishes (similar to terminal background=true + "
+                    "notify_on_complete). The re-injected message includes the "
+                    "original goal/context so you can act on it even after "
+                    "moving on. Single-task only — cannot be combined with the "
+                    "'tasks' batch array. Use for long-running independent work "
+                    "the user shouldn't have to wait on (research, builds, "
+                    "multi-step investigations). Do NOT poll or wait after "
+                    "dispatching — just continue; the result will come to you."
+                ),
+            },
             "acp_command": {
                 "type": "string",
                 "description": (
@@ -3094,7 +3147,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
-        async_mode=bool(args.get("async_mode", False)),
+        background=args.get("background"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,
