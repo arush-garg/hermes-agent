@@ -1616,6 +1616,7 @@ class TestRunJobConfigEnvVarExpansion:
     def test_fallback_model_env_ref_in_config_yaml_is_expanded(self, tmp_path, monkeypatch):
         """${VAR} in config.yaml fallback_providers model: is expanded."""
         (tmp_path / "config.yaml").write_text(
+            "model: primary-model\n"
             "fallback_providers:\n"
             "  - provider: openrouter\n"
             "    model: ${_HERMES_TEST_CRON_FALLBACK}\n"
@@ -1670,6 +1671,238 @@ class TestRunJobConfigEnvVarExpansion:
         kwargs = mock_agent_cls.call_args.kwargs
         # Unresolved refs are kept verbatim — _expand_env_vars contract
         assert kwargs["model"] == "${_HERMES_TEST_CRON_UNSET_VAR}"
+
+
+class TestRunJobModelResolution:
+    """Verify defensive model resolution for jobs stored with ``model: null``.
+
+    Issue #23979: a cron job created without an explicit model is stored as
+    ``model: null``. At fire time the scheduler must:
+      1. fall back to ``HERMES_MODEL`` env if set,
+      2. else fall back to config.yaml ``model.default`` if set,
+      3. else fail fast with an actionable error — never let an empty string
+         reach the provider where it surfaces as an opaque 400.
+    """
+
+    _RUNTIME = {
+        "api_key": "test-key",
+        "base_url": "https://example.invalid/v1",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+    }
+
+    def test_null_job_model_falls_back_to_env(self, tmp_path, monkeypatch):
+        """``model: null`` on the job uses HERMES_MODEL when set."""
+        (tmp_path / "config.yaml").write_text("")
+        monkeypatch.setenv("HERMES_MODEL", "env-model")
+
+        job = {"id": "null-model-job", "name": "null model", "prompt": "hi", "model": None}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert mock_agent_cls.call_args.kwargs["model"] == "env-model"
+
+    def test_null_job_model_falls_back_to_config_default(self, tmp_path, monkeypatch):
+        """``model: null`` on the job uses config.yaml model.default when env is empty."""
+        (tmp_path / "config.yaml").write_text("model:\n  default: config-default-model\n")
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+
+        job = {"id": "cfg-default-job", "name": "cfg default", "prompt": "hi", "model": None}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert mock_agent_cls.call_args.kwargs["model"] == "config-default-model"
+
+    def test_explicit_null_model_block_in_config_does_not_overwrite_env(self, tmp_path, monkeypatch):
+        """``model: null`` in config.yaml must not overwrite a resolved HERMES_MODEL.
+
+        Regression: before #23979 the resolver coerced ``model: null`` to
+        ``{}`` only via the ``.get("model", {})`` default — which does not
+        fire when the key is present with a None value. The resolver then
+        skipped both branches and kept the env value, but a similar
+        ``model: {default: null}`` shape would call ``.get("default", model)``
+        which returns ``None`` and clobbered ``model``.
+        """
+        (tmp_path / "config.yaml").write_text("model:\n  default: null\n")
+        monkeypatch.setenv("HERMES_MODEL", "env-model")
+
+        job = {"id": "null-default-job", "name": "null default", "prompt": "hi", "model": None}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert mock_agent_cls.call_args.kwargs["model"] == "env-model"
+
+    def test_no_model_anywhere_fails_with_actionable_error(self, tmp_path, monkeypatch):
+        """All three sources empty → fail fast with a clear message, not an opaque 400."""
+        (tmp_path / "config.yaml").write_text("")
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+
+        job = {"id": "no-model-job", "name": "no model anywhere", "prompt": "hi", "model": None}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            success, _, _, error = run_job(job)
+
+        assert success is False
+        assert error is not None
+        assert "no model configured" in error
+        # AIAgent must never be constructed with an empty model — that's
+        # precisely the bug we're guarding against.
+        mock_agent_cls.assert_not_called()
+
+    def test_job_model_update_takes_effect_on_next_run(self, tmp_path, monkeypatch):
+        """The per-job model is re-read every tick — no in-memory cache.
+
+        This is the property the original bug report asked for. We verify
+        it by calling run_job twice with the same job dict mutated between
+        calls, simulating the storage update flow.
+        """
+        (tmp_path / "config.yaml").write_text("")
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+
+        job = {"id": "updated-model-job", "name": "updated", "prompt": "hi", "model": "first-model"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            run_job(job)
+            assert mock_agent_cls.call_args.kwargs["model"] == "first-model"
+
+            job["model"] = "second-model"  # simulates jobs.json being rewritten
+            run_job(job)
+            assert mock_agent_cls.call_args.kwargs["model"] == "second-model"
+
+    def test_config_model_as_plain_string(self, tmp_path, monkeypatch):
+        """config.yaml ``model:`` given as a bare string is used directly."""
+        (tmp_path / "config.yaml").write_text("model: string-form-model\n")
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+
+        job = {"id": "string-cfg-job", "name": "string cfg", "prompt": "hi", "model": None}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert mock_agent_cls.call_args.kwargs["model"] == "string-form-model"
+
+    def test_config_model_alias_key_resolves(self, tmp_path, monkeypatch):
+        """A ``model: {model: ...}`` alias key resolves like the CLI sibling.
+
+        ``hermes_cli/oneshot.py``, ``fallback_cmd.py`` and ``prompt_size.py``
+        all accept ``model.model`` as an alias for ``model.default``. The cron
+        resolver mirrors that so a config that works in the CLI also works in
+        cron.
+        """
+        (tmp_path / "config.yaml").write_text("model:\n  model: alias-key-model\n")
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+
+        job = {"id": "alias-job", "name": "alias", "prompt": "hi", "model": None}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert mock_agent_cls.call_args.kwargs["model"] == "alias-key-model"
+
+    def test_corrupt_config_yaml_does_not_crash_with_job_model(self, tmp_path, monkeypatch):
+        """A malformed config.yaml degrades gracefully when the job has a model."""
+        (tmp_path / "config.yaml").write_text("{{{invalid yaml!!!")
+        monkeypatch.delenv("HERMES_MODEL", raising=False)
+
+        job = {"id": "corrupt-job", "name": "corrupt", "prompt": "hi", "model": "explicit-model"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        # Explicit job model survives the corrupt-config fall-through.
+        assert success is True
+        assert error is None
+        assert mock_agent_cls.call_args.kwargs["model"] == "explicit-model"
 
 
 class TestRunJobSkillBacked:
@@ -2473,15 +2706,20 @@ class TestParallelTick:
 
 
 class TestDeliverResultTimeoutCancelsFuture:
-    """When future.result(timeout=60) raises TimeoutError in the live
-    adapter delivery path, _deliver_result must cancel the orphan
-    coroutine so it cannot duplicate-send after the standalone fallback.
+    """When future.result(timeout=60) raises TimeoutError in the live adapter
+    delivery path, the outcome depends on whether the coroutine was already
+    running.  future.cancel() returning False means it is in flight on the wire
+    (cannot be un-sent) → treat as DELIVERED and skip the standalone fallback to
+    avoid a duplicate (#38922).  future.cancel() returning True means it never
+    started (wedged loop) → nothing was sent, so fall through to standalone or
+    the message is silently dropped.  Regression for #38922.
     """
 
-    def test_live_adapter_timeout_cancels_future_and_falls_back(self):
-        """End-to-end: live adapter hangs past the 60s budget, _deliver_result
-        patches the timeout down to a fast value, confirms future.cancel() fires,
-        and verifies the standalone fallback path still delivers."""
+    def test_live_adapter_timeout_assumes_delivered_no_duplicate(self):
+        """End-to-end: live adapter confirmation times out past the 60s budget.
+        The fix (#38922) treats the send as already-dispatched/delivered and
+        does NOT run the standalone fallback — otherwise the message is sent
+        twice."""
         from gateway.config import Platform
         from concurrent.futures import Future
 
@@ -2497,18 +2735,19 @@ class TestDeliverResultTimeoutCancelsFuture:
         loop = MagicMock()
         loop.is_running.return_value = True
 
-        # A real concurrent.futures.Future so .cancel() has real semantics,
-        # but we override .result() to raise TimeoutError exactly like the
-        # 60s wait firing in production.
+        # A real concurrent.futures.Future, but we override .result() to raise
+        # TimeoutError exactly like the 60s wait firing in production.  We make
+        # .cancel() return False to simulate the coroutine being ALREADY RUNNING
+        # on the gateway loop (in flight on the wire) — the case where the send
+        # cannot be un-sent and a standalone resend would be a duplicate.
         captured_future = Future()
         cancel_calls = []
-        original_cancel = captured_future.cancel
 
-        def tracking_cancel():
+        def in_flight_cancel():
             cancel_calls.append(True)
-            return original_cancel()
+            return False  # already running — cannot be cancelled
 
-        captured_future.cancel = tracking_cancel
+        captured_future.cancel = in_flight_cancel
         captured_future.result = MagicMock(side_effect=TimeoutError("timed out"))
 
         def fake_run_coro(coro, _loop):
@@ -2534,11 +2773,121 @@ class TestDeliverResultTimeoutCancelsFuture:
                 loop=loop,
             )
 
-        # 1. The orphan future was cancelled on timeout (the bug fix)
-        assert cancel_calls == [True], "future.cancel() must fire on TimeoutError"
-        # 2. The standalone fallback delivered — no double send, no silent drop
+        # 1. cancel() was attempted (returned False = in flight).
+        assert cancel_calls == [True], "future.cancel() should be attempted on TimeoutError"
+        # 2. Delivery is reported successful (no error string returned).
         assert result is None, f"expected successful delivery, got error: {result!r}"
+        # 3. The standalone fallback must NOT run — that is the #38922 fix:
+        #    an in-flight confirmation timeout is assume-delivered, not a resend.
+        standalone_send.assert_not_awaited()
+
+    def test_live_adapter_timeout_before_dispatch_falls_back_to_standalone(self):
+        """When the coroutine never started (loop wedged) — future.cancel()
+        returns True — nothing was sent, so _deliver_result MUST fall through
+        to the standalone path rather than silently dropping the message.
+        This is the inverse of the assume-delivered case and guards against the
+        wedged-loop silent drop."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        captured_future = Future()
+        cancel_calls = []
+
+        def never_dispatched_cancel():
+            cancel_calls.append(True)
+            return True  # callback never ran — successfully cancelled
+
+        captured_future.cancel = never_dispatched_cancel
+        captured_future.result = MagicMock(side_effect=TimeoutError("timed out"))
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return captured_future
+
+        job = {
+            "id": "timeout-undispatched-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        standalone_send = AsyncMock(return_value={"success": True})
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        assert cancel_calls == [True], "future.cancel() should be attempted"
+        # The standalone path MUST run — the message was never sent.
         standalone_send.assert_awaited_once()
+        assert result is None, f"standalone should have delivered, got: {result!r}"
+
+    def test_live_adapter_real_exception_falls_back_to_standalone(self):
+        """A non-timeout send Exception (real failure, not a slow confirmation)
+        must fall through to the standalone path so the message is still
+        delivered.  Guards the `except Exception: raise` branch — the bug class
+        where broadening the timeout handler to swallow all exceptions would
+        silently drop messages."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        captured_future = Future()
+        captured_future.result = MagicMock(side_effect=RuntimeError("adapter exploded"))
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return captured_future
+
+        job = {
+            "id": "send-error-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        standalone_send = AsyncMock(return_value={"success": True})
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        # A real exception must NOT be assume-delivered: standalone runs.
+        standalone_send.assert_awaited_once()
+        assert result is None, f"standalone should have delivered, got: {result!r}"
 
     def test_live_adapter_thread_fallback_records_delivery_error(self):
         """A cron target with an explicit topic must not be marked clean if
@@ -2598,6 +2947,123 @@ class TestDeliverResultTimeoutCancelsFuture:
             "Hello world",
             metadata={"thread_id": "7072"},
         )
+
+
+class TestDeliverResultLiveAdapterUnconfirmed:
+    """Regression for #47056.
+
+    When a live adapter's send() returns ``None`` (swallowed exception / busy
+    platform) or a result object that lacks an explicit ``success`` attribute
+    (bare dict / partial object), the scheduler must NOT log "delivered via
+    live adapter" and silently drop the message.  Every unconfirmed shape must
+    fall through to the standalone delivery path so the message actually
+    arrives.  The pre-fix check ``send_result is None or not getattr(...,
+    "success", True)`` let a ``.success``-less object default to True = silent
+    success.
+    """
+
+    def _run(self, send_value):
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = send_value
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        completed_future = Future()
+        completed_future.set_result(send_value)
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            return completed_future
+
+        job = {
+            "id": "unconfirmed-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        standalone_send = AsyncMock(return_value={"success": True})
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+        return result, standalone_send
+
+    def test_none_result_falls_through_to_standalone(self):
+        """send() returning None must trigger the standalone fallback, not a
+        silent "delivered" log."""
+        result, standalone_send = self._run(None)
+        assert result is None, f"standalone should have delivered, got: {result!r}"
+        standalone_send.assert_awaited_once()
+
+    def test_result_missing_success_attr_falls_through(self):
+        """A result object with no ``success`` attribute is a contract
+        violation and must NOT be counted as delivered (it defaulted to True
+        before the fix)."""
+        class _NoSuccess:
+            pass
+
+        result, standalone_send = self._run(_NoSuccess())
+        assert result is None, f"standalone should have delivered, got: {result!r}"
+        standalone_send.assert_awaited_once()
+
+    def test_confirmed_success_does_not_fall_through(self):
+        """A genuine SendResult(success=True) is confirmed — the standalone
+        path must NOT run (no duplicate)."""
+        result, standalone_send = self._run(MagicMock(success=True, raw_response=None))
+        assert result is None
+        standalone_send.assert_not_awaited()
+
+
+class TestDeliverOriginUnresolvableIsLocal:
+    """Regression for #43014.
+
+    A cron job created in a CLI session has no {platform, chat_id} origin.
+    With ``deliver=origin`` (or auto-detect / deliver=None) and no configured
+    platform home channel, delivery is unresolvable — but that is the EXPECTED
+    state for CLI jobs, not an error.  _deliver_result must return None (treat
+    as local; output stays in last_output), not the "no delivery target
+    resolved" error string that previously fired on every run.
+    """
+
+    def _deliver(self, job, monkeypatch):
+        import cron.scheduler as sched
+        # No home channel for any platform → origin is unresolvable.
+        monkeypatch.setattr(sched, "_get_home_target_chat_id", lambda *_: "")
+        return _deliver_result(job, "CLI bulletin")
+
+    def test_origin_with_no_home_channels_returns_none(self, monkeypatch):
+        job = {"id": "cli-job", "deliver": "origin", "origin": "cli-session-provenance"}
+        assert self._deliver(job, monkeypatch) is None
+
+    def test_omitted_deliver_autodetect_returns_none(self, monkeypatch):
+        # deliver key present but None (auto-detect) previously errored with
+        # "no delivery target resolved for deliver=None".
+        job = {"id": "cli-job", "deliver": None, "origin": "cli-session-provenance"}
+        assert self._deliver(job, monkeypatch) is None
+
+    def test_explicit_platform_with_no_channel_still_errors(self, monkeypatch):
+        # A concrete platform target that cannot resolve is still a real error
+        # (this must NOT be silently swallowed by the origin→local fallback).
+        job = {"id": "tg-job", "deliver": "telegram"}
+        result = self._deliver(job, monkeypatch)
+        assert result is not None
+        assert "no delivery target resolved" in result
 
 
 class TestSendMediaTimeoutCancelsFuture:
