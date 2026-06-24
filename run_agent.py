@@ -271,12 +271,9 @@ def _pool_may_recover_from_rate_limit(
         return False
     if not pool.has_available():
         return False
-    base_url_lower = str(base_url or "").strip().lower()
-    provider_lower = (provider or "").strip().lower()
-    if (
-        provider_lower == "google-gemini-cli"
-        or base_url_lower.startswith("cloudcode-pa://")
-    ):
+    # CloudCode / Gemini CLI quotas are account-wide — all pool entries share
+    # the same throttle window, so rotation can't recover.  Prefer fallback.
+    if str(base_url or "").startswith("cloudcode-pa://"):
         return False
     return len(pool.entries()) > 1
 
@@ -3291,6 +3288,22 @@ class AIAgent:
         except Exception:
             pass
 
+        # 7. Finalize the owned SQLite session row unless this agent is only a
+        # temporary helper that deliberately handed session ownership forward
+        # (manual compression helpers that rotate to a continuation session_id,
+        # or background-review forks that share the live parent's session_id and
+        # must leave it open). end_session() is first-reason-wins and no-ops on
+        # an already-ended row, so this never clobbers a 'compression' /
+        # 'cron_complete' / 'cli_close' reason set by an earlier terminal path.
+        try:
+            if getattr(self, "_end_session_on_close", True):
+                session_db = getattr(self, "_session_db", None)
+                session_id = getattr(self, "session_id", None)
+                if session_db and session_id:
+                    session_db.end_session(session_id, "agent_close")
+        except Exception:
+            pass
+
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
         """
         Recover todo state from conversation history.
@@ -3597,6 +3610,9 @@ class AIAgent:
         try:
             import httpx as _httpx
             import socket as _socket
+
+            if "api.githubcopilot.com" in str(base_url or "").lower():
+                return _httpx.Client()
 
             _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
             if hasattr(_socket, "TCP_KEEPIDLE"):
@@ -4115,8 +4131,7 @@ class AIAgent:
         if pool is None:
             return False
         if (
-            self.provider == "google-gemini-cli"
-            or str(getattr(self, "base_url", "")).startswith("cloudcode-pa://")
+            str(getattr(self, "base_url", "")).startswith("cloudcode-pa://")
         ):
             # CloudCode/Gemini quota windows are usually account-level throttles.
             # Prefer the configured fallback immediately instead of waiting out

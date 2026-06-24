@@ -7,9 +7,73 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
+
+
+class TestPerJobToolsetMcpMerge:
+    """A per-job enabled_toolsets allowlist must not silently drop MCP servers."""
+
+    CFG = {
+        "mcp_servers": {
+            "finnhub": {"enabled": True},
+            "playwright": {"enabled": True},
+            "disabled_one": {"enabled": False},
+            "string_enabled": {"enabled": "true"},
+            "not_a_dict": "ignored",
+        }
+    }
+
+    def _enabled_names(self):
+        return {"finnhub", "playwright", "string_enabled"}
+
+    def test_native_only_list_gets_all_enabled_mcp_servers(self):
+        result = _merge_mcp_into_per_job_toolsets(["web", "terminal"], self.CFG)
+        assert result[:2] == ["web", "terminal"]
+        assert set(result) == {"web", "terminal"} | self._enabled_names()
+
+    def test_disabled_servers_are_not_added(self):
+        result = _merge_mcp_into_per_job_toolsets(["web"], self.CFG)
+        assert "disabled_one" not in result
+
+    def test_explicit_mcp_name_is_treated_as_allowlist(self):
+        # User named one server -> add nothing further.
+        result = _merge_mcp_into_per_job_toolsets(["web", "finnhub"], self.CFG)
+        assert result == ["web", "finnhub"]
+        assert "playwright" not in result
+
+    def test_no_mcp_sentinel_opts_out_and_is_stripped(self):
+        result = _merge_mcp_into_per_job_toolsets(["web", "no_mcp"], self.CFG)
+        assert result == ["web"]
+        assert not (set(result) & self._enabled_names())
+
+    def test_no_mcp_config_adds_nothing(self):
+        result = _merge_mcp_into_per_job_toolsets(["web"], {})
+        assert result == ["web"]
+
+    def test_no_duplicate_when_listed_name_also_globally_enabled(self):
+        result = _merge_mcp_into_per_job_toolsets(["finnhub", "finnhub"], self.CFG)
+        assert result.count("finnhub") == 2  # input dups preserved, none added
+
+    def test_resolver_uses_merge_for_per_job_lists(self):
+        job = {"enabled_toolsets": ["web", "terminal"]}
+        result = _resolve_cron_enabled_toolsets(job, self.CFG)
+        assert set(result) == {"web", "terminal"} | self._enabled_names()
+
+    def test_resolver_empty_per_job_falls_through_to_platform(self):
+        # No per-job list -> must delegate to _get_platform_tools (the platform
+        # fallback), NOT the per-job merge. Stub the platform resolver and assert
+        # it is the path taken and its result is returned.
+        job = {"enabled_toolsets": None}
+        sentinel = ["web", "finnhub"]
+        with patch("hermes_cli.tools_config._get_platform_tools",
+                   return_value=set(sentinel)) as m_platform:
+            result = _resolve_cron_enabled_toolsets(job, self.CFG)
+        m_platform.assert_called_once()
+        # _get_platform_tools args: (cfg, "cron")
+        assert m_platform.call_args[0][1] == "cron"
+        assert set(result) == set(sentinel)
 
 
 class TestResolveOrigin:
@@ -625,9 +689,15 @@ class TestDeliverResultWrapping:
 
         # run_coroutine_threadsafe returns concurrent.futures.Future (has timeout kwarg)
         def fake_run_coro(coro, _loop):
+            # Actually run the routed coroutine (router._deliver_to_platform)
+            # so the underlying adapter.send is invoked, then wrap the real
+            # result in a completed Future (matching run_coroutine_threadsafe).
+            import asyncio as _asyncio
             future = Future()
-            future.set_result(MagicMock(success=True))
-            coro.close()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
             return future
 
         job = {
@@ -676,9 +746,15 @@ class TestDeliverResultWrapping:
         loop.is_running.return_value = True
 
         def fake_run_coro(coro, _loop):
+            # Actually run the routed coroutine (router._deliver_to_platform)
+            # so the underlying adapter.send is invoked, then wrap the real
+            # result in a completed Future (matching run_coroutine_threadsafe).
+            import asyncio as _asyncio
             future = Future()
-            future.set_result(MagicMock(success=True))
-            coro.close()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
             return future
 
         job = {
@@ -719,9 +795,15 @@ class TestDeliverResultWrapping:
         loop.is_running.return_value = True
 
         def fake_run_coro(coro, _loop):
+            # Actually run the routed coroutine (router._deliver_to_platform)
+            # so the underlying adapter.send is invoked, then wrap the real
+            # result in a completed Future (matching run_coroutine_threadsafe).
+            import asyncio as _asyncio
             future = Future()
-            future.set_result(MagicMock(success=True))
-            coro.close()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
             return future
 
         job = {
@@ -763,9 +845,15 @@ class TestDeliverResultWrapping:
         loop.is_running.return_value = True
 
         def fake_run_coro(coro, _loop):
+            # Actually run the routed coroutine (router._deliver_to_platform)
+            # so the underlying adapter.send is invoked, then wrap the real
+            # result in a completed Future (matching run_coroutine_threadsafe).
+            import asyncio as _asyncio
             future = Future()
-            future.set_result(MagicMock(success=True))
-            coro.close()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
             return future
 
         job = {
@@ -1305,6 +1393,52 @@ class TestRunJobSessionPersistence:
         assert success is True
         assert error is None
         assert final_response == "all good"
+
+    def test_run_job_delivers_max_iteration_fallback_summary(self, tmp_path):
+        """Cron should deliver a usable max-iteration fallback summary.
+
+        A cron run can exhaust the iteration budget, get a final text summary
+        from the no-tools fallback call, and still have ``completed=False`` in
+        the generic agent result. That should not make cron raise the report
+        text as a RuntimeError.
+        """
+        job = {
+            "id": "summary-job",
+            "name": "summary",
+            "prompt": "finish the report",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "final fallback report",
+                "completed": False,
+                "failed": False,
+                "turn_exit_reason": "max_iterations_reached(60/60)",
+            }
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "final fallback report"
+        assert "final fallback report" in output
+        assert "(FAILED)" not in output
 
     def test_tick_marks_empty_response_as_error(self, tmp_path):
         """When run_job returns success=True but final_response is empty,
@@ -2889,22 +3023,19 @@ class TestDeliverResultTimeoutCancelsFuture:
         standalone_send.assert_awaited_once()
         assert result is None, f"standalone should have delivered, got: {result!r}"
 
-    def test_live_adapter_thread_fallback_records_delivery_error(self):
-        """A cron target with an explicit topic must not be marked clean if
-        Telegram falls back to the base chat after "thread not found".
+    def test_live_adapter_private_dm_topic_routes_via_direct_messages_topic_id(self):
+        """#22773: a cron target to a PRIVATE Telegram chat with a numeric topic
+        id must be routed via ``direct_messages_topic_id`` (Bot API DM topics),
+        NOT a bare ``message_thread_id`` (which Bot API 10.0 rejects / mis-routes
+        to General).  The cron live-adapter path routes through the gateway
+        DeliveryRouter, which applies the same three-mode routing as live
+        messages.
         """
         from gateway.config import Platform
         from gateway.platforms.base import SendResult
         from concurrent.futures import Future
 
-        send_result = SendResult(
-            success=True,
-            message_id="42",
-            raw_response={
-                "requested_thread_id": 7072,
-                "thread_fallback": True,
-            },
-        )
+        send_result = SendResult(success=True, message_id="42")
         adapter = MagicMock()
         adapter.send = AsyncMock(return_value=send_result)
 
@@ -2912,21 +3043,25 @@ class TestDeliverResultTimeoutCancelsFuture:
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        # DeliveryRouter consults the silence-narration config flag.
+        mock_cfg.filter_silence_narration = False
 
         loop = MagicMock()
         loop.is_running.return_value = True
 
         job = {
-            "id": "thread-fallback-job",
-            "deliver": "telegram:226252250:7072",
+            "id": "dm-topic-job",
+            "deliver": "telegram:226252250:7072",  # private chat + numeric topic
         }
 
-        completed_future = Future()
-        completed_future.set_result(send_result)
-
         def fake_run_coro(coro, _loop):
-            coro.close()
-            return completed_future
+            import asyncio as _asyncio
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
@@ -2938,15 +3073,141 @@ class TestDeliverResultTimeoutCancelsFuture:
                 loop=loop,
             )
 
-        assert result == (
-            "configured thread_id 7072 for telegram:226252250 was not found; "
-            "delivered without thread_id"
+        assert result is None, f"expected clean delivery, got: {result!r}"
+        adapter.send.assert_called_once()
+        sent_chat_id, sent_text = adapter.send.call_args[0][0], adapter.send.call_args[0][1]
+        sent_metadata = adapter.send.call_args[1]["metadata"]
+        assert sent_chat_id == "226252250"
+        assert sent_text == "Hello world"
+        # The topic must be addressed via direct_messages_topic_id, and a bare
+        # message_thread_id must NOT be set (that is the Bot API 10.0 bug).
+        assert str(sent_metadata.get("direct_messages_topic_id")) == "7072"
+        assert not sent_metadata.get("message_thread_id")
+
+    def test_live_adapter_private_dm_topic_media_routes_via_direct_messages_topic_id(self, tmp_path, monkeypatch):
+        """#22773 (media): MEDIA attachments to a private DM topic must also be
+        routed via ``direct_messages_topic_id``, not a bare ``message_thread_id``
+        — the media path previously used the bare thread_id and landed
+        attachments in the General lane."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from concurrent.futures import Future
+
+        media_root = tmp_path / "media-cache"
+        media_file = media_root / "chart.png"
+        media_file.parent.mkdir(parents=True, exist_ok=True)
+        media_file.write_bytes(b"media")
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (media_root,),
         )
-        adapter.send.assert_called_once_with(
-            "226252250",
-            "Hello world",
-            metadata={"thread_id": "7072"},
+        media_path = media_file.resolve()
+
+        adapter = AsyncMock()
+        adapter.send.return_value = SendResult(success=True, message_id="1")
+        adapter.send_image_file.return_value = SendResult(success=True, message_id="2")
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.filter_silence_narration = False
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {
+            "id": "dm-topic-media-job",
+            "deliver": "telegram:226252250:7072",  # private chat + numeric topic
+        }
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                f"Chart attached\nMEDIA:{media_path}",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        adapter.send_image_file.assert_called_once()
+        media_metadata = adapter.send_image_file.call_args[1]["metadata"]
+        assert str(media_metadata.get("direct_messages_topic_id")) == "7072"
+        assert not media_metadata.get("message_thread_id")
+        assert not media_metadata.get("thread_id")
+
+    def test_live_adapter_forum_thread_fallback_records_delivery_error(self):
+        """A forum/supergroup cron target whose configured topic is gone must
+        NOT be reported as a clean delivery: when the Telegram adapter falls
+        back to the base chat (raw_response thread_fallback), the scheduler must
+        record the "delivered without thread_id" delivery error.  Regression
+        coverage for the thread_fallback-recording branch (kept distinct from
+        the #22773 routing fix)."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from concurrent.futures import Future
+
+        send_result = SendResult(
+            success=True,
+            message_id="42",
+            raw_response={
+                "requested_thread_id": 17,
+                "thread_fallback": True,
+            },
         )
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=send_result)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.filter_silence_narration = False
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        # Forum supergroup (negative chat_id) + numeric topic → mode 1
+        # (message_thread_id); NOT a private DM topic.
+        job = {
+            "id": "forum-fallback-job",
+            "deliver": "telegram:-1001234567890:17",
+        }
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        assert result is not None
+        assert "was not found; delivered without thread_id" in result
+        # Forum target routes via message_thread_id (mode 1), not DM-topic.
+        sent_metadata = adapter.send.call_args[1]["metadata"]
+        assert not sent_metadata.get("direct_messages_topic_id")
 
 
 class TestDeliverResultLiveAdapterUnconfirmed:
