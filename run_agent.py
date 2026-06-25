@@ -62,6 +62,12 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
+# Ensure project root is on sys.path — critical when imported lazily from
+# gateway handlers or daemon threads that may not have it set.
+_PROJECT_ROOT = str(Path(__file__).resolve().parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 from hermes_constants import get_hermes_home
 
 

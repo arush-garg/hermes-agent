@@ -2416,75 +2416,75 @@ def delegate_task(
                                             _child_by_index.get(idx), "_delegate_role", None
                                         ),
                                     }
-                    else:
-                        entry = {
-                            "task_index": idx,
-                            "status": "interrupted",
-                            "summary": None,
-                            "error": "Parent agent interrupted — child did not finish in time",
-                            "api_calls": 0,
-                            "duration_seconds": 0,
-                            "_child_role": getattr(
-                                _child_by_index.get(idx), "_delegate_role", None
-                            ),
-                        }
-                    results.append(entry)
-                    completed_count += 1
-                break
+                            else:
+                                entry = {
+                                    "task_index": idx,
+                                    "status": "interrupted",
+                                    "summary": None,
+                                    "error": "Parent agent interrupted — child did not finish in time",
+                                    "api_calls": 0,
+                                    "duration_seconds": 0,
+                                    "_child_role": getattr(
+                                        _child_by_index.get(idx), "_delegate_role", None
+                                    ),
+                                }
+                            results.append(entry)
+                            completed_count += 1
+                        break
 
-            from concurrent.futures import wait as _cf_wait, FIRST_COMPLETED
+                    from concurrent.futures import wait as _cf_wait, FIRST_COMPLETED
 
-            done, pending = _cf_wait(
-                pending, timeout=0.5, return_when=FIRST_COMPLETED
-            )
-            for future in done:
-                try:
-                    entry = future.result()
-                except Exception as exc:
-                    idx = futures[future]
-                    entry = {
-                        "task_index": idx,
-                        "status": "error",
-                        "summary": None,
-                        "error": str(exc),
-                        "api_calls": 0,
-                        "duration_seconds": 0,
-                        "_child_role": getattr(
-                            _child_by_index.get(idx), "_delegate_role", None
-                        ),
-                    }
-                results.append(entry)
-                completed_count += 1
+                    done, pending = _cf_wait(
+                        pending, timeout=0.5, return_when=FIRST_COMPLETED
+                    )
+                    for future in done:
+                        try:
+                            entry = future.result()
+                        except Exception as exc:
+                            idx = futures[future]
+                            entry = {
+                                "task_index": idx,
+                                "status": "error",
+                                "summary": None,
+                                "error": str(exc),
+                                "api_calls": 0,
+                                "duration_seconds": 0,
+                                "_child_role": getattr(
+                                    _child_by_index.get(idx), "_delegate_role", None
+                                ),
+                            }
+                        results.append(entry)
+                        completed_count += 1
 
-                # Print per-task completion line above the spinner
-                idx = entry["task_index"]
-                label = (
-                    task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
-                )
-                dur = entry.get("duration_seconds", 0)
-                status = entry.get("status", "?")
-                icon = "✓" if status == "completed" else "✗"
-                remaining = n_tasks - completed_count
-                completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
-                if spinner_ref:
-                    try:
-                        spinner_ref.print_above(completion_line)
-                    except Exception:
-                        print(f"  {completion_line}")
-                else:
-                    print(f"  {completion_line}")
-
-                # Update spinner text to show remaining count
-                if spinner_ref and remaining > 0:
-                    try:
-                        spinner_ref.update_text(
-                            f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining"
+                        # Print per-task completion line above the spinner
+                        idx = entry["task_index"]
+                        label = (
+                            task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
                         )
-                    except Exception as e:
-                        logger.debug("Spinner update_text failed: %s", e)
+                        dur = entry.get("duration_seconds", 0)
+                        status = entry.get("status", "?")
+                        icon = "✓" if status == "completed" else "✗"
+                        remaining = n_tasks - completed_count
+                        completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
+                        if spinner_ref:
+                            try:
+                                spinner_ref.print_above(completion_line)
+                            except Exception:
+                                print(f"  {completion_line}")
+                        else:
+                            print(f"  {completion_line}")
 
-            # Sort by task_index so results match input order
-            results.sort(key=lambda r: r["task_index"])
+                        # Update spinner text to show remaining count
+                        if spinner_ref and remaining > 0:
+                            try:
+                                spinner_ref.update_text(
+                                    f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining"
+                                )
+                            except Exception as e:
+                                logger.debug("Spinner update_text failed: %s", e)
+
+                # Sort by task_index so results match input order
+                results.sort(key=lambda r: r["task_index"])
 
         # Notify parent's memory provider of delegation outcomes
         if (
