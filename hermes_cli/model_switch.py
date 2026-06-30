@@ -1401,7 +1401,29 @@ def list_authenticated_providers(
         except Exception:
             return False
 
-    data = fetch_models_dev()
+    data = fetch_models_dev(async_fetch=True)
+
+    # Pre-fetch all provider model lists in parallel to avoid blocking on sequential fetches
+    from hermes_cli.models import cached_provider_model_ids_batch
+    _parallel_fetch_slugs = []
+    _mdev_to_hermes = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
+
+    # 1. Hermes-mapped providers
+    for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
+        _parallel_fetch_slugs.append(hermes_id)
+    # 2. Hermes-only overlays
+    from hermes_cli.providers import HERMES_OVERLAYS
+    for pid in HERMES_OVERLAYS:
+        _parallel_fetch_slugs.append(_mdev_to_hermes.get(pid, pid))
+    # 3. Canonical providers
+    try:
+        from hermes_cli.models import CANONICAL_PROVIDERS as _canon_provs
+        for _cp in _canon_provs:
+            _parallel_fetch_slugs.append(_cp.slug)
+    except ImportError:
+        pass
+
+    _pre_fetched_model_ids = cached_provider_model_ids_batch(_parallel_fetch_slugs)
 
     # Build curated model lists keyed by hermes provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
@@ -1501,11 +1523,11 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Unified pathway: route through cached_provider_model_ids() so the
+        # Unified pathway: route through the pre-fetched model IDs so the
         # /model picker sees the SAME list `hermes model` would build, with
         # disk caching to keep the picker open snappy. Falls back to the
         # curated static list when the live fetcher returns nothing.
-        model_ids = cached_provider_model_ids(hermes_id)
+        model_ids = _pre_fetched_model_ids.get(hermes_id, [])
         if not model_ids:
             model_ids = curated.get(hermes_id, [])
             if hermes_id in _MODELS_DEV_PREFERRED:
@@ -1864,7 +1886,8 @@ def list_authenticated_providers(
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
-            if api_url and api_key and discover:
+            if api_url and discover and (api_key or not models_list):
+                _live_fetched: Optional[list[str]] = None
                 try:
                     from hermes_cli.models import (
                         fetch_api_models as _fam,
@@ -1874,6 +1897,7 @@ def list_authenticated_providers(
                     )
                     import time as _time
                     _cache = _load_provider_models_cache()
+                    _cache_key = f"user:{ep_name}"
                     _entry = _cache.get(_cache_key)
                     _now = _time.time()
                     _cache_fresh = (

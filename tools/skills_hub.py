@@ -2299,13 +2299,30 @@ class ClawHubSource(SkillSource):
             if cursor:
                 params["cursor"] = cursor
 
-            try:
-                resp = httpx.get(f"{self.BASE_URL}/skills", params=params, timeout=30)
-                if resp.status_code != 200:
+            # Retry transient server errors (503/502/504/429) with
+            # exponential backoff. The API occasionally flakes mid-crawl;
+            # retrying lets us complete the full catalog walk without
+            # shipping a degenerate index.
+            page_data: Optional[Any] = None
+            for page_attempt in range(4):
+                try:
+                    resp = httpx.get(f"{self.BASE_URL}/skills", params=params, timeout=30)
+                    if resp.status_code == 200:
+                        page_data = resp.json()
+                        break
+                    # Transient — retry with backoff
+                    if resp.status_code in (429, 502, 503, 504):
+                        time.sleep(1.0 * (2 ** page_attempt))
+                        continue
+                    break  # Non-retryable status
+                except (httpx.HTTPError, json.JSONDecodeError):
+                    if page_attempt < 3:
+                        time.sleep(1.0 * (2 ** page_attempt))
+                        continue
                     break
-                data = resp.json()
-            except (httpx.HTTPError, json.JSONDecodeError):
+            if page_data is None:
                 break
+            data = page_data
 
             items = data.get("items", []) if isinstance(data, dict) else []
             if not isinstance(items, list) or not items:

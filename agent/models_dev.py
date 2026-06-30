@@ -237,7 +237,28 @@ def _save_disk_cache(data: Dict[str, Any]) -> None:
         logger.debug("Failed to save models.dev disk cache: %s", e)
 
 
-def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
+def _start_background_refetch() -> None:
+    """Spawn a background thread to refresh the models.dev registry."""
+    def _fetch():
+        try:
+            response = requests.get(MODELS_DEV_URL, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and data:
+                global _models_dev_cache, _models_dev_cache_time
+                _models_dev_cache = data
+                _models_dev_cache_time = time.time()
+                _save_disk_cache(data)
+                logger.debug("Background fetched models.dev: %d providers", len(data))
+        except Exception as e:
+            logger.debug("Background fetch for models.dev failed: %s", e)
+
+    import threading
+    t = threading.Thread(target=_fetch, daemon=True, name="mdev-bg-fetch")
+    t.start()
+
+
+def fetch_models_dev(force_refresh: bool = False, async_fetch: bool = False) -> Dict[str, Any]:
     """Fetch models.dev registry. Cache hierarchy: in-mem → disk → network.
 
     Returns the full registry dict keyed by provider ID, or empty dict on failure.
@@ -249,6 +270,8 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
          ``models.dev`` only changes when providers add new models, so a
          1 hour staleness window is acceptable (same TTL as in-mem cache).
       3. Network fetch → on success, save to disk + in-mem and return.
+         If async_fetch=True, this happens in a background thread and the function
+         returns stale disk cache (or empty dict) immediately.
       4. Network fails → fall back to ANY available disk cache (even stale)
          with a short 5 min in-mem grace period before retrying network.
 
@@ -288,7 +311,16 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
                 )
                 return _models_dev_cache
 
-    # Stage 3: network fetch.
+    # Stage 3: network fetch (or async trigger)
+    if async_fetch:
+        _start_background_refetch()
+        if not _models_dev_cache:
+            disk_data = _load_disk_cache()
+            if disk_data:
+                _models_dev_cache = disk_data
+                _models_dev_cache_time = time.time() - _MODELS_DEV_CACHE_TTL + 300
+        return _models_dev_cache or {}
+
     try:
         response = requests.get(MODELS_DEV_URL, timeout=15)
         response.raise_for_status()

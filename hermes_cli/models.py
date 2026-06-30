@@ -2634,6 +2634,37 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         pass
 
 
+def cached_provider_model_ids_batch(
+    providers: list[str],
+    *,
+    max_workers: int = 8,
+) -> dict[str, list[str]]:
+    """Fetch model IDs for multiple providers in parallel.
+
+    Uses ThreadPoolExecutor to run each provider's HTTP fetch concurrently.
+    Falls back to cache for any provider whose fetch fails.
+    """
+    import concurrent.futures
+
+    results: dict[str, list[str]] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        fut_to_provider = {
+            pool.submit(cached_provider_model_ids, p): p
+            for p in providers
+        }
+        for fut in concurrent.futures.as_completed(fut_to_provider):
+            provider = fut_to_provider[fut]
+            try:
+                results[provider] = fut.result()
+            except Exception:
+                # Synchronous fallback if thread failed
+                try:
+                    results[provider] = cached_provider_model_ids(provider)
+                except Exception:
+                    results[provider] = []
+    return results
+
+
 def _fetch_anthropic_models(
     timeout: float = 5.0,
     *,

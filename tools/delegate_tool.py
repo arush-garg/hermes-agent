@@ -1698,7 +1698,7 @@ def _run_single_child(
 
         _child_future = _timeout_executor.submit(_run_with_thread_capture)
         try:
-            result = _child_future.result(timeout=_failsafe_timeout)
+            result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
             # Signal the child to stop so its thread can exit cleanly.
             try:
@@ -1765,7 +1765,7 @@ def _run_single_child(
             if is_timeout:
                 if child_api_calls == 0:
                     _err = (
-                        f"Subagent hit failsafe timeout ({_failsafe_timeout}s) "
+                        f"Subagent hit failsafe timeout ({child_timeout}s) "
                         f"without making any API call — the child never reached "
                         f"its first LLM request and did not exit after inactivity "
                         f"interrupt (prompt construction, credential resolution, "
@@ -1775,7 +1775,7 @@ def _run_single_child(
                         _err += f" Diagnostic: {diagnostic_path}"
                 else:
                     _err = (
-                        f"Subagent hit failsafe timeout ({_failsafe_timeout}s) "
+                        f"Subagent hit failsafe timeout ({child_timeout}s) "
                         f"with {child_api_calls} API call(s) completed — child "
                         f"did not exit cleanly after inactivity interrupt."
                     )
