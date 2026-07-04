@@ -5003,8 +5003,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def _on_thinking(self, text: str) -> None:
         """Called by agent when thinking starts/stops. Updates TUI spinner."""
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+        except ImportError:
+            _invoke_hook = None
         if not text:
             self._flush_reasoning_preview(force=True)
+            if _invoke_hook:
+                _invoke_hook("on_spinner_end", text=text or "")
+        else:
+            if _invoke_hook:
+                _invoke_hook("on_spinner_start", text=text, source="thinking")
         self._spinner_text = text or ""
         self._tool_start_time = 0.0  # clear tool timer when switching to thinking
         self._invalidate()
@@ -7897,6 +7906,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             return False
 
+    def _should_handle_yolo_command_inline(self, text: str) -> bool:
+        """Return True when /yolo should be dispatched immediately while the agent is running.
+
+        /yolo toggles YOLO mode at the host level (enable_session_yolo /
+        disable_session_yolo in tools.approval) — no agent involvement needed.
+        When the agent is busy, the normal _pending_input path would queue the
+        toggle until after the agent finishes, defeating the purpose of an
+        immediate toggle.  Dispatching inline on the UI thread is safe because
+        _toggle_yolo() only touches thread-safe session state (approval.py
+        holds _lock) and prints feedback via _cprint (patch_stdout).
+        """
+        if not text or not _looks_like_slash_command(text):
+            return False
+        if not getattr(self, "_agent_running", False):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            base = text.split(None, 1)[0].lower().lstrip('/')
+            cmd = resolve_command(base)
+            return bool(cmd and cmd.name == "yolo")
+        except Exception:
+            return False
+
     def _output_console(self):
         """Use prompt_toolkit-safe Rich rendering once the TUI is live."""
         if getattr(self, "_app", None):
@@ -10462,6 +10494,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 label = label[:_pl - 3] + "..."
             self._spinner_text = f"{emoji} {label}"
             self._tool_start_time = time.monotonic()
+            # Notify plugins of spinner update
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook_tool
+                _invoke_hook_tool("on_spinner_start", text=self._spinner_text, source="tool")
+            except ImportError:
+                pass
             # Store args for stacked scrollback line on completion
             self._pending_tool_info.setdefault(function_name, []).append(
                 function_args if function_args is not None else {}
@@ -12742,6 +12780,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     # app, so without this the submitted "/steer <text>" can
                     # linger in the input area (looking unsent) and invite an
                     # accidental re-submit. See issue #34569.
+                    event.app.invalidate()
+                    return
+
+                # /yolo toggles immediately at the host level — no agent
+                # involvement needed.  Queuing through _pending_input would
+                # defer the toggle until after the agent finishes, defeating
+                # the purpose of an immediate UI-thread toggle.
+                if self._should_handle_yolo_command_inline(text):
+                    self._toggle_yolo()
+                    event.app.current_buffer.reset(append_to_history=True)
                     event.app.invalidate()
                     return
 

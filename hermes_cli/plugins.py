@@ -192,6 +192,11 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Spinner lifecycle hooks. Fired when TUI spinner text changes.
+    # on_spinner_start kwargs: text, source ("thinking" | "tool")
+    # on_spinner_end kwargs: text
+    "on_spinner_start",
+    "on_spinner_end",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

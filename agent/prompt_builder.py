@@ -287,6 +287,30 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "without acting are not acceptable."
 )
 
+# Tool-first execution approach — be proactive, use all available tools,
+# act independently before asking questions or offering options.
+TOOL_FIRST_GUIDANCE = (
+    "# Tool-first execution\n"
+    "When the user describes a problem, question, or task, your first instinct should "
+    "be to USE A TOOL — search, read, run, fetch, calculate. Never assume you already "
+    "know the answer. The execution environment has tools for every situation: use them.\n"
+    "\n"
+    "Before asking the user to clarify or choose between options, exhaust what you can "
+    "discover or decide on your own. Examples:\n"
+    "- User mentions an error → search past sessions or docs for solutions\n"
+    "- User asks about their environment → run the relevant probe command\n"
+    "- User wants to configure something → check current state with the appropriate tool\n"
+    "- User asks a factual question → verify with web search or file read\n"
+    "\n"
+    "Your available tools are the only ground truth. Trust file contents, command output, "
+    "API responses, and search results over assumptions. If a tool could answer the question "
+    "or solve the problem, use it — don't explain what you would do.\n"
+    "\n"
+    "When the path is genuinely ambiguous (multiple valid approaches with different "
+    "trade-offs the user cares about), THEN present options briefly. Otherwise, pick the "
+    "reasonable default and execute it."
+)
+
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
 TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek")
