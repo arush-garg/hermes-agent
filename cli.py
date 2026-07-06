@@ -459,6 +459,7 @@ def load_cli_config() -> Dict[str, Any]:
             "reasoning_full": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
+            "shell_execution_timeout": 30,
             "persistent_output": True,
             "persistent_output_max_lines": 200,
             # Print a one-line summary of resolved modal prompts (approval /
@@ -3528,6 +3529,49 @@ def _looks_like_slash_command(text: str) -> bool:
     return "/" not in first_word[1:]
 
 
+def _looks_like_shell_command(text: str) -> bool:
+    """Return True if *text* looks like a ``!`` shell command.
+
+    Rules:
+    - Must start with ``!`` (the shell-execution prefix).
+    - ``!`` followed by nothing or only whitespace is a bare bang
+      (``_handle_shell_command`` shows the usage hint).
+    - ``!`` inside a word (e.g. an exclamation in prose) is NOT a command.
+    """
+    if not text or not isinstance(text, str):
+        return False
+    if not text.startswith("!"):
+        return False
+    return True
+
+
+def _format_shell_output(command: str, result: dict) -> str:
+    """Format a shell command result as a user-facing message for the agent.
+
+    Args:
+        command: The original command (without leading ``!``).
+        result: The dict from ``execute_shell_command()``.
+
+    Returns:
+        A formatted string the agent can reason about.
+    """
+    exit_code = result.get("exit_code", -1)
+    output = result.get("output", "")
+    error = result.get("error")
+    timed_out = result.get("timed_out", False)
+
+    if error:
+        header = f"[Shell command executed: {command} (ERROR: {error})]"
+    elif timed_out:
+        header = f"[Shell command executed: {command} (TIMED OUT)]"
+    elif exit_code != 0:
+        header = f"[Shell command executed: {command} (exit_code={exit_code})]"
+    else:
+        header = f"[Shell command executed: {command}]"
+
+    return f"{header}\n{output}".strip()
+
+
 # ============================================================================
 # Skill Slash Commands — dynamic commands generated from installed skills
 # ============================================================================
@@ -3725,6 +3769,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self.busy_input_mode = "steer"
         else:
             self.busy_input_mode = "interrupt"
+
+        self._shell_timeout = int(
+            CLI_CONFIG.get("display", {}).get("shell_execution_timeout", 30)
+        )
 
         # self.verbose ONLY controls global DEBUG logging (root logger level).
         # display.tool_progress="verbose" controls tool-call rendering (full args,
@@ -8199,6 +8247,95 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     else f"    {line}")
         if result.success and result.requires_new_session:
             _cprint("    Tip: `/reset` starts a new session immediately.")
+
+    def _handle_shell_command(self, text: str) -> None:
+        """Execute a ``!`` shell command and inject output into agent context.
+
+        Called from ``handle_enter()`` when input starts with ``!``.
+        The command is executed locally, output is formatted as a structured
+        message, and the result is injected into the agent's context using the
+        same routing as normal user input (respecting ``busy_input_mode``
+        when the agent is running).
+        """
+        command = text[1:].strip()
+        if not command:
+            _cprint(
+                f"  {_DIM}Usage: !<shell command>  "
+                f"e.g. !ls -la, !git status, !cat file.txt{_RST}"
+            )
+            return
+
+        # Show what we're running
+        _cprint(f"  {_DIM}$ {command}{_RST}")
+
+        # Warn for interactive programs that may hang
+        _INTERACTIVE_COMMANDS = frozenset({
+            "vim", "vi", "nano", "emacs", "less", "more", "top", "htop",
+            "python", "python3", "ipython", "node", "irb", "sbt", "btop",
+        })
+        first_word = command.split()[0] if command.split() else ""
+        if first_word in _INTERACTIVE_COMMANDS:
+            _cprint(
+                f"  \033[33mⓘ  {first_word} is an interactive command. "
+                f"Running in non-interactive mode may hang. "
+                f"Add a timeout or pipe input.\033[0m"
+            )
+
+        # Execute
+        try:
+            from tools.shell_executor import execute_shell_command
+
+            _timeout = getattr(self, "_shell_timeout", 30)
+            result = execute_shell_command(command, timeout=_timeout)
+        except Exception as exc:
+            _cprint(f"  {_DIM}Command failed: {exc}{_RST}")
+            return
+
+        # Print output inline so the user sees it immediately
+        if result.get("output"):
+            _cprint(result["output"])
+        if result.get("error"):
+            _cprint(f"  {_DIM}Error: {result['error']}{_RST}")
+        _ec = result.get("exit_code", -1)
+        _cprint(f"  {_DIM}exit_code={_ec}{_RST}")
+
+        # Format and inject into agent context
+        formatted = _format_shell_output(command, result)
+        self._inject_shell_output(formatted)
+
+    def _inject_shell_output(self, formatted: str) -> None:
+        """Route formatted shell output into the agent context.
+
+        Uses the existing routing infrastructure — same decisions as
+        ``handle_enter()``.
+        """
+        if self._agent_running:
+            # Agent is busy — follow busy_input_mode
+            _mode = self.busy_input_mode
+            if _mode == "steer":
+                if self.agent is not None and hasattr(self.agent, "steer"):
+                    try:
+                        accepted = bool(self.agent.steer(formatted))
+                    except Exception as exc:
+                        _cprint(
+                            f"  {_DIM}Steer failed ({exc}) — "
+                            f"queued for next turn.{_RST}"
+                        )
+                        accepted = False
+                    if accepted:
+                        _cprint(f"  \033[33m⏩ Shell output injected mid-turn\033[0m")
+                        return
+                    # fall through to queue
+                _mode = "queue"
+            if _mode == "interrupt":
+                self._interrupt_queue.put(formatted)
+                return
+            # queue mode (or fallback)
+            self._pending_input.put(formatted)
+            _cprint(f"  Queued for the next turn")
+        else:
+            # Agent idle — queue as next message
+            self._pending_input.put(formatted)
 
     def _should_handle_model_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /model should be handled immediately on the UI thread."""
@@ -13322,6 +13459,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)
             if text or has_images:
+                # --- Shell command (!) intercept ---
+                # Must come before /model and /steer inline checks so ! is
+                # always caught regardless of agent state.
+                if isinstance(text, str) and text.startswith("!"):
+                    self._handle_shell_command(text)
+                    event.app.current_buffer.reset(append_to_history=True)
+                    event.app.invalidate()
+                    return
+
                 # Handle /model directly on the UI thread so interactive pickers
                 # can safely use prompt_toolkit terminal handoff helpers.
                 if self._should_handle_model_command_inline(text, has_images=has_images):
