@@ -470,6 +470,14 @@ def init_agent(
     # the next tool call, same timing contract as _pending_steer.
     agent._pending_yolo_action: Optional[tuple] = None
 
+    # Message queue for user messages sent during context compression.
+    # These are injected into the compressed context after compression completes
+    # (similar to how /steer works, but they become new user turns in the
+    # compressed transcript rather than being appended to a tool result).
+    # Thread-safe: accessed via _pending_compression_lock.
+    agent._pending_compression_queue: list = []
+    agent._pending_compression_lock = threading.Lock()
+
     # Concurrent-tool worker thread tracking.  `_execute_tool_calls_concurrent`
     # runs each tool on its own ThreadPoolExecutor worker — those worker
     # threads have tids distinct from `_execution_thread_id`, so

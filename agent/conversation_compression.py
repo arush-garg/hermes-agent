@@ -651,6 +651,14 @@ def compress_context(
                     "No messages were dropped — conversation continues unchanged. "
                     "Run /compress to retry, or /new to start a fresh session."
                 )
+            # Clear any messages queued during the failed compression attempt.
+            # Since compression didn't actually succeed, these messages should
+            # be processed as normal next-turn input rather than being injected
+            # into a transcript that wasn't actually compressed.
+            try:
+                agent._drain_compression_queue()
+            except Exception:
+                pass
             _existing_sp = getattr(agent, "_cached_system_prompt", None)
             if not _existing_sp:
                 _existing_sp = agent._build_system_prompt(system_message)
@@ -961,6 +969,28 @@ def compress_context(
             agent.session_id or "none", _pre_msg_count, len(compressed),
             f"{_compressed_est:,}",
         )
+
+        # Inject any user messages that were queued during compression.
+        # These become new user turns in the compressed transcript.
+        queued = agent._drain_compression_queue()
+        if queued:
+            # Ensure we don't create consecutive user messages.
+            # The compressed transcript should end with an assistant turn (or
+            # the _ensure_compressed_has_user_turn guard above already ensured
+            # a user turn at the end). So we may need to check the last role.
+            last_role = compressed[-1].get("role") if compressed else None
+            for msg in queued:
+                if last_role == "user":
+                    # Need an assistant turn between user messages — insert a
+                    # minimal assistant acknowledgment to preserve alternation.
+                    compressed.append({"role": "assistant", "content": "Understood."})
+                compressed.append({"role": "user", "content": msg})
+                last_role = "user"
+            logger.info(
+                "injected %d queued message(s) into compressed context after compression",
+                len(queued),
+            )
+
         return compressed, new_system_prompt
     finally:
         # Release the lock on the OLD session_id only AFTER rotation completed

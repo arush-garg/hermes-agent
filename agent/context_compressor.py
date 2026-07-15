@@ -1118,10 +1118,16 @@ class ContextCompressor(ContextEngine):
             return True
         if self.last_real_prompt_tokens <= 0:
             return False
-        if self.last_real_prompt_tokens >= self.threshold_tokens:
-            return False
 
-        baseline = self.last_rough_tokens_when_real_prompt_fit or self.last_compression_rough_tokens
+        # If the last real provider prompt was ABOVE threshold, that was the
+        # pre-compression state. The meaningful baseline is the POST-compression
+        # rough estimate (last_compression_rough_tokens), not the stale
+        # pre-compression real tokens. Use whichever baseline is valid.
+        if self.last_real_prompt_tokens >= self.threshold_tokens:
+            baseline = self.last_compression_rough_tokens
+        else:
+            baseline = self.last_rough_tokens_when_real_prompt_fit or self.last_compression_rough_tokens
+
         if baseline <= 0:
             return False
 

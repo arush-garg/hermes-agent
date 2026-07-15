@@ -1043,6 +1043,11 @@ export function useMainApp(gw: GatewayClient) {
       answerSecret,
       answerSudo,
       clearSelection,
+      continueFromMessage: (msg: Msg) => {
+        if (msg.role === 'user' && msg.text) {
+          composerActions.setInput(msg.text)
+        }
+      },
       newLiveSession: () => session.newLiveSession(),
       newPromptSession,
       onModelSelect,
@@ -1066,6 +1071,7 @@ export function useMainApp(gw: GatewayClient) {
       answerSudo,
       clearSelection,
       closeLiveSession,
+      composerActions,
       newPromptSession,
       onModelSelect,
       session

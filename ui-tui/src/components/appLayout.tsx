@@ -213,6 +213,7 @@ const TranscriptPane = memo(function TranscriptPane({
                   detailsMode={ui.detailsMode}
                   detailsModeCommandOverride={ui.detailsModeCommandOverride}
                   msg={row.msg}
+                  onUserMessageClick={msg => actions.continueFromMessage(msg)}
                   prev={prevRenderedMsg(i => transcript.virtualRows[i]?.msg, row.index, {
                     commandOverride: ui.detailsModeCommandOverride,
                     detailsMode: ui.detailsMode,

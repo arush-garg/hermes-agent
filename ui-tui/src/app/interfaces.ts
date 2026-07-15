@@ -381,6 +381,7 @@ export interface AppLayoutActions {
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
   clearSelection: () => void
+  continueFromMessage: (msg: Msg) => void
   activateLiveSession: (id: string) => void
   closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
   newLiveSession: () => void

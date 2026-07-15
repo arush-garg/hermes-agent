@@ -2807,6 +2807,70 @@ class AIAgent:
             self._pending_yolo_action = None
         return action
 
+    def _drain_compression_queue(self) -> list:
+        """Drain and return all messages queued during compression.
+
+        Returns a list of message strings (oldest first). Thread-safe.
+
+        Called after successful compression to inject queued user messages
+        into the compressed transcript as new user turns.
+        """
+        _lock = getattr(self, "_pending_compression_lock", None)
+        if _lock is None:
+            queued = getattr(self, "_pending_compression_queue", [])
+            self._pending_compression_queue = []
+            return queued
+        with _lock:
+            queued = list(self._pending_compression_queue)
+            self._pending_compression_queue.clear()
+        return queued
+
+    def queue_message_during_compression(self, text: str) -> bool:
+        """Queue a user message received while compression is in flight.
+
+        Called from the gateway thread when a user sends a message while
+        context compression is running. The message is stored and will be
+        injected as a new user turn into the compressed transcript after
+        compression successfully completes.
+
+        Thread-safe: uses _pending_compression_lock.
+
+        Args:
+            text: The user message text to queue.
+
+        Returns:
+            True if the message was queued (non-empty), False otherwise.
+        """
+        if not text or not text.strip():
+            return False
+        cleaned = text.strip()
+        _lock = getattr(self, "_pending_compression_lock", None)
+        if _lock is None:
+            # Fallback for test stubs that don't run full __init__
+            self._pending_compression_queue.append(cleaned)
+            return True
+        with _lock:
+            self._pending_compression_queue.append(cleaned)
+        return True
+
+    def _drain_compression_queue(self) -> list:
+        """Drain and return all messages queued during compression.
+
+        Returns a list of message strings (oldest first). Thread-safe.
+
+        Called after successful compression to inject queued user messages
+        into the compressed transcript as new user turns.
+        """
+        _lock = getattr(self, "_pending_compression_lock", None)
+        if _lock is None:
+            queued = getattr(self, "_pending_compression_queue", [])
+            self._pending_compression_queue = []
+            return queued
+        with _lock:
+            queued = list(self._pending_compression_queue)
+            self._pending_compression_queue.clear()
+        return queued
+
     def _apply_pending_yolo_action(self) -> None:
         """Execute any queued yolo toggle. Called at tool-batch boundaries."""
         from agent.agent_runtime_helpers import apply_pending_yolo_action

@@ -2119,11 +2119,14 @@ class CLICommandsMixin:
             f"exhausted. Use /goal status, /goal show, /goal pause, /goal resume, /goal clear.{_RST}"
         )
         # Kick the loop off immediately so the user doesn't have to send a
-        # separate message after setting the goal.
-        try:
-            self._pending_input.put(state.goal)
-        except Exception:
-            pass
+        # separate message after setting the goal. When the agent is running,
+        # the post-turn hook (_maybe_continue_goal_after_turn) picks up the
+        # active goal after the current turn finishes — no need to queue.
+        if not getattr(self, "_agent_running", False):
+            try:
+                self._pending_input.put(state.goal)
+            except Exception:
+                pass
 
     def _handle_goal_draft(self, objective: str) -> None:
         """Draft a structured completion contract from a plain objective and
@@ -2166,10 +2169,11 @@ class CLICommandsMixin:
                 f"  {_DIM}Couldn't draft a contract (aux model unavailable) — "
                 f"running as a free-form goal. The per-turn judge still applies.{_RST}"
             )
-        try:
-            self._pending_input.put(state.goal)
-        except Exception:
-            pass
+        if not getattr(self, "_agent_running", False):
+            try:
+                self._pending_input.put(state.goal)
+            except Exception:
+                pass
 
     def _handle_subgoal_command(self, cmd: str) -> None:
         """Dispatch /subgoal subcommands.

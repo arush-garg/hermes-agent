@@ -5272,6 +5272,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key,
             )
             effective_mode = "queue"
+            # Queue the message directly into the agent's compression queue
+            # so it gets injected into the compressed transcript after compression
+            # completes, rather than being processed as a next-turn message.
+            if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+                running_agent.queue_message_during_compression(event.text or "")
         steered = False
         if effective_mode == "steer":
             steer_text = (event.text or "").strip()
@@ -5291,6 +5296,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Fall back to queue (merge into pending messages, no interrupt)
                 effective_mode = "queue"
 
+        is_queue_mode = effective_mode == "queue"
+        is_steer_mode = effective_mode == "steer"
+
+        # If the busy_input_mode is already "queue" and compression is in flight,
+        # also route to the agent's compression queue instead of the normal FIFO.
+        if is_queue_mode and self._session_has_compression_in_flight(session_key):
+            if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+                running_agent.queue_message_during_compression(event.text or "")
+
         # Store the message so it's processed as the next turn after the
         # current run finishes (or is interrupted).  Skip this for a
         # successful steer — the text already landed inside the run and
@@ -5308,9 +5322,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # merge semantics for media.
         if not steered:
             self._queue_or_replace_pending_event(session_key, event)
-
-        is_queue_mode = effective_mode == "queue"
-        is_steer_mode = effective_mode == "steer"
 
         # If not in queue/steer mode, interrupt the running agent immediately.
         # This aborts in-flight tool calls and causes the agent loop to exit

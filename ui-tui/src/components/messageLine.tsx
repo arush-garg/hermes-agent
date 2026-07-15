@@ -34,6 +34,7 @@ export const MessageLine = memo(function MessageLine({
   detailsModeCommandOverride = false,
   isStreaming = false,
   msg,
+  onUserMessageClick,
   prev,
   sections,
   t,
@@ -186,6 +187,14 @@ export const MessageLine = memo(function MessageLine({
       )
     }
 
+    if (msg.role === 'user' && typeof onUserMessageClick === 'function') {
+      return (
+        <Text {...(body ? { color: body } : {})} onClick={onUserMessageClick}>
+          {msg.text}
+        </Text>
+      )
+    }
+
     return <Text {...(body ? { color: body } : {})}>{msg.text}</Text>
   })()
 
@@ -249,6 +258,7 @@ interface MessageLineProps {
   detailsModeCommandOverride?: boolean
   isStreaming?: boolean
   msg: Msg
+  onUserMessageClick?: (msg: Msg) => void
   // The block rendered directly above this one. Drives the group-boundary
   // lead gap (see domain/blockLayout.ts::hasLeadGap). Undefined at the top of
   // the transcript or when spacing is irrelevant.

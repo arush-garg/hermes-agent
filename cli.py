@@ -8306,31 +8306,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     def _inject_shell_output(self, formatted: str) -> None:
         """Route formatted shell output into the agent context.
 
-        Uses the existing routing infrastructure — same decisions as
-        ``handle_enter()``.
+        When the agent is running, always try ``agent.steer()`` first —
+        shell output must never interrupt a running tool call.  If steer
+        fails or returns False, fall back to queuing for the next turn.
+        When the agent is idle, queue as the next message.
         """
         if self._agent_running:
-            # Agent is busy — follow busy_input_mode
-            _mode = self.busy_input_mode
-            if _mode == "steer":
-                if self.agent is not None and hasattr(self.agent, "steer"):
-                    try:
-                        accepted = bool(self.agent.steer(formatted))
-                    except Exception as exc:
-                        _cprint(
-                            f"  {_DIM}Steer failed ({exc}) — "
-                            f"queued for next turn.{_RST}"
-                        )
-                        accepted = False
-                    if accepted:
-                        _cprint(f"  \033[33m⏩ Shell output injected mid-turn\033[0m")
-                        return
-                    # fall through to queue
-                _mode = "queue"
-            if _mode == "interrupt":
-                self._interrupt_queue.put(formatted)
-                return
-            # queue mode (or fallback)
+            # Agent is busy — always try steer mid-turn first
+            if self.agent is not None and hasattr(self.agent, "steer"):
+                try:
+                    accepted = bool(self.agent.steer(formatted))
+                except Exception as exc:
+                    _cprint(
+                        f"  {_DIM}Steer failed ({exc}) — "
+                        f"queued for next turn.{_RST}"
+                    )
+                    accepted = False
+                if accepted:
+                    _cprint(f"  \033[33m⏩ Shell output injected mid-turn\033[0m")
+                    return
+            # Fallback: queue for next turn (steer unavailable or rejected)
             self._pending_input.put(formatted)
             _cprint(f"  Queued for the next turn")
         else:
@@ -8393,6 +8388,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             base = text.split(None, 1)[0].lower().lstrip('/')
             cmd = resolve_command(base)
             return bool(cmd and cmd.name == "yolo")
+        except Exception:
+            return False
+
+    def _should_handle_goal_command_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when /goal should be dispatched immediately while agent runs.
+
+        /goal state mutations (set/pause/clear/resume) only touch GoalManager
+        state (in-memory + SessionDB) — no agent involvement. Queuing through
+        _pending_input would defer the toggle until after agent finishes,
+        defeating the purpose of an immediate command.
+        """
+        if not text or has_images or not _looks_like_slash_command(text):
+            return False
+        if not getattr(self, "_agent_running", False):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            base = text.split(None, 1)[0].lower().lstrip('/')
+            cmd = resolve_command(base)
+            return bool(cmd and cmd.name == "goal")
         except Exception:
             return False
 
@@ -13509,6 +13524,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 # the purpose of an immediate UI-thread toggle.
                 if self._should_handle_yolo_command_inline(text):
                     self._toggle_yolo()
+                    event.app.current_buffer.reset(append_to_history=True)
+                    event.app.invalidate()
+                    return
+
+                # /goal state mutations (set/pause/clear/resume/show/status)
+                # are thread-safe GoalManager ops — no agent involvement.
+                # Queuing through _pending_input would defer until after agent
+                # finishes, turning an immediate toggle into a delayed
+                # next-turn message.
+                if self._should_handle_goal_command_inline(text, has_images=has_images):
+                    self.process_command(text)
                     event.app.current_buffer.reset(append_to_history=True)
                     event.app.invalidate()
                     return
