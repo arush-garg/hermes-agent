@@ -116,3 +116,32 @@ class TestFormatShellOutput:
         }
         formatted = self._fmt("true", result)
         assert "[Shell command executed: true]" in formatted
+
+
+class TestShellDisplayTruncate:
+    """``_shell_display_truncate`` TUI display cap — full text still goes to LLM."""
+
+    @pytest.fixture(autouse=True)
+    def _import(self):
+        from cli import _shell_display_truncate, _SHELL_DISPLAY_MAX
+
+        self._truncate = _shell_display_truncate
+        self._max = _SHELL_DISPLAY_MAX
+
+    def test_short_passthrough(self):
+        """Text under the cap is returned unchanged."""
+        text = "a" * 100
+        assert self._truncate(text) == text
+
+    def test_over_cap_truncated_with_ellipsis(self):
+        """Text over the cap is truncated and ends with an ellipsis marker."""
+        text = "a" * (self._max + 50)
+        result = self._truncate(text)
+        assert len(result) == self._max
+        assert result.endswith("…")
+        assert result.startswith("a")
+
+    def test_exact_cap_passthrough(self):
+        """Exactly-at-cap text is returned unchanged."""
+        text = "b" * self._max
+        assert self._truncate(text) == text

@@ -3572,6 +3572,19 @@ def _format_shell_output(command: str, result: dict) -> str:
     return f"{header}\n{output}".strip()
 
 
+# Maximum characters shown in TUI for long shell output. Full text still
+# goes to the LLM via steer(); only the display path is truncated.
+_SHELL_DISPLAY_MAX = 1000
+
+
+def _shell_display_truncate(text: str) -> str:
+    """Truncate *text* for TUI display, appending an ellipsis marker if needed."""
+    if len(text) <= _SHELL_DISPLAY_MAX:
+        return text
+    truncated = text[:_SHELL_DISPLAY_MAX - 1].rstrip() + "…"
+    return truncated
+
+
 # ============================================================================
 # Skill Slash Commands — dynamic commands generated from installed skills
 # ============================================================================
@@ -8323,7 +8336,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     )
                     accepted = False
                 if accepted:
-                    _cprint(f"  \033[33m⏩ Shell output injected mid-turn\033[0m")
+                    display_text = _shell_display_truncate(formatted)
+                    _cprint(f"  \033[33m⏩ Shell output appended to last tool result\033[0m")
                     return
             # Fallback: queue for next turn (steer unavailable or rejected)
             self._pending_input.put(formatted)
