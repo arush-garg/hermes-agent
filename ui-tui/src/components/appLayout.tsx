@@ -6,7 +6,8 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $petBox } from '../app/petFlashStore.js'
-import { $uiState } from '../app/uiStore.js'
+import { $uiState, getUiState } from '../app/uiStore.js'
+import { getViewState } from '../app/viewStore.js'
 import { usePet } from '../app/usePet.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
@@ -22,6 +23,7 @@ import { composerPromptText } from '../lib/prompt.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
+import { SubagentPanel } from './subagentPanel.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
 import { FpsOverlay } from './fpsOverlay.js'
@@ -499,6 +501,7 @@ export const AppLayout = memo(function AppLayout({
   status,
   transcript
 }: AppLayoutProps) {
+  const { rpc } = useGateway()
   const overlay = useStore($overlayState)
   const ui = useStore($uiState)
 
@@ -542,6 +545,25 @@ export const AppLayout = memo(function AppLayout({
             <PerfPane id="composer">
               <ComposerPane actions={actions} composer={composer} status={status} />
             </PerfPane>
+
+            {getViewState().focus === 'subagent-focus' && (
+              <PerfPane id="subagent-panel">
+                <SubagentPanel
+                  onInterrupt={subagentId => {
+                    const sid = getUiState().sid
+                    if (sid) {
+                      rpc<Record<string, unknown>>('subagent.interrupt', { session_id: sid, subagent_id: subagentId }).catch(() => {})
+                    }
+                  }}
+                  onSteerSubmit={(subagentId, text) => {
+                    const sid = getUiState().sid
+                    if (sid && text.trim()) {
+                      rpc<Record<string, unknown>>('session.steer', { session_id: sid, subagent_id: subagentId, text: text.trim() }).catch(() => {})
+                    }
+                  }}
+                />
+              </PerfPane>
+            )}
 
             {SHOW_FPS && (
               <Box flexShrink={0} justifyContent="flex-end" paddingRight={1}>

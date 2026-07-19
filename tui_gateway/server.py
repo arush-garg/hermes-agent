@@ -12773,7 +12773,7 @@ def _(rid, params: dict) -> dict:
             try:
                 from hermes_cli.voice import stop_continuous
 
-                stop_continuous()
+                threading.Thread(target=stop_continuous, daemon=True).start()
             except ImportError:
                 pass
             except Exception as e:

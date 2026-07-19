@@ -8,10 +8,12 @@ import type {
   ApprovalRespondResponse,
   ConfigSetResponse,
   SecretRespondResponse,
+  SubagentInterruptResponse,
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
 import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
+import { topLevelSubagents } from '../lib/subagentTree.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
@@ -19,8 +21,10 @@ import { getInputSelection } from './inputSelectionStore.js'
 import type { InputHandlerActions, InputHandlerContext, InputHandlerResult } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
-import { patchTurnState } from './turnStore.js'
+import { patchTurnState, getTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
+import { $viewState, getViewState, patchViewState } from './viewStore.js'
+import { handleSubagentPanelKeyDown } from './subagentPanelKeys.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
@@ -384,6 +388,88 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // Otherwise nothing above this comment matched, and there's nothing
       // useful to do for an arbitrary key while blocked.
       if (!fallThroughForScroll) {
+        return
+      }
+    }
+
+    // ── Subagent-panel focus routing ──────────────────────────────
+    const viewFocus = getViewState().focus
+
+    if (viewFocus === 'subagent-focus') {
+      const subs = getTurnState().subagents
+      const topLevel = subs?.length ? topLevelSubagents(subs) : []
+      const cursor = getViewState().subagentPanel.cursor
+      const action = handleSubagentPanelKeyDown(key, ch, {
+        cursor,
+        subagentCount: topLevel.length,
+        selectedStatus: topLevel[cursor]?.status
+      })
+
+      switch (action.type) {
+        case 'navigate':
+          patchViewState(state => ({
+            ...state,
+            subagentPanel: { ...state.subagentPanel, cursor: action.cursor }
+          }))
+          return
+
+        case 'exit':
+          patchViewState({
+            focus: 'composer',
+            subagentPanel: { active: false, cursor: 0, steerOpen: false, steerTargetId: null }
+          })
+          return
+
+        case 'interrupt': {
+          const target = topLevel[getViewState().subagentPanel.cursor]
+          if (target && (target.status === 'running' || target.status === 'queued')) {
+            const live = getUiState()
+            if (live.sid) {
+              gateway.rpc<SubagentInterruptResponse>('subagent.interrupt', {
+                session_id: live.sid,
+                subagent_id: target.id
+              })
+            }
+          }
+          return
+        }
+
+        case 'open-steer': {
+          const target = topLevel[getViewState().subagentPanel.cursor]
+          if (target && (target.status === 'running' || target.status === 'queued')) {
+            patchViewState(state => ({
+              ...state,
+              subagentPanel: { ...state.subagentPanel, steerOpen: true, steerTargetId: target.id }
+            }))
+          }
+          return
+        }
+
+        case 'none':
+          return
+      }
+
+      return
+    }
+
+    // Down arrow in composer: switch to subagent panel if subagents exist.
+    if (
+      key.downArrow &&
+      !key.shift &&
+      !key.ctrl &&
+      !key.alt &&
+      !cState.inputBuf.length &&
+      getTurnState().subagents.some(s => s.status === 'running' || s.status === 'queued' || s.status === 'completed')
+    ) {
+      const inputSel = getInputSelection()
+      const cursorPos = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
+      const atEnd = !cState.input || (cursorPos !== null && cState.input.indexOf('\n', cursorPos) < 0)
+
+      if (atEnd || cState.historyIdx !== null) {
+        patchViewState({
+          focus: 'subagent-focus',
+          subagentPanel: { active: true, cursor: 0, steerOpen: false, steerTargetId: null }
+        })
         return
       }
     }

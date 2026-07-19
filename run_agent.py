@@ -3593,6 +3593,14 @@ class AIAgent:
         except Exception:
             pass
 
+        # 5.5 Unregister from monitor tool agent registry and cancel any
+        # active periodic monitors for this session.
+        try:
+            from tools.monitor_tool import unregister_agent
+            unregister_agent(getattr(self, "session_id", ""))
+        except Exception:
+            pass
+
         # 6. Free conversation history.  Mirrors _release_evicted_agent_soft's
         # soft-eviction clear — close() is the hard teardown for true session
         # boundaries (/new, /reset, session expiry), so the message list won't

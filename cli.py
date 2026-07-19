@@ -11480,37 +11480,87 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return True
 
     def _enable_voice_mode(self):
-        """Enable voice mode after checking requirements."""
+        """Enable voice mode with deferred audio requirement checks.
+
+        Sets ``self._voice_mode`` immediately so the user gets instant feedback,
+        then runs environment and requirements checks in background daemon threads.
+        Only warns if either check reports unavailable -- never blocks again.
+        """
         if self._voice_mode:
             _cprint(f"{_DIM}Voice mode is already enabled.{_RST}")
             return
 
-        from tools.voice_mode import check_voice_requirements, detect_audio_environment
-
-        # Environment detection -- warn and block in incompatible environments
-        env_check = detect_audio_environment()
-        if not env_check["available"]:
-            _cprint(f"\n{_ACCENT}Voice mode unavailable in this environment:{_RST}")
-            for warning in env_check["warnings"]:
-                _cprint(f"  {_DIM}{warning}{_RST}")
-            return
-
-        reqs = check_voice_requirements()
-        if not reqs["available"]:
-            _cprint(f"\n{_ACCENT}Voice mode requirements not met:{_RST}")
-            for line in reqs["details"].split("\n"):
-                _cprint(f"  {_DIM}{line}{_RST}")
-            if reqs["missing_packages"]:
-                if _is_termux_environment():
-                    _cprint(f"\n  {_BOLD}Option 1: pkg install termux-api{_RST}")
-                    _cprint(f"  {_DIM}Then install/update the Termux:API Android app for microphone capture{_RST}")
-                    _cprint(f"  {_BOLD}Option 2: pkg install python-numpy portaudio && python -m pip install sounddevice{_RST}")
-                else:
-                    _cprint(f"\n  {_BOLD}Install: {sys.executable} -m pip install {' '.join(reqs['missing_packages'])}{_RST}")
-            return
+        from tools.voice_mode import (
+            check_voice_requirements,
+            detect_audio_environment,
+        )
 
         with self._voice_lock:
             self._voice_mode = True
+
+        # Run audio checks in background daemon threads so they never block.
+        env_warnings: list[str] | None = None
+        reqs_details: str | None = None
+        missing_pkgs: list[str] | None = None
+
+        def _check_env():
+            nonlocal env_warnings
+            try:
+                ec = detect_audio_environment()
+                if not ec["available"]:
+                    env_warnings = [f"  {_DIM}{w}{_RST}" for w in ec.get("warnings", [])]
+            except Exception:
+                pass
+
+        def _check_reqs():
+            nonlocal reqs_details, missing_pkgs
+            try:
+                r = check_voice_requirements()
+                if not r["available"]:
+                    reqs_details = "\n".join(
+                        f"  {_DIM}{line}{_RST}" for line in r.get("details", "")
+                    )
+                    missing_pkgs = r.get("missing_packages") or []
+            except Exception:
+                pass
+
+        threading.Thread(target=_check_env, daemon=True).start()
+        threading.Thread(target=_check_reqs, daemon=True).start()
+
+        # Wait for both checks to complete (short timeout; they're background work).
+        _wait = 3.0
+        start = time.monotonic()
+        while time.monotonic() - start < _wait:
+            if env_warnings is not None and reqs_details is not None:
+                break
+            time.sleep(0.1)
+
+        # Warn only -- never block again.
+        if env_warnings:
+            for w in env_warnings:
+                _cprint(w)
+
+        if reqs_details:
+            _cprint(f"\n{_ACCENT}Voice mode requirements not met:{_RST}")
+            _cprint(reqs_details)
+            if missing_pkgs is not None and len(missing_pkgs):
+                if _is_termux_environment():
+                    _cprint(
+                        f"\n  {_BOLD}Option 1: pkg install termux-api{_RST}"
+                    )
+                    _cprint(
+                        "  {_DIM}Then install/update the Termux:API Android app for"
+                        " microphone capture{_RST}"
+                    )
+                    _cprint(
+                        f"  {_BOLD}Option 2: pkg install python-numpy portaudio &&"
+                        " python -m pip install sounddevice{_RST}"
+                    )
+                else:
+                    _cprint(
+                        f"\n  {_BOLD}Install:"
+                        f" {sys.executable} -m pip install {' '.join(missing_pkgs)}{_RST}"
+                    )
 
         # Check config for auto_tts (shape-safe — malformed ``voice:`` YAML
         # leaves ``voice_config`` as a non-dict, so guard before .get()).

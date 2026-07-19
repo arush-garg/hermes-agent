@@ -590,6 +590,14 @@ export interface SubagentInterruptResponse {
   subagent_id?: string
 }
 
+export interface SubagentSteerResponse {
+  ok: boolean
+  error?: string
+  steered?: boolean
+  target?: string
+  subagent_id?: string
+}
+
 // ── Spawn-tree snapshots ─────────────────────────────────────────────
 
 export interface SpawnTreeListEntry {
@@ -705,6 +713,7 @@ export type GatewayEvent =
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.tool' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.progress' }
   | { payload: SubagentEventPayload; session_id?: string; type: 'subagent.complete' }
+  | { payload: { subagent_id: string; accepted: boolean }; session_id?: string; type: 'subagent.steered' }
   | { payload: { rendered?: string; text?: string }; session_id?: string; type: 'message.delta' }
   | {
       payload?: { reasoning?: string; rendered?: string; text?: string; usage?: Usage }

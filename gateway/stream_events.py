@@ -145,6 +145,13 @@ class GatewayNotice:
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class SubagentSteered:
+    """Sent when a steer attempt is routed to a child subagent."""
+    subagent_id: str
+    accepted: bool
+
+
 # Union of every event the consumer's dispatcher accepts.  Kept explicit (rather
 # than a marker base class) so a missing ``case`` in an exhaustive match is a
 # visible type error rather than a silent fall-through.
@@ -156,6 +163,7 @@ StreamEvent = Union[
     ToolCallFinished,
     LongToolHint,
     GatewayNotice,
+    SubagentSteered,
 ]
 
 
@@ -167,5 +175,6 @@ __all__ = [
     "ToolCallFinished",
     "LongToolHint",
     "GatewayNotice",
+    "SubagentSteered",
     "StreamEvent",
 ]

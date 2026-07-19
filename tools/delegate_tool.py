@@ -207,6 +207,24 @@ def interrupt_subagent(subagent_id: str) -> bool:
     return True
 
 
+def steer_subagent(subagent_id: str, text: str) -> bool:
+    """Inject text into a running subagent at its next tool boundary.
+
+    The text is delivered via AIAgent.steer() which uses an internal queue
+    that the conversation loop reads at the next tool call boundary.
+    Returns True if the text was accepted.
+    """
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+    if not record or not record.get("agent"):
+        return False
+    try:
+        return bool(record["agent"].steer(text))
+    except Exception as exc:
+        logger.debug("steer_subagent(%s) failed: %s", subagent_id, exc)
+        return False
+
+
 def list_active_subagents() -> List[Dict[str, Any]]:
     """Snapshot of the currently running subagent tree.
 

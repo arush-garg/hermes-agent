@@ -1153,6 +1153,14 @@ def init_agent(
     except Exception:
         os.environ["HERMES_SESSION_ID"] = agent.session_id
 
+    # Register agent in monitor tool's agent registry so periodic
+    # monitor ticks can inject steer messages into this session.
+    try:
+        from tools.monitor_tool import register_agent
+        register_agent(agent.session_id, agent)
+    except Exception:
+        pass
+
     # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
     hermes_home = get_hermes_home()
     agent.logs_dir = hermes_home / "sessions"

@@ -918,6 +918,21 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
+      case 'subagent.steered':
+        // Flash feedback in panel — just update the matching subagent's notes.
+        turnController.upsertSubagent(
+          {
+            goal: '',
+            task_index: 0,
+            subagent_id: ev.payload.subagent_id,
+            text: ev.payload.accepted ? '✓ steered' : '✗ steer failed'
+          },
+          c => ({ notes: pushNote(c.notes, ev.payload.accepted ? '✓ steered' : '✗ steer failed') }),
+          { createIfMissing: false }
+        )
+
+        return
+
       case 'message.delta':
         turnController.recordMessageDelta(ev.payload ?? {})
 

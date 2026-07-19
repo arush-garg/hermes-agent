@@ -5278,6 +5278,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
                 running_agent.queue_message_during_compression(event.text or "")
         steered = False
+        steer_text = (event.text or "").strip()
+        subagent_id = event.metadata.get("subagent_id") if event.metadata else None
+
+        if subagent_id and steer_text:
+            from tools.delegate_tool import steer_subagent
+            steered = steer_subagent(subagent_id, steer_text)
+            # Publish confirmation event
+            try:
+                from gateway.stream_events import SubagentSteered
+                dispatcher._sink.enqueue(SubagentSteered(subagent_id=subagent_id, accepted=steered))
+            except Exception:
+                pass
+            return
+
         if effective_mode == "steer":
             steer_text = (event.text or "").strip()
             can_steer = (
