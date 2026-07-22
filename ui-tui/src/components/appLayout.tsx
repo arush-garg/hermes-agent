@@ -8,6 +8,7 @@ import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStor
 import { $petBox } from '../app/petFlashStore.js'
 import { $uiState, getUiState } from '../app/uiStore.js'
 import { getViewState } from '../app/viewStore.js'
+import { $turnState } from '../app/turnStore.js'
 import { usePet } from '../app/usePet.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
@@ -493,6 +494,24 @@ const StatusRulePane = memo(function StatusRulePane({
   )
 })
 
+// Reactive wrapper so appLayout re-renders when subagents appear/disappear
+// and when view focus changes — getViewState() is non-reactive on its own.
+function SubagentPanelSlot({
+  onInterrupt,
+  onSteerSubmit
+}: {
+  onInterrupt: (id: string) => void
+  onSteerSubmit: (id: string, text: string) => void
+}) {
+  const turnState = useStore($turnState)
+  if (!turnState.subagents.length) return null
+  return (
+    <PerfPane id="subagent-panel">
+      <SubagentPanel onInterrupt={onInterrupt} onSteerSubmit={onSteerSubmit} />
+    </PerfPane>
+  )
+}
+
 export const AppLayout = memo(function AppLayout({
   actions,
   composer,
@@ -546,24 +565,20 @@ export const AppLayout = memo(function AppLayout({
               <ComposerPane actions={actions} composer={composer} status={status} />
             </PerfPane>
 
-            {getViewState().focus === 'subagent-focus' && (
-              <PerfPane id="subagent-panel">
-                <SubagentPanel
-                  onInterrupt={subagentId => {
-                    const sid = getUiState().sid
-                    if (sid) {
-                      rpc<Record<string, unknown>>('subagent.interrupt', { session_id: sid, subagent_id: subagentId }).catch(() => {})
-                    }
-                  }}
-                  onSteerSubmit={(subagentId, text) => {
-                    const sid = getUiState().sid
-                    if (sid && text.trim()) {
-                      rpc<Record<string, unknown>>('session.steer', { session_id: sid, subagent_id: subagentId, text: text.trim() }).catch(() => {})
-                    }
-                  }}
-                />
-              </PerfPane>
-            )}
+            <SubagentPanelSlot
+              onInterrupt={subagentId => {
+                const sid = getUiState().sid
+                if (sid) {
+                  rpc<Record<string, unknown>>('subagent.interrupt', { session_id: sid, subagent_id: subagentId }).catch(() => {})
+                }
+              }}
+              onSteerSubmit={(subagentId, text) => {
+                const sid = getUiState().sid
+                if (sid && text.trim()) {
+                  rpc<Record<string, unknown>>('session.steer', { session_id: sid, subagent_id: subagentId, text: text.trim() }).catch(() => {})
+                }
+              }}
+            />
 
             {SHOW_FPS && (
               <Box flexShrink={0} justifyContent="flex-end" paddingRight={1}>

@@ -744,6 +744,91 @@ class TestAudioRecorderProperties:
 
 
 # ============================================================================
+# Audio device selection
+# ============================================================================
+
+class TestAudioDeviceSelection:
+    """Tests for _select_input_device and integration with AudioRecorder."""
+
+    def test_prefers_builtin_over_bluetooth(self, mock_sd):
+        """Built-in microphone should be preferred over Bluetooth."""
+        mock_sd.query_devices.return_value = [
+            {'name': 'Jabra Evolve 65e', 'max_input_channels': 1, 'max_output_channels': 0, 'default_samplerate': 16000.0, 'hostapi': 0},
+            {'name': 'Built-in Microphone', 'max_input_channels': 1, 'max_output_channels': 0, 'default_samplerate': 48000.0, 'hostapi': 0},
+        ]
+        from tools.voice_mode import _select_input_device
+        result = _select_input_device()
+        assert result == 1  # Built-in (index 1)
+
+    def test_prefers_builtin_over_external_usb(self, mock_sd):
+        """Built-in microphone should be preferred over external USB."""
+        mock_sd.query_devices.return_value = [
+            {'name': 'Blue Yeti USB Microphone', 'max_input_channels': 1, 'max_output_channels': 0, 'default_samplerate': 48000.0, 'hostapi': 0},
+            {'name': 'MacBook Pro Microphone', 'max_input_channels': 1, 'max_output_channels': 0, 'default_samplerate': 48000.0, 'hostapi': 0},
+        ]
+        from tools.voice_mode import _select_input_device
+        result = _select_input_device()
+        assert result == 1  # MacBook mic (index 1)
+
+    def test_returns_none_when_only_bluetooth_available(self, mock_sd):
+        """Return None when only Bluetooth input is available."""
+        mock_sd.query_devices.return_value = [
+            {'name': 'Jabra Evolve 65e', 'max_input_channels': 1, 'max_output_channels': 0, 'default_samplerate': 16000.0, 'hostapi': 0},
+        ]
+        from tools.voice_mode import _select_input_device
+        result = _select_input_device()
+        assert result is None
+
+    def test_returns_none_when_no_input_devices(self, mock_sd):
+        """Return None when no input devices found."""
+        mock_sd.query_devices.return_value = [
+            {'name': 'Built-in Output', 'max_input_channels': 0, 'max_output_channels': 2, 'default_samplerate': 48000.0, 'hostapi': 0},
+        ]
+        from tools.voice_mode import _select_input_device
+        result = _select_input_device()
+        assert result is None
+
+    def test_returns_none_on_query_failure(self, mock_sd):
+        """Return None when device query raises exception."""
+        mock_sd.query_devices.side_effect = RuntimeError("device query failed")
+        from tools.voice_mode import _select_input_device
+        result = _select_input_device()
+        assert result is None
+
+    def test_ensure_stream_passes_builtin_device_id(self, mock_sd):
+        """_ensure_stream should pass built-in mic device to InputStream."""
+        mock_sd.query_devices.return_value = [
+            {'name': 'Jabra Bluetooth Audio', 'max_input_channels': 1, 'max_output_channels': 0, 'default_samplerate': 16000.0, 'hostapi': 0},
+            {'name': 'MacBook Pro Microphone', 'max_input_channels': 1, 'max_output_channels': 0, 'default_samplerate': 48000.0, 'hostapi': 0},
+            {'name': 'Built-in Microphone', 'max_input_channels': 1, 'max_output_channels': 0, 'default_samplerate': 48000.0, 'hostapi': 0},
+        ]
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+        recorder = AudioRecorder()
+        recorder.start()
+
+        call_kwargs = mock_sd.InputStream.call_args[1]
+        assert call_kwargs.get('device') == 2, f"Expected device=2 (Built-in), got {call_kwargs.get('device')}"
+
+    def test_ensure_stream_no_device_when_only_bluetooth(self, mock_sd):
+        """_ensure_stream should pass device=None when only Bluetooth available."""
+        mock_sd.query_devices.return_value = [
+            {'name': 'Jabra Bluetooth Audio', 'max_input_channels': 1, 'max_output_channels': 0, 'default_samplerate': 16000.0, 'hostapi': 0},
+        ]
+        mock_stream = MagicMock()
+        mock_sd.InputStream.return_value = mock_stream
+
+        from tools.voice_mode import AudioRecorder
+        recorder = AudioRecorder()
+        recorder.start()
+
+        call_kwargs = mock_sd.InputStream.call_args[1]
+        assert call_kwargs.get('device') is None, f"Expected device=None, got {call_kwargs.get('device')}"
+
+
+# ============================================================================
 # transcribe_recording
 # ============================================================================
 

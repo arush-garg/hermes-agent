@@ -4164,6 +4164,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._voice_tts_done = threading.Event()
         self._voice_tts_done.set()
 
+        # Serialised TTS worker — all speech (intermediate + final) is enqueued
+        # here so segments play sequentially even when two arrive concurrently.
+        # Each item is either a (text, transition_word) tuple or the sentinel None.
+        # The worker thread is started lazily on the first _voice_tts_enqueue() call.
+        self._voice_tts_queue: "queue.Queue[tuple[str, str] | None]" = queue.Queue()
+        self._voice_tts_worker_thread: "threading.Thread | None" = None
+
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
         # When True, the input separator rules and the dynamic status bar are
@@ -5681,6 +5688,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """
         if text is None:
             self._flush_stream()
+            # Speak intermediate text aloud via the serialising TTS queue.
+            # Skip when ElevenLabs streaming TTS is active (it already speaks).
+            _inter_buf = getattr(self, "_stream_tts_buf", "").strip()
+            if (_inter_buf and self._voice_tts
+                    and not getattr(self, "_elevenlabs_streaming_active", False)):
+                # No transition word on the first segment of a turn; "and" if
+                # a previous segment is still in the queue.
+                _tw = "and" if not self._voice_tts_queue.empty() else ""
+                self._voice_tts_enqueue(_inter_buf, transition_word=_tw)
+            self._stream_tts_buf = ""
             self._reset_stream_state()
             return
         if not text:
@@ -5814,6 +5831,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Emit filtered text to the streaming display."""
         if not text:
             return
+
+        # Accumulate text for intermediate-turn TTS (voice mode only).
+        # This buffer is drained at each intermediate turn boundary
+        # (_stream_delta(None)) and spoken aloud without blocking recording.
+        # Skip when ElevenLabs streaming TTS is active (it already speaks).
+        if self._voice_tts and not getattr(self, "_elevenlabs_streaming_active", False):
+            self._stream_tts_buf = getattr(self, "_stream_tts_buf", "") + text
 
         # When show_reasoning is on and reasoning is still rendering,
         # defer content until the reasoning box closes.  This ensures the
@@ -5970,6 +5994,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._deferred_content = ""
         self._stream_table_buf = []
         self._in_stream_table = False
+        # Intermediate TTS buffer — reset per turn segment, not per user turn,
+        # so each tool-call boundary gets its own speech segment.
+        self._stream_tts_buf = ""
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
@@ -11405,15 +11432,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 threading.Thread(target=_restart_recording, daemon=True).start()
 
     def _voice_speak_response_async(self, text: str) -> None:
-        """Schedule TTS and mark it pending before continuous recording can restart."""
+        """Schedule TTS and mark it pending before continuous recording can restart.
+
+        Routes through the serialising TTS queue so final responses queue
+        after any still-playing intermediate text.  Uses "also" as the
+        transition word when a previous segment is still being spoken.
+        """
         if not self._voice_tts or not text:
             return
-        self._voice_tts_done.clear()
-        threading.Thread(
-            target=self._voice_speak_response,
-            args=(text,),
-            daemon=True,
-        ).start()
+        self._voice_tts_enqueue(text, transition_word="also")
 
     def _voice_speak_response(self, text: str):
         """Speak the agent's response aloud using TTS (runs in background thread)."""
@@ -11467,6 +11494,123 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         finally:
             self._voice_tts_done.set()
 
+    # ── Serialising TTS queue ────────────────────────────────────────────────
+    # All TTS segments are routed through _voice_tts_enqueue() so they play
+    # sequentially even when multiple arrive while one is still playing
+    # (e.g. intermediate text + final response, or a new gateway message
+    # while the previous response is still being spoken).
+    #
+    # transition_word is prepended with a short pause when this segment follows
+    # another one, providing a natural link between them (e.g. "also," / "also").
+
+    @staticmethod
+    def _tts_clean(text: str, max_chars: int = 4000) -> str:
+        """Strip markdown / code / URLs for cleaner TTS output."""
+        t = text[:max_chars] if len(text) > max_chars else text
+        t = re.sub(r'```[\s\S]*?```', ' ', t)
+        t = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', t)
+        t = re.sub(r'https?://\S+', '', t)
+        t = re.sub(r'\*\*(.+?)\*\*', r'\1', t)
+        t = re.sub(r'\*(.+?)\*', r'\1', t)
+        t = re.sub(r'`(.+?)`', r'\1', t)
+        t = re.sub(r'^#+\s*', '', t, flags=re.MULTILINE)
+        t = re.sub(r'^\s*[-*]\s+', '', t, flags=re.MULTILINE)
+        t = re.sub(r'---+', '', t)
+        t = re.sub(r'\n{3,}', '\n\n', t)
+        return t.strip()
+
+    def _voice_tts_enqueue(self, text: str, transition_word: str = "") -> None:
+        """Add a TTS segment to the serialising queue.
+
+        Starts the background worker thread lazily.  ``transition_word`` is
+        prepended when this segment plays after a previous segment — it acts
+        as a spoken bridge (e.g. "also," so the two segments don't blend into
+        one another without a pause).
+        """
+        if not self._voice_tts or not text.strip():
+            return
+        self._voice_tts_queue.put((text, transition_word))
+        self._voice_tts_ensure_worker()
+
+    def _voice_tts_ensure_worker(self) -> None:
+        """Start the TTS worker thread if it isn't already running.
+
+        Protected by _voice_lock so concurrent enqueue() calls cannot
+        race and start two workers simultaneously.
+        """
+        with self._voice_lock:
+            t = self._voice_tts_worker_thread
+            if t is not None and t.is_alive():
+                return
+            t = threading.Thread(target=self._voice_tts_worker, daemon=True, name="hermes-tts-worker")
+            self._voice_tts_worker_thread = t
+            t.start()
+
+    def _voice_tts_worker(self) -> None:
+        """Drain the TTS queue, playing segments in order.
+
+        Runs as a daemon thread; exits when the queue is empty.
+        Signals _voice_tts_done whenever the queue drains so continuous
+        voice mode can restart recording.
+        """
+        first_in_run = True
+        try:
+            from tools.tts_tool import text_to_speech_tool
+            from tools.voice_mode import play_audio_file
+        except ImportError as e:
+            logger.warning("TTS worker: import error: %s", e)
+            return
+
+        while True:
+            try:
+                item = self._voice_tts_queue.get(timeout=0.5)
+            except queue.Empty:
+                # Queue drained — signal and exit so idle thread cost is zero.
+                self._voice_tts_done.set()
+                return
+
+            raw_text, transition_word = item
+            self._voice_tts_done.clear()
+
+            # If a previous segment already played this run, prepend a
+            # short transition word so the two don't sound abrupt.
+            if not first_in_run and transition_word:
+                raw_text = f"{transition_word} {raw_text}"
+            first_in_run = False
+
+            # Wait if the user is currently recording — don't speak over them.
+            # Poll until recording stops (or voice mode is disabled).
+            while self._voice_recording and self._voice_tts:
+                time.sleep(0.2)
+
+            # Bail out if TTS was disabled while we were waiting.
+            if not self._voice_tts:
+                self._voice_tts_queue.task_done()
+                continue
+
+            cleaned = self._tts_clean(raw_text)
+            if not cleaned:
+                self._voice_tts_queue.task_done()
+                continue
+
+            try:
+                _dir = os.path.join(tempfile.gettempdir(), "hermes_voice")
+                os.makedirs(_dir, exist_ok=True)
+                mp3_path = os.path.join(_dir, f"tts_ser_{time.strftime('%Y%m%d_%H%M%S_%f')}.mp3")
+                text_to_speech_tool(text=cleaned, output_path=mp3_path)
+                if os.path.isfile(mp3_path) and os.path.getsize(mp3_path) > 0:
+                    play_audio_file(mp3_path)
+                    try:
+                        os.unlink(mp3_path)
+                        ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+                        if os.path.isfile(ogg_path):
+                            os.unlink(ogg_path)
+                    except OSError:
+                        pass
+            except Exception as e:
+                logger.warning("TTS worker playback error: %s", e)
+            finally:
+                self._voice_tts_queue.task_done()
 
     def _voice_beeps_enabled(self) -> bool:
         """Return whether CLI voice mode should play record start/stop beeps."""
@@ -11821,6 +11965,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # the command is denied on timeout without the user ever seeing it
             # (#41098). The countdown refreshes below paint the same way.
             self._paint_now()
+
+            # Voice TTS: announce that approval is needed without reading
+            # the full command. Route through the serialising queue so it
+            # plays after any still-speaking intermediate text finishes.
+            if self._voice_tts:
+                self._voice_tts_enqueue("Awaiting your approval.", transition_word="")
 
             _last_countdown_refresh = _time.monotonic()
             while True:
@@ -12358,6 +12508,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 except Exception:
                     pass
 
+            # Expose streaming-TTS state to _stream_delta so it can skip
+            # the intermediate batch-TTS path when ElevenLabs handles audio.
+            self._elevenlabs_streaming_active = use_streaming_tts
+
             if use_streaming_tts:
                 text_queue = queue.Queue()
                 stop_event = threading.Event()
@@ -12812,6 +12966,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         f"({_api_calls}/{_max_iter}) — "
                         f"response may be incomplete{_RST}"
                     )
+
+            # Clear ElevenLabs streaming flag now that the turn is done
+            self._elevenlabs_streaming_active = False
 
             # Speak response aloud if voice TTS is enabled
             # Skip batch TTS when streaming TTS already handled it
@@ -14193,6 +14350,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     return
 
                 # Interrupt TTS if playing, so user can start talking.
+                # Also drain the pending TTS queue so stale segments don't
+                # play after the user's new input is processed.
                 # stop_playback() is fast (just terminates a subprocess).
                 if not cli_ref._voice_tts_done.is_set():
                     try:
@@ -14201,6 +14360,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         cli_ref._voice_tts_done.set()
                     except Exception:
                         pass
+                # Drain any queued TTS segments that arrived while the user
+                # was idle — they're stale once the user pushes to talk.
+                try:
+                    while not cli_ref._voice_tts_queue.empty():
+                        cli_ref._voice_tts_queue.get_nowait()
+                except Exception:
+                    pass
 
                 with cli_ref._voice_lock:
                     cli_ref._voice_continuous = True

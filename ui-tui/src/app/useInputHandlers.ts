@@ -463,7 +463,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     ) {
       const inputSel = getInputSelection()
       const cursorPos = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
-      const atEnd = !cState.input || (cursorPos !== null && cState.input.indexOf('\n', cursorPos) < 0)
+      // null cursorPos means selection not reported — treat as at-end so ↓ still works
+      const atEnd = !cState.input || cursorPos === null || cState.input.indexOf('\n', cursorPos) < 0
 
       if (atEnd || cState.historyIdx !== null) {
         patchViewState({

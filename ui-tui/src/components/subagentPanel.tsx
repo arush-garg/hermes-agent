@@ -4,7 +4,7 @@ import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 
 import { $turnState } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
-import { $viewState, getViewState, patchViewState } from '../app/viewStore.js'
+import { $viewState, patchViewState } from '../app/viewStore.js'
 import { handleSubagentPanelKeyDown, type SubagentPanelAction } from '../app/subagentPanelKeys.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import type { SubagentProgress, SubagentStatus } from '../types.js'
@@ -45,7 +45,7 @@ interface SubagentPanelProps {
 export const SubagentPanel = memo(function SubagentPanel({ onInterrupt, onSteerSubmit }: SubagentPanelProps) {
   const subagents = useStore($turnState).subagents
   const theme = useStore($uiState).theme
-  const vs = getViewState()
+  const vs = useStore($viewState)
   const cursor = vs.subagentPanel.cursor
   const steerOpen = vs.subagentPanel.steerOpen
   const [spinnerIdx, setSpinnerIdx] = useState(0)

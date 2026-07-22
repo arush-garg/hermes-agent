@@ -285,6 +285,92 @@ SILENCE_DURATION_SECONDS = 3.0  # Seconds of continuous silence before auto-stop
 _TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_voice")
 
 
+# Common Bluetooth headset brand markers -- these names appear in CoreAudio
+# device names but don't always include the word "bluetooth".
+_BLUETOOTH_DEVICE_KEYWORDS = frozenset({
+    "airpods",
+    "freebuds",
+    "galaxy buds",
+    "jabra",
+    "wh-1000",
+    "wf-1000",
+})
+
+
+def _is_bluetooth_device_name(name: str) -> bool:
+    """Check if a device name indicates a Bluetooth headset.
+
+    Uses common brand/product patterns beyond the generic 'bluetooth' keyword.
+    """
+    _name = name.lower()
+    return any(keyword in _name for keyword in _BLUETOOTH_DEVICE_KEYWORDS)
+
+
+def _select_input_device() -> Optional[int]:
+    """Select preferred audio input device for speech recognition.
+
+    Scores input devices:
+    - Built-in/MacBook microphones -> highest (best quality for STT)
+    - External USB / non-Bluetooth mics -> medium
+    - Bluetooth headsets -> lowest (poor narrowband audio)
+
+    Returns device ID (int) or None for system default.
+    """
+    try:
+        sd, _ = _import_audio()
+        devices = sd.query_devices()
+    except Exception:
+        logger.debug("Device query failed -- using system default")
+        return None
+
+    # Cache host API names for Bluetooth detection
+    try:
+        hostapis = sd.query_hostapis()
+    except Exception:
+        hostapis = []
+
+    best_id = None
+    best_score = -1
+
+    for i, dev in enumerate(devices):
+        if dev.get('max_input_channels', 0) <= 0:
+            continue
+        name: str = dev.get('name', '').lower()
+
+        # Check host API for Bluetooth signal
+        hostapi_name = ''
+        hostapi_idx = dev.get('hostapi', -1)
+        if 0 <= hostapi_idx < len(hostapis):
+            hostapi_name = hostapis[hostapi_idx].get('name', '').lower()
+
+        # Bluetooth headsets -- poor STT quality.
+        # Check device name for Bluetooth indicators including common
+        # Bluetooth headset brand names (Jabra, AirPods, etc.).
+        if (
+            'bluetooth' in name
+            or 'bluetooth' in hostapi_name
+            or _is_bluetooth_device_name(name)
+        ):
+            score = 10
+        elif 'built-in' in name or 'macbook' in name:
+            score = 100
+        else:
+            score = 50  # external USB or unknown
+
+        if score >= best_score:
+            best_score = score
+            best_id = i
+
+    # Only use built-in or external USB -- skip if only Bluetooth
+    if best_score < 50:
+        logger.debug("No suitable input device found (best=%d) -- using system default", best_score)
+        return None
+
+    dev_name = devices[best_id].get('name', f'device #{best_id}')
+    logger.info("Using audio input device %d: %s", best_id, dev_name)
+    return best_id
+
+
 # ============================================================================
 # Audio cues (beep tones)
 # ============================================================================
@@ -478,8 +564,9 @@ class AudioRecorder:
 
     supports_silence_autostop = True
 
-    def __init__(self) -> None:
+    def __init__(self, input_device_id: Optional[int] = None) -> None:
         self._lock = threading.Lock()
+        self._input_device_id = input_device_id
         self._stream: Any = None
         self._frames: List[Any] = []
         self._recording = False
@@ -633,7 +720,9 @@ class AudioRecorder:
         # Create stream — may block on CoreAudio (first call only).
         stream = None
         try:
+            device = self._input_device_id if self._input_device_id is not None else _select_input_device()
             stream = sd.InputStream(
+                device=device,
                 samplerate=SAMPLE_RATE,
                 channels=CHANNELS,
                 dtype=DTYPE,
