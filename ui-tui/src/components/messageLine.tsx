@@ -7,6 +7,7 @@ import { hasLeadGap } from '../domain/blockLayout.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
+import { splitSlashSkillRefs } from '../domain/slash.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
 import {
   boundedLiveRenderText,
@@ -76,12 +77,13 @@ export const MessageLine = memo(function MessageLine({
   }
 
   if (msg.kind === 'trail' && (msg.tools?.length || tools.length || thinking)) {
-    return thinkingMode !== 'hidden' || toolsMode !== 'hidden' || activityMode !== 'hidden' ? (
+    return shouldShowThinkingTrail(msg, thinkingMode, toolsMode, activityMode) ? (
       <Box flexDirection="column" marginTop={leadGap ? 1 : 0}>
         <ToolTrail
           commandOverride={detailsModeCommandOverride}
           detailsMode={detailsMode}
           reasoning={thinking}
+          reasoningAlwaysVisible={msg.isMoaReference}
           reasoningTokens={msg.thinkingTokens}
           sections={sections}
           t={t}
@@ -118,6 +120,23 @@ export const MessageLine = memo(function MessageLine({
             {preview}
           </Text>
         )}
+      </Box>
+    )
+  }
+
+  // Timeline events (model switches, delegation completions) render as
+  // dim ◈ markers with no gutter — not as opaque user messages.
+  if (msg.kind === 'event') {
+    const eventGutterWidth = transcriptGutterWidth('system', t.brand.prompt)
+
+    return (
+      <Box marginBottom={1} marginTop={leadGap ? 1 : 0}>
+        <NoSelect flexShrink={0} fromLeftEdge width={eventGutterWidth}>
+          <Text> </Text>
+        </NoSelect>
+        <Text color={t.color.muted} dimColor>
+          ◈ {msg.text}
+        </Text>
       </Box>
     )
   }
@@ -187,10 +206,26 @@ export const MessageLine = memo(function MessageLine({
       )
     }
 
-    if (msg.role === 'user' && typeof onUserMessageClick === 'function') {
+    // A skill the user referenced mid-prose (`clean this up with /clean`)
+    // keeps the accent it wore as a completion in the composer, instead of
+    // flattening back into the body text.
+    if (msg.role === 'user') {
+      const segments = splitSlashSkillRefs(msg.text)
+
       return (
-        <Text {...(body ? { color: body } : {})} onClick={onUserMessageClick}>
-          {msg.text}
+        <Text
+          {...(body ? { color: body } : {})}
+          {...(typeof onUserMessageClick === 'function' ? { onClick: onUserMessageClick } : {})}
+        >
+          {segments.map((segment, i) =>
+            segment.ref ? (
+              <Text color={t.color.accent} key={i}>
+                {segment.text}
+              </Text>
+            ) : (
+              segment.text
+            )
+          )}
         </Text>
       )
     }
@@ -250,6 +285,18 @@ export const MessageLine = memo(function MessageLine({
 
 export const shouldShowResponseSeparator = (msg: Msg, showDetails: boolean): boolean =>
   msg.role === 'assistant' && showDetails && /\S/.test(msg.text)
+
+// A MoA reference block (msg.isMoaReference) is the user-facing
+// mixture-of-agents process the user opted into, not private model
+// reasoning — it must stay visible even when every other trail section is
+// hidden (#64657).
+export const shouldShowThinkingTrail = (
+  msg: Msg,
+  thinkingMode: DetailsMode,
+  toolsMode: DetailsMode,
+  activityMode: DetailsMode
+): boolean =>
+  Boolean(msg.isMoaReference) || thinkingMode !== 'hidden' || toolsMode !== 'hidden' || activityMode !== 'hidden'
 
 interface MessageLineProps {
   cols: number

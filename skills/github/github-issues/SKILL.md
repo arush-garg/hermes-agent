@@ -11,73 +11,30 @@ metadata:
     related_skills: [github-auth, github-pr-workflow]
 ---
 
-# Improved GitHub Issues Management – Assistant Instruction Set
+# GitHub Issues Management
 
-You are a specialized assistant managing GitHub Issues via the `gh` CLI and GitHub REST API. Generate **precise, copy-pasteable commands** with **detailed explanations** for:
-1. CLI commands (`gh`) and API fallbacks (`curl`)
-2. Error handling and edge-case considerations
-3. JSON formatting rules for `curl`
+Create, search, triage, and manage GitHub issues. Each section shows `gh` first, then the `curl` fallback.
 
-## Key Requirements
-1. Always verify all placeholders are filled (`<PLACEHOLDER>`, `$OWNER`, `$REPO`, etc.)
-2. Use `--jq` for filtering output when returning JSON
-3. Include error handling in scripts (e.g., check `gh` exists)
-4. Add content-type headers in `curl` commands
-5. Use `jq` for complex JSON parsing when needed
-6. Provide **multiple execution paths** for high-priority tasks
+## Prerequisites
 
-## Critical API Knowledge
-- GitHub API base URL: `api.github.com/repos/$OWNER/$REPO`
-- Authentication: `Authorization: Bearer $GITHUB_TOKEN`
-- Required headers: `Accept: application/vnd.github.v3+json`
-- Rate limits: Check docs for `X-RateLimit-Remaining` header
-- Label limitations: Max 10 labels per request via API
+- Authenticated with GitHub (see `github-auth` skill)
+- Inside a git repo with a GitHub remote, or specify the repo explicitly
 
-## Label Management Best Practices
-1. Use `gh label create` before applying (if not exists)
-2. Combine logical labels: `priority:high` + `component:database`
-3. Avoid duplicate labels in single edit operations
-4. Remove obsolete triage labels systematically
+### Setup
 
-## Enhanced Script Writing Rules
-1. Add shebang: `#!/usr/bin/env bash`
-2. Check for `gh` CLI: `command -v gh >/dev/null 2>&1 || { echo 'gh CLI required'; exit 1; }`
-3. Use `set -e` to fail on errors
-4. Quote all JSON values: `\"$VALUE\"`
-5. Escape special chars: `echo "$COMMENT" | sed 's/\"/\\\"/g'` for `curl` bodies
-
-## JSON Formatting Rules for curl
-1. Use double quotes for all fields
-2. Escape inner quotes: `\"body\": \"We\'re waiting...\"`
-3. Use newline in multi-line bodies: `\\n`
-4. Validate JSON before sending: `jq -c . <<<$JSON`
-
-## Error Handling Requirements
-1. Check API response codes: `if [ $? -ne 0 ]; then echo "API error"; fi`
-2. Add retry logic for rate-limited operations
-3. Use `--exit-code` with `gh` commands where available
-4. Add `--silent` and `--show-error` in `curl`
-
-## Special Case Handling
-1. **Multi-issue operations**: Use loops with `for` and `in` (see below)
-2. **Label conflicts**: Check current labels before adding new ones
-3. **Empty bodies**: Validate placeholder values aren't empty
-4. **Unicode characters**: Ensure proper escaping/encoding
-
-## Code Templates with Error Handling
-
-### Multi-issue Loop with gh
 ```bash
-#!/bin/bash
-set -e
-
-ISSUES=(3 7 12)
-
-for issue in "${ISSUES[@]}"; do
-  if ! gh issue comment "$issue" --body "Comment pending"; then
-    echo "Failed to comment issue $issue" >&2
+if command -v gh &>/dev/null && gh auth status &>/dev/null; then
+  AUTH="gh"
+else
+  AUTH="git"
+  if [ -z "$GITHUB_TOKEN" ]; then
+    if _hermes_env="${HERMES_HOME:-$HOME/.hermes}/.env"; [ -f "$_hermes_env" ] && grep -q "^GITHUB_TOKEN=" "$_hermes_env"; then
+      GITHUB_TOKEN=$(grep "^GITHUB_TOKEN=" "$_hermes_env" | head -1 | cut -d= -f2 | tr -d '\n\r')
+    elif grep -q "github.com" ~/.git-credentials 2>/dev/null; then
+      GITHUB_TOKEN=$(uv run python3 "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/git-credential-token.py")
+    fi
   fi
-done
+fi
 ```
 
 ### Multi-issue Loop with curl
