@@ -12370,22 +12370,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """
         if not self._voice_tts or not text:
             return
-        self._voice_tts_done.clear()
-        threading.Thread(
-            target=self._voice_speak_response,
-            args=(text,),
-            daemon=True,
-        ).start()
-        # Spoken barge-in must work on the whole-file fallback path too. The
-        # full-duplex agent-turn listener normally already covers playback
-        # (armed at turn start in chat()); this arm is an idempotent safety
-        # net for speak calls outside a chat turn — the listener refuses to
-        # double-arm via _voice_fd_active.
-        if self._voice_continuous:
-            threading.Thread(
-                target=self._voice_full_duplex_listener,
-                daemon=True,
-            ).start()
+        self._voice_tts_enqueue(text, transition_word="also")
 
     def _voice_speak_response(self, text: str):
         """Speak the agent's response aloud using TTS (runs in background thread)."""
@@ -16155,6 +16140,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     return
 
                 # Interrupt TTS if playing, so user can start talking.
+                # Also drain the pending TTS queue so stale segments don't
+                # play after the user's new input is processed.
                 # stop_playback() is fast (just terminates a subprocess);
                 # the stop event drains the streaming pipeline if one is live.
                 if not cli_ref._voice_tts_done.is_set():
