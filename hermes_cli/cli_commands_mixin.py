@@ -893,18 +893,26 @@ class CLICommandsMixin:
             target = target[1:-1].strip()
 
         if not target:
-            _cprint("  Usage: /resume <number|session_id_or_title>")
-            if self._show_recent_sessions(reason="resume"):
-                # Arm a one-shot pending-resume selection so the user can type
-                # just the number (`3`) on the next line instead of having to
-                # retype `/resume 3`. The list here must match the one shown by
-                # _show_recent_sessions and used for index resolution below —
-                # all three go through _list_recent_sessions(limit=10). See
-                # #34584.
-                self._pending_resume_sessions = self._list_recent_sessions(limit=10)
+            # No explicit argument → show interactive curses picker
+            sessions = self._list_recent_sessions(limit=20)
+            if not sessions:
+                _cprint("  No previous sessions found.")
+                _cprint("  Tip:   Use /history or `hermes sessions list` to find sessions.")
                 return
-            _cprint("  Tip:   Use /history or `hermes sessions list` to find sessions.")
-            return
+
+            from hermes_cli.curses_ui import curses_session_picker
+
+            selected_session = curses_session_picker(
+                sessions=sessions,
+                title="Select a session to resume",
+                description="↑↓ navigate  Enter select  / search  ESC cancel",
+            )
+
+            if not selected_session:
+                # User cancelled (Esc or q)
+                return
+
+            target = selected_session["id"]
 
         # Any explicit /resume <target> supersedes a previously-armed bare
         # numbered prompt.

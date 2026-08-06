@@ -995,3 +995,61 @@ def _numbered_fallback(
         print()
 
     return chosen
+
+
+def curses_session_picker(
+    sessions: list[dict[str, str]],
+    title: str = "Select a session to resume",
+    *,
+    cancel_returns: dict[str, str] | None = None,
+    description: str | None = None,
+    searchable: bool = True,
+) -> dict[str, str] | None:
+    """Display an interactive curses picker for recent sessions.
+
+    Args:
+        sessions: List of session dicts with keys "id", "title", "last_active", "preview".
+        title: Header title for the picker.
+        cancel_returns: Value returned on ESC/cancel (default: None).
+        description: Optional descriptive text shown below title.
+        searchable: Enable type-to-filter (default True, uses fuzzy scoring).
+
+    Returns:
+        The selected session dict, or cancel_returns (None) if cancelled.
+    """
+    if not sessions:
+        return cancel_returns
+
+    # Prepare display items and search labels for each session.
+    display_items: list[str] = []
+    search_labels: list[str] = []
+    for idx, sess in enumerate(sessions, start=1):
+        sid = sess.get("id", "<no id>")
+        t = sess.get("title", "<no title>")
+        ts = sess.get("last_active", "")
+        preview = sess.get("preview", "").replace("\n", " ")
+        # Show: "#. title (id) – last_active – preview"
+        line = f"{idx}. {t} ({sid})"
+        if ts:
+            line += f" – {ts}"
+        if preview:
+            line += f" – {preview[:60]}"
+        display_items.append(line)
+        # Search on title + id + preview for fuzzy matching.
+        search_labels.append(f"{t} {sid} {preview}")
+
+    from hermes_cli.curses_ui import curses_radiolist
+
+    selected_idx = curses_radiolist(
+        title=title,
+        items=display_items,
+        selected=0,
+        cancel_returns=cancel_returns,
+        description=description,
+        searchable=searchable,
+        search_labels=search_labels,
+    )
+
+    if selected_idx is None or selected_idx >= len(sessions):
+        return cancel_returns
+    return sessions[selected_idx]

@@ -1429,6 +1429,164 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           sys(`error: ${message}`)
           setStatus('ready')
         }
+
+      case 'agent.event': {
+        const { event_type, context } = ev.payload ?? {}
+        if (!event_type) return
+
+        // Forward subagent events through the same pipeline by handling
+        // them directly here (they have the same payload structure as
+        // the native gateway subagent events)
+        if (event_type.startsWith('subagent.')) {
+          // Dispatch to the appropriate handler by falling through
+          // We'll use a helper to avoid recursion
+          handleSubagentEvent(event_type, context)
+          return
+        }
+        // Other lifecycle events (session:compress, etc.) could be handled here
+        return
+      }
+    }
+  }
+}
+
+function handleSubagentEvent(event_type: string, payload: any): void {
+  switch (event_type) {
+    case 'subagent.spawn_requested':
+      // Child built but not yet running (waiting on ThreadPoolExecutor slot).
+      // Preserve completed state if a later event races in before this one.
+      turnController.upsertSubagent(payload, c => (isTerminalStatus(c.status) ? {} : { status: 'queued' }))
+
+      // First sign of delegation this turn → nudge toward /agents.
+      maybeNudgeAgents()
+
+      // Prime the status-bar HUD: fetch caps (once every 5s) so we can
+      // warn as depth/concurrency approaches the configured ceiling.
+      if (getDelegationState().maxSpawnDepth === null) {
+        refreshDelegationStatus(true)
+      } else {
+        refreshDelegationStatus()
+      }
+      return
+
+    case 'subagent.start':
+      turnController.upsertSubagent(payload, c => (isTerminalStatus(c.status) ? {} : { status: 'running' }))
+
+      // `subagent.start` is the first delegation event the TUI reliably
+      // receives (the delegate callback drops `spawn_requested` in the
+      // CLI→gateway path), so nudge here too.  Once-per-turn guarded, so
+      // hooking both events is safe.
+      maybeNudgeAgents()
+      return
+
+    case 'subagent.thinking': {
+      const text = String(payload.text ?? '').trim()
+
+      if (!text) {
+        return
+      }
+
+      // Update-only: never resurrect subagents whose spawn_requested/start
+      // we missed or that already flushed via message.complete.
+      turnController.upsertSubagent(
+        payload,
+        c => ({
+          status: keepTerminalElseRunning(c.status),
+          thinking: pushThinking(c.thinking, text)
+        }),
+        { createIfMissing: false }
+      )
+      return
+    }
+
+    case 'subagent.tool': {
+      const toolName = String(payload.tool_name ?? '')
+      const toolPreview = String(payload.tool_preview ?? '')
+
+      turnController.upsertSubagent(
+        payload,
+        c => ({
+          status: keepTerminalElseRunning(c.status),
+          toolName,
+          toolPreview,
+          outputTail: pushOutputTail(c.outputTail, toolPreview)
+        }),
+        { createIfMissing: false }
+      )
+      return
+    }
+
+    case 'subagent.progress': {
+      turnController.upsertSubagent(
+        payload,
+        c => ({
+          status: keepTerminalElseRunning(c.status),
+          apiCalls: payload.api_calls,
+          costUsd: payload.cost_usd,
+          durationSeconds: payload.duration_seconds,
+          filesRead: payload.files_read,
+          filesWritten: payload.files_written,
+          inputTokens: payload.input_tokens,
+          outputTokens: payload.output_tokens,
+          reasoningTokens: payload.reasoning_tokens,
+          iteration: payload.iteration,
+          model: payload.model,
+          summary: payload.summary,
+          taskCount: payload.task_count,
+          taskIndex: payload.task_index,
+          toolCount: payload.tool_count,
+          tools: payload.tools,
+          toolsets: payload.toolsets,
+          outputTail: pushOutputTail(c.outputTail, payload.tool_preview ?? '')
+        }),
+        { createIfMissing: false }
+      )
+      return
+    }
+
+    case 'subagent.complete': {
+      const status = normalizeSubagentStatus(payload.status ?? 'completed')
+      turnController.upsertSubagent(
+        payload,
+        c => ({
+          status,
+          apiCalls: payload.api_calls,
+          costUsd: payload.cost_usd,
+          durationSeconds: payload.duration_seconds,
+          filesRead: payload.files_read,
+          filesWritten: payload.files_written,
+          inputTokens: payload.input_tokens,
+          outputTokens: payload.output_tokens,
+          reasoningTokens: payload.reasoning_tokens,
+          iteration: payload.iteration,
+          model: payload.model,
+          summary: payload.summary,
+          taskCount: payload.task_count,
+          taskIndex: payload.task_index,
+          toolCount: payload.tool_count,
+          tools: payload.tools,
+          toolsets: payload.toolsets,
+          outputTail: pushOutputTail(c.outputTail, payload.tool_preview ?? ''),
+          thinking: payload.text ? pushThinking(c.thinking, payload.text) : c.thinking
+        }),
+        { createIfMissing: false }
+      )
+      return
+    }
+
+    case 'subagent.steered': {
+      // Flash feedback in panel — just update the matching subagent's notes.
+      turnController.upsertSubagent(
+        {
+          goal: '',
+          task_index: 0,
+          subagent_id: payload.subagent_id,
+          text: payload.accepted ? '✓ steered' : '✗ steer failed'
+        },
+        c => ({ notes: pushNote(c.notes, payload.accepted ? '✓ steered' : '✗ steer failed') }),
+        { createIfMissing: false }
+      )
+      return
     }
   }
 }

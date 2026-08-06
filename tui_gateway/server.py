@@ -5355,6 +5355,10 @@ def _agent_cbs(sid: str) -> dict:
         "status_callback": lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
         ),
+        # Generic lifecycle events (subagent.*, session:*, etc.) forwarded to TUI hooks
+        "event_callback": lambda event_type, context: _emit(
+            "agent.event", sid, {"event_type": event_type, "context": context}
+        ),
         # Credits/notice spine (L1): an AgentNotice fired by the agent becomes a
         # notification.show WS event; a recovery clear becomes notification.clear.
         # Snake_case payload to match the existing gateway-event convention.

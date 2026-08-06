@@ -2056,7 +2056,7 @@ def list_authenticated_providers(
         except Exception:
             return False
 
-    data = fetch_models_dev(async_fetch=True)
+    data = fetch_models_dev()
 
     # Pre-fetch all provider model lists in parallel to avoid blocking on sequential fetches
     from hermes_cli.models import cached_provider_model_ids_batch

@@ -5726,6 +5726,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if kind == "vibe":
             self._pet_flash("jump")
 
+    def _on_event(self, event_type: str, context: dict) -> None:
+        """Forward lifecycle events (subagent.*, session:*, etc.) to gateway/TUI hooks."""
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+        except ImportError:
+            _invoke_hook = None
+        if _invoke_hook:
+            _invoke_hook("on_event", event_type=event_type, context=context)
+
     def _pet_react_turn_end(self) -> None:
         """Flash the end-of-turn beat: failed on error, jump on a finished plan, else wave."""
         if not self._pet_enabled:
@@ -11903,6 +11912,95 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             agg = function_name or ""
             self._spinner_text = f"◆ aggregating ({agg})" if agg else "◆ aggregating"
             self._invalidate()
+            return
+
+        # Subagent lifecycle events: forward to gateway/TUI and log via hermes_logging
+        if event_type.startswith("subagent."):
+            # Forward to gateway for TUI display
+            if hasattr(self, "event_callback") and self.event_callback:
+                try:
+                    self.event_callback(event_type, {
+                        "subagent_id": kwargs.get("subagent_id"),
+                        "parent_id": kwargs.get("parent_id"),
+                        "depth": kwargs.get("depth"),
+                        "goal": function_name,
+                        "status": kwargs.get("status"),
+                        "text": preview,
+                        "tool_name": kwargs.get("tool_name"),
+                        "tool_preview": kwargs.get("tool_preview"),
+                        "api_calls": kwargs.get("api_calls"),
+                        "cost_usd": kwargs.get("cost_usd"),
+                        "duration_seconds": kwargs.get("duration_seconds"),
+                        "files_read": kwargs.get("files_read"),
+                        "files_written": kwargs.get("files_written"),
+                        "input_tokens": kwargs.get("input_tokens"),
+                        "output_tokens": kwargs.get("output_tokens"),
+                        "reasoning_tokens": kwargs.get("reasoning_tokens"),
+                        "iteration": kwargs.get("iteration"),
+                        "model": kwargs.get("model"),
+                        "summary": kwargs.get("summary"),
+                        "task_count": kwargs.get("task_count"),
+                        "task_index": kwargs.get("task_index"),
+                        "tool_count": kwargs.get("tool_count"),
+                        "tools": kwargs.get("tools"),
+                        "toolsets": kwargs.get("toolsets"),
+                        "output_tail": kwargs.get("output_tail"),
+                    })
+                except Exception:
+                    pass
+            # Also log via hermes_logging for agent.log persistence
+            try:
+                import hermes_logging
+                hermes_logging.log_event(
+                    "subagent",
+                    event_type,
+                    subagent_id=kwargs.get("subagent_id"),
+                    parent_id=kwargs.get("parent_id"),
+                    depth=kwargs.get("depth"),
+                    goal=function_name,
+                    status=kwargs.get("status"),
+                    text=preview,
+                    tool_name=kwargs.get("tool_name"),
+                    tool_preview=kwargs.get("tool_preview"),
+                    api_calls=kwargs.get("api_calls"),
+                    cost_usd=kwargs.get("cost_usd"),
+                    duration_seconds=kwargs.get("duration_seconds"),
+                    files_read=kwargs.get("files_read"),
+                    files_written=kwargs.get("files_written"),
+                    input_tokens=kwargs.get("input_tokens"),
+                    output_tokens=kwargs.get("output_tokens"),
+                    reasoning_tokens=kwargs.get("reasoning_tokens"),
+                    iteration=kwargs.get("iteration"),
+                    model=kwargs.get("model"),
+                    summary=kwargs.get("summary"),
+                    task_count=kwargs.get("task_count"),
+                    task_index=kwargs.get("task_index"),
+                    tool_count=kwargs.get("tool_count"),
+                    tools=kwargs.get("tools"),
+                    toolsets=kwargs.get("toolsets"),
+                    output_tail=kwargs.get("output_tail"),
+                )
+            except Exception:
+                pass
+
+            # Local CLI display for spawn_requested/start/complete
+            if event_type == "subagent.spawn_requested":
+                goal = function_name or "unknown task"
+                self._spinner_text = f"⛓ spawning subagent: {goal}"
+                self._invalidate()
+                return
+            if event_type == "subagent.start":
+                goal = function_name or "unknown task"
+                self._spinner_text = f"⛓ subagent started: {goal}"
+                self._invalidate()
+                return
+            if event_type == "subagent.complete":
+                status = kwargs.get("status", "completed")
+                goal = function_name or "unknown task"
+                self._spinner_text = f"⛓ subagent {status}: {goal}"
+                self._invalidate()
+                return
+            # For text/thinking/tool/progress, just forward to gateway (handled above)
             return
 
         # Feed the pet: tools mean "running" (not reasoning); a failed tool
