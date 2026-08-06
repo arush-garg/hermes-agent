@@ -67,11 +67,11 @@ function SubagentSteerInputImpl({ subagentId, theme, onSteerSubmit, onClose }: S
         <TextInput
           columns={60}
           focus
+          onChange={setValue}
+          onPaste={e => ({ cursor: e.cursor + e.text.length, value: e.value + e.text })}
+          onSubmit={handleSubmit}
           placeholder="nudge this subagent…"
           value={value}
-          onChange={setValue}
-          onSubmit={handleSubmit}
-          onPaste={e => ({ cursor: e.cursor + e.text.length, value: e.value + e.text })}
         />
       )}
     </Box>

@@ -19,7 +19,6 @@ import { isRemoteShellSession } from '../lib/terminalSetup.js'
 import { pasteTokenLabel, stripTrailingPasteNewlines } from '../lib/text.js'
 
 import type { MaybePromise, PasteSnippet, UseComposerStateOptions, UseComposerStateResult } from './interfaces.js'
-import type { Msg } from '../types.js'
 import { $isBlocked } from './overlayStore.js'
 import { getUiState } from './uiStore.js'
 
