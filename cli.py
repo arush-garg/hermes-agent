@@ -15628,6 +15628,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             ] if item is not None
         ]
 
+    def _wake_idle_from_pending_steer(self) -> None:
+        """Wake an idle session from a periodic-monitor tick.
+
+        A monitor steer that lands while the loop is idle sits in
+        agent._pending_steer with no in-loop drain — conversation_loop only
+        drains pre-API-call, which runs during an active turn. Move it into
+        the input queue so it becomes a fresh user turn and the agent
+        actually processes it, instead of waiting for the next user-typed
+        message. The caller gate (``not self._agent_running``) ensures this
+        never fires mid-tool. This powers the ``[Monitor #N]`` idle wake for
+        the CLI.
+        """
+        _agent = getattr(self, "agent", None)
+        if _agent is None:
+            return
+        try:
+            _pending = _agent._drain_pending_steer()
+        except Exception:
+            return
+        if _pending:
+            self._pending_input.put(_pending)
+
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
         if not self._claim_active_session("cli"):
@@ -18064,7 +18086,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
         spinner_thread.start()
-        
+
         # Background thread to process inputs and run agent
         def process_loop():
             while not self._should_exit:
@@ -18082,6 +18104,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                                 self._drain_process_notifications("cli-idle")
                             except Exception:
                                 pass
+                            self._wake_idle_from_pending_steer()
                         continue
 
                     # Voice-transcribed messages arrive wrapped in a sentinel

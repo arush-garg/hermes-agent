@@ -494,6 +494,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "monitor": {
+        "description": "Periodic in-session monitor (inject steer messages on a timer)",
+        "tools": ["add_monitor", "delete_monitors"],
+        "includes": []
+    },
+
     "hermes-cron": {
         # Mirrors hermes-cli so cron's "default" toolset is the same set of
         # core tools users see interactively — then `hermes tools` filters

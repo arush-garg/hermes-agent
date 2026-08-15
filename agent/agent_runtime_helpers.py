@@ -4038,6 +4038,7 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
             # Fall back to string replacement if content shape is unexpected.
             messages[target_idx]["content"] = f"{existing_content}{marker}"
     else:
+        # Original behavior (still keep the marker for model awareness)
         messages[target_idx]["content"] = existing_content + marker
     _ra().logger.info(
         "Delivered /steer to agent after tool batch (%d chars): %s",

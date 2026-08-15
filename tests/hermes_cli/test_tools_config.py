@@ -72,6 +72,26 @@ def test_partially_valid_platform_toolsets_no_runtime_warning(caplog):
     assert not any("#38798" in r.getMessage() for r in caplog.records)
 
 
+def test_monitor_toolset_enabled_by_hermes_cli_platform():
+    """The periodic monitor tools (add_monitor/delete_monitors) must survive
+    the bundle-to-toolset expansion for the cli platform. Regression: they were
+    registered under the registry toolset 'monitor' but had no named toolset in
+    CONFIGURABLE_TOOLSETS, so _get_platform_tools never enabled them and the
+    agent had no way to schedule in-session periodic reminders."""
+    from toolsets import resolve_toolset, TOOLSETS
+
+    # Named toolset exists and its static tools are a subset of hermes-cli's
+    # composite, so the subset check in _get_platform_tools passes.
+    assert "monitor" in TOOLSETS
+    monitor_tools = set(resolve_toolset("monitor", include_registry=False))
+    assert {"add_monitor", "delete_monitors"}.issubset(monitor_tools)
+    assert monitor_tools.issubset(set(resolve_toolset("hermes-cli")))
+
+    # Platform resolver actually enables it for a hermes-cli cli profile.
+    config = {"platform_toolsets": {"cli": ["hermes-cli"]}}
+    assert "monitor" in _get_platform_tools(config, "cli")
+
+
 
 
 
