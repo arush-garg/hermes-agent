@@ -810,14 +810,27 @@ def _expand_parent_toolsets(parent_toolsets: set) -> set:
     return expanded
 
 
+def _get_exclude_mcp_toolsets() -> set[str]:
+    """Return MCP toolset names to exclude from child inheritance."""
+    cfg = _load_config()
+    exclude = cfg.get("delegation", {}).get("exclude_mcp_toolsets") or []
+    return {str(name) for name in exclude}
+
+
 def _preserve_parent_mcp_toolsets(
     child_toolsets: List[str], parent_toolsets: set[str]
 ) -> List[str]:
-    """Append any parent MCP toolsets that are missing from a narrowed child."""
+    """Append any parent MCP toolsets that are missing from a narrowed child.
+
+    Respects ``delegation.exclude_mcp_toolsets`` — any MCP toolset listed
+    there is skipped so children never inherit it (e.g. Alpaca trading tools).
+    """
+    excluded = _get_exclude_mcp_toolsets()
     preserved = list(child_toolsets)
     for toolset_name in sorted(parent_toolsets):
         if _is_mcp_toolset_name(toolset_name) and toolset_name not in preserved:
-            preserved.append(toolset_name)
+            if toolset_name not in excluded:
+                preserved.append(toolset_name)
     return preserved
 
 

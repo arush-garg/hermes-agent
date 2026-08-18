@@ -12,155 +12,152 @@ metadata:
     related_skills: []
 ---
 
-## UI Automation with `computer_use` – Revised Instruction Set
-
-**Purpose**  
-Automate user‑interface interactions safely and reliably in the sandboxed *computer_use* environment. The workflow must honor the background‑first safety model, use the AX API to locate elements, and provide clear, minimal narration mixed with discrete JSON calls.  
-
-| Key concept | What it means |
-|-------------|---------------|
-| **AX tree** | A list of accessible UI objects (`AXButton`, `AXTextField`, etc.) each with a label and bounding box. |
-| **som** | “Screen‑on‑display” capture mode – returns a PNG and the AX tree. |
-| **Element index** | The integer after `#` in the AX tree (`#12 AXButton 'Help' …`). |
-| **Effect field** | Status string returned by `computer_use` (`confirmed`, `unverifiable`, `suspected_noop`, `foreground_unsupported`, …). |
-| **PIXEL fallback** | When the AX list cannot locate an element, identify it by visual description and `image_match`. |
+## Revised Instruction Set for UI Automation in the `computer_use` Sandbox
 
 ---
 
-### 1. Detect UI Relevance
-
-1. **Trigger**  
-   - If the user’s request contains one of the tokens below, *and* the request does **not** explicitly prohibit UI interaction, start the UI workflow.  
+### 1. When to Engage the UI Workflow
+1. **Trigger Words** – If the user input contains any of:
    ```
    click, press, select, drag, drop, type into, capture, take a screenshot,
-   image of, .jpg, .png, screenshot, examine the navigation bar
-   ```  
-2. **Otherwise**  
-   - Respond in plain language and do **not** call `computer_use`.  
+   image of, .jpg, .png, examine the navigation bar, screenshot
+   ```
+2. **No Explicit No‑UI Clause** – If the request does *not* explicitly say “do not interact with the UI” or “no automation”, proceed.
+3. **Otherwise** – Respond only in plain language and **do not** invoke the `computer_use` API.
 
 ---
 
-### 2. Start with a Capture
+### 2. Capture the Current Screen (unless the user writes `skip capture`)
 
-Always begin with a screen capture (unless the user writes `"skip capture"`).  
-
-```json
-{
-  "action": "capture",
-  "mode": "som",
-  "app": "<optional_app_name>"
-}
-```
-
-The tool will return a PNG file (`MEDIA:/path/to/file.png`) and an AX tree, each element formatted like:  
-
-```
-#<index> AX<role> '<label>' @ (<x1>,<y1>,<x2>,<y2>)
-```
+1. **Narration** – One sentence explaining why we are capturing.  
+   *Example*: “We captured the screen so we can locate the requested UI element.”
+2. **JSON Call** – In its own code block.  
+   ```json
+   {
+     "action": "capture",
+     "mode": "som",
+     "app": "<optional_app_name>"
+   }
+   ```
+3. **Screenshot Path** – Immediately after the code block, on its own line.  
+   `MEDIA:/path/to/file.png`
 
 ---
 
-### 3. Locate the Target Element
+### 3. Resolve the Target Element
 
-1. **AX Search**  
-   - Scan the AX list for an exact match on `role` + `label`.  
-   - Example: `AXButton 'Confirm Payment'` → `#3 AXButton 'Confirm Payment' @ (10, 20, 150, 40)`.  
+| Situation | Recommended Action |
+|-----------|--------------------|
+| **Exactly one AX element matches (role + label)** | Proceed to step 4. |
+| **Multiple identical elements** | Ask the user for a distinguishing detail (e.g., “Which Refresh icon – the one on the left or right?”). |
+| **No AX match** | Provide a concise visual description (`small green toggle in top‑right corner`) and use pixel‑fallback (`image_match`). |
+| **Ambiguous description** | Ask the user to clarify the appearance or location. |
 
-2. **If no match**  
-   - **Pixel‑Based Fallback**  
-     1. Record a concise visual description (e.g., “small green toggle button labeled ‘Dark Mode’ in the top‑right corner”).  
-     2. Invoke `image_match` (pseudo‑function) to get a rectangle.  
-     3. Convert that rectangle to a point (for click) or two points (for drag‑and‑drop).  
-
-3. **If still uncertain**  
-   - Respond to the user asking for clarification.  
-   - Example:  
-     ```
-     I’m not sure what element you mean by “Help”. Could you describe its appearance or location?
-     ```
+**NOTE**: Parsing the AX tree is done automatically by the underlying tool – you only need to interpret the result in natural language.
 
 ---
 
 ### 4. Execute the Requested Action
 
-| Requested keyword | JSON structure | Notes |
-|-------------------|---------------|-------|
-| **Click** | ```json { "action":"click","element":N,"capture_after":true }``` | Use element index from AX; if only coordinates, use `"coordinate":[x,y]`. |
-| **Type** | ```json { "action":"type","element":N,"text":"…","capture_after":true }``` | Target must be a focused text field. |
-| **Drag‑and‑Drop** | Step‑by‑step: (1) click grab, (2) drag to target. | ```{ "action":"click","element":N1,"capture_after":false }``` followed by ```{ "action":"drag","element":N2,"by":"relative","capture_after":true }```. |
-| **Screenshot only** | Same capture call but no subsequent action. | Provide the `MEDIA:` path after the call. |
-| **Any other UI gesture** | Follow the pattern in this table – always a JSON object per platform call. | |
+| Keyword | JSON Structure | Commentary (one sentence) |
+|---------|-----------------|-----------------------------|
+| **Click** | ```json { "action":"click","element":X,"capture_after":true }``` | “We clicked the target element.” |
+| **Press / Select** | Same as Click | “We pressed the target element.” |
+| **Type into** | ```json { "action":"type","element":X,"text":"…","capture_after":true }``` | “We typed the provided text into the field.” |
+| **Drag & Drop** | Two-step: first click, then drag. | “We started dragging the first element.” (then `drag` call) |
+| **Screenshot only** | No action after capture – just return the `MEDIA:` path. | “Screenshot captured.” |
+| **Any other gesture** | Follow the pattern for click / type – one code block per API call. | “We performed the requested gesture.” |
 
-All calls must be **separate JSON objects in individual code blocks**. Do **not** embed JSON inside narrative text.
+**Syntax**: Every `action=` call must be in its own code block; never embed it in narrative text.
 
 ---
 
-### 5. Verify the Result
+### 5. Verify and Retry
 
-After each platform call, check the `effect` field in the `computer_use` response:
+After each platform call:
 
-| `effect` value | What to do |
-|----------------|------------|
-| `confirmed` | Success – proceed to next step or finish. |
-| `unverifiable` | Re‑capture and retry the same action. |
-| `suspected_noop` | Retry or fall back to pixel detection; if still no effect, ask user for clarification. |
-| `code:"foreground_unsupported"` | Do not retry with foreground. If possible, try a background operation or start a new UI session. |
-
-When the action is a **screenshot request**, deliver the PNG by writing the `MEDIA:` path on its own line, immediately after the capture JSON call.
+1. **Inspect `effect`** returned from the tool.  
+   - `confirmed` → success.  
+   - `unverifiable` or `suspected_noop` → *re‑capture* and *retry* the same action.  
+   - `code:"foreground_unsupported"` → do **not** force foreground; if possible, try a background variant or start a new UI session.  
+2. **After re‑capture** – output a new `MEDIA:` path and repeat the action step.
 
 ---
 
 ### 6. Safety & Permissions
 
-| Dangerous scenario | Must-do | Must-don’t |
-|---------------------|--------|------------|
-| Sensitive dialogs (payments, 2‑FA, password prompts) | Confirm user explicitly gives permission | Interact automatically |
+| Dangerous Scenario | Must‑Do | Must‑Don’t |
+|--------------------|--------|------------|
+| Payments / 2‑FA / password prompts | Await explicit user confirmation | Interact automatically |
 | Credentials (API keys, passwords) | Never type | Never type |
-| Shell commands matching dangerous black‑list | Never issue | Never issue |
-| `raise_window` or `bring_to_front` | Only if tool response requests | Avoid unless explicitly needed |
-
-If the tool returns `code:"foreground_unsupported"`, do **not** try to force the action to foreground.
-
----
-
-### 7. Output Style
-
-1. **Narrative** – Plain English explanation *outside* of any code block.  
-2. **JSON Calls** – Each in a separate code block.  
-3. **Screenshot** – After the capture call, immediately write the `MEDIA:` line.  
-4. **No extraneous text** – Do not use ellipsis (`...`) or commented JSON inside narrative.  
-5. **Keep it short** – One sentence commentary for each step, followed by the JSON call, then the verification line.  
+| Shell command black‑list | Never issue | Never issue |
+| `raise_window` / `bring_to_front` | Only if the tool requests **or** the user explicitly says so | Avoid unless necessary |
+| `code:"foreground_unsupported"` | Do not retry forcing foreground | – |
 
 ---
 
-### 8. Example Flow
+### 7. Output Formatting Rules
 
-```
-User: Click the 'Submit' button on the signup form.
+| Element | Requirements |
+|---------|--------------|
+| **Narrative** | Plain English, one sentence per step, outside of any code block. |
+| **JSON Calls** | One code block per call, no comments or narrative inside. |
+| **Screenshot Path** | Immediately after the capture JSON, on its own line. |
+| **No Extra Text** | Commentary only immediately before the call it explains; no ellipses or stray comments. |
+| **Length** | Keep everything terse – one sentence commentary, concise JSON. |
 
-Assistant:
-We captured the screen and found element #5 labeled 'Submit'.
+---
+
+### 8. Example Workflow
+
+**User**: `Click the 'Submit' button on the signup form.`
+
+**Assistant**:
+
+> We captured the screen to locate the ‘Submit’ button.
 
 ```json
 {
-  "action":"click",
-  "element":5,
-  "capture_after":true
+  "action": "capture",
+  "mode": "som",
+  "app": null
+}
+```
+MEDIA:/tmp/som_capture_20260813_123456.png
+
+> We clicked the button.
+
+```json
+{
+  "action": "click",
+  "element": 5,
+  "capture_after": true
 }
 ```
 
-Assistant: The button click was confirmed.
-```
+> The button click was confirmed.
 
 ---
 
 ### 9. Common Pitfalls to Avoid
 
-1. Forgetting the initial capture ⇒ element indices become stale.  
-2. Assuming AX will expose a custom‑canvas widget; always fallback to pixel detection.  
-3. Forcing foreground input without explicit consent.  
-4. Not providing the screenshot image (`MEDIA:`) after a capture.  
-5. Mixing JSON with narrative; keep them separate.  
+1. Forgetting the initial capture → stale indices.  
+2. Omitting the `MEDIA:` line after capture → user can’t see the screenshot.  
+3. Mixing narrative with JSON → violates output formatting.  
+4. Returning a prompt inside a code block or failing to ask for clarification when ambiguous.  
+5. Retrying indefinitely without a safety break; always re‑capture once per retry.  
 
---- 
-**End of Revised Instruction**
+---
+
+### 10. Final Checklist for the Assistant
+
+1. Verify trigger words.  
+2. If triggered, output the capture narration + JSON + `MEDIA:`.  
+3. Parse the returned AX tree.  
+4. If a single match → execute action per table.  
+5. If ambiguous → ask for clarification (outside code block).  
+6. After each action, inspect `effect` and retry if needed.  
+7. Never act on sensitive prompts without explicit user consent.  
+8. Always keep comments separate from code blocks and concise.  
+
+**End of Instruction**
