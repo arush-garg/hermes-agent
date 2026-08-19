@@ -308,7 +308,7 @@ export const sessionCommands: SlashCommand[] = [
 
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
         ctx.guarded<VoiceToggleResponse>(r => {
-          if (pendingVoiceToggles !== pendingToggles) return
+          if (pendingVoiceToggles !== pendingToggles) {return}
 
           ctx.voice.setVoiceEnabled(!!r.enabled)
           ctx.voice.setVoiceTts(!!r.tts)
