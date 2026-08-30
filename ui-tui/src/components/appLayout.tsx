@@ -510,6 +510,7 @@ const StatusRulePane = memo(function StatusRulePane({
         sessionStartedAt={status.sessionStartedAt}
         sessionTitle={status.sessionTitle}
         status={ui.status}
+        statusBarFields={ui.statusBarFields}
         statusColor={status.statusColor}
         t={ui.theme}
         turnStartedAt={status.turnStartedAt}
@@ -584,6 +585,7 @@ export const AppLayout = memo(function AppLayout({
                 cols={composer.cols}
                 onApprovalChoice={actions.answerApproval}
                 onClarifyAnswer={actions.answerClarify}
+                onClarifyQuestionAnswer={actions.answerClarifyQuestion}
                 onSecretSubmit={actions.answerSecret}
                 onSudoSubmit={actions.answerSudo}
               />
