@@ -3970,10 +3970,45 @@ class GatewaySlashCommandsMixin:
         current = is_session_yolo_enabled(session_key)
         if current:
             disable_session_yolo(session_key)
-            return EphemeralReply(t("gateway.yolo.disabled"))
+            new_state = False
         else:
             enable_session_yolo(session_key)
+            new_state = True
+
+        # Discord slash commands invoked from a group channel (not inside a thread)
+        # produce a "group" session key that differs from the auto-threaded session
+        # keys used for actual conversations.  Propagate the toggle to any cached
+        # thread sessions belonging to the same platform+user+channel so /yolo takes
+        # effect on the running conversation without requiring the user to re-issue
+        # the command from inside a thread.
+        source = event.source
+        if getattr(source, "chat_type", None) in ("group", "channel"):
+            _cached_sources = getattr(self, "_session_sources", None)
+            if _cached_sources:
+                _platform = getattr(source, "platform", None)
+                _user_id = getattr(source, "user_id", None)
+                _channel_id = getattr(source, "chat_id", None)
+                for _sk, _src in list(_cached_sources.items()):
+                    if _sk == session_key:
+                        continue
+                    if getattr(_src, "platform", None) != _platform:
+                        continue
+                    if getattr(_src, "chat_type", None) != "thread":
+                        continue
+                    # Thread sessions under this channel have parent_chat_id == channel.id
+                    if getattr(_src, "parent_chat_id", None) != _channel_id:
+                        continue
+                    if getattr(_src, "user_id", None) != _user_id:
+                        continue
+                    if new_state:
+                        enable_session_yolo(_sk)
+                    else:
+                        disable_session_yolo(_sk)
+
+        if new_state:
             return EphemeralReply(t("gateway.yolo.enabled"))
+        else:
+            return EphemeralReply(t("gateway.yolo.disabled"))
 
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
         """Handle /verbose command — cycle tool progress display mode.

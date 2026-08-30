@@ -18860,6 +18860,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if resolved_entry is None:
                 return
             session_entry = resolved_entry
+        # Inherit YOLO bypass from the parent channel's group session when a thread
+        # session is first seen.  Discord slash commands (e.g. /yolo) arrive with
+        # chat_type="group" while subsequent auto-threaded messages land in a
+        # chat_type="thread" session with a different key; without this propagation
+        # the toggle has no effect on the actual conversation.
+        #
+        # We inherit only when the thread session key is NOT already in the source
+        # cache — i.e., this is the first dispatch we've seen for it.  That prevents
+        # re-enabling YOLO on a subsequent turn after the user explicitly disabled it
+        # from inside the thread (the cache entry would already be present).
+        _parent_chat_id = getattr(source, "parent_chat_id", None)
+        if _parent_chat_id and getattr(source, "chat_type", None) == "thread":
+            _known_sources = getattr(self, "_session_sources", None)
+            _is_first_dispatch = not (_known_sources and session_key in _known_sources)
+            if _is_first_dispatch:
+                try:
+                    import dataclasses as _dc
+                    from tools.approval import (
+                        enable_session_yolo as _enable_yolo,
+                        is_session_yolo_enabled as _is_yolo,
+                    )
+                    if not _is_yolo(session_key):
+                        _grp_source = _dc.replace(
+                            source,
+                            chat_id=_parent_chat_id,
+                            chat_type="group",
+                            thread_id=None,
+                            parent_chat_id=None,
+                            prospective_thread_id=None,
+                        )
+                        _grp_key = self._session_key_for_source(_grp_source)
+                        if _is_yolo(_grp_key):
+                            _enable_yolo(session_key)
+                except Exception:
+                    pass
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             try:

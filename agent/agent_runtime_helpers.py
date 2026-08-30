@@ -1791,6 +1791,16 @@ def restore_primary_runtime(agent) -> bool:
             "Primary runtime restored for new turn: %s (%s)",
             agent.model, agent.provider,
         )
+
+        # Re-register agent in monitor tool's registry so periodic monitors
+        # survive the restore_primary path (which recreates the client without
+        # re-running agent_init). Fixes monitors going silent after restore.
+        try:
+            from tools.monitor_tool import register_agent
+            register_agent(getattr(agent, "session_id", ""), agent)
+        except Exception:
+            pass
+
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)

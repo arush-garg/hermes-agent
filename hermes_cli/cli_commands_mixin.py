@@ -2196,6 +2196,31 @@ class CLICommandsMixin:
 
                 bg_agent.thinking_callback = _bg_thinking
 
+                # Inherit the parent session's YOLO bypass. /yolo flags only
+                # THIS session's id in tools.approval._session_yolo; a
+                # background task runs as its own session (task_id), so
+                # without this transfer every dangerous-command check in the
+                # task re-prompts even though the user toggled YOLO on.
+                _bg_approval_token = None
+                _reset_bg_approval = None
+                try:
+                    from tools.approval import (
+                        enable_session_yolo,
+                        is_session_yolo_enabled,
+                        set_current_session_key,
+                        reset_current_session_key,
+                    )
+
+                    parent_key = self.session_id or "default"
+                    if is_session_yolo_enabled(parent_key):
+                        enable_session_yolo(task_id)
+                    # Bind the approval contextvar so is_current_session_yolo_enabled()
+                    # resolves against task_id instead of falling back to env.
+                    _bg_approval_token = set_current_session_key(task_id)
+                    _reset_bg_approval = reset_current_session_key
+                except Exception:
+                    pass  # fail closed — bg task just prompts as before
+
                 result = bg_agent.run_conversation(
                     user_message=prompt,
                     task_id=task_id,
@@ -2259,6 +2284,17 @@ class CLICommandsMixin:
                     set_sudo_password_callback(None)
                     set_approval_callback(None)
                     set_secret_capture_callback(None)
+                except Exception:
+                    pass
+                try:
+                    from tools.approval import disable_session_yolo
+
+                    disable_session_yolo(task_id)
+                except Exception:
+                    pass
+                try:
+                    if _reset_bg_approval is not None and _bg_approval_token is not None:
+                        _reset_bg_approval(_bg_approval_token)
                 except Exception:
                     pass
                 self._background_tasks.pop(task_id, None)

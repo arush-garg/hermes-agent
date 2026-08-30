@@ -6106,12 +6106,12 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
             # Relayed token-by-token from the child's run_conversation
             # stream_callback, so the watch window streams the reply live.
             if text := str(payload.get("text") or ""):
-                _emit("message.delta", csid, {"text": text})
+                _emit("message.delta", csid, {"text": _clean_preview_text(text)})
         elif event_type == "subagent.start":
             # One-time header line (the child's goal) so a freshly opened window
             # shows immediate context before the first reply token streams.
             if text := str(payload.get("text") or ""):
-                _emit("message.delta", csid, {"text": f"{text}\n"})
+                _emit("message.delta", csid, {"text": f"{_clean_preview_text(text)}\n"})
         elif event_type == "subagent.tool":
             if st["open_tool"]:
                 _emit("tool.complete", csid, st["open_tool"])
@@ -8559,11 +8559,26 @@ def _session_live_status(sid: str, session: dict) -> str:
     return "idle"
 
 
+def _clean_preview_text(text: str) -> str:
+    """Strip markdown noise and streaming artifacts from preview text.
+
+    Model output sometimes leaks transient phrases (e.g. "preparing terminal…")
+    or markdown delimiters (e.g. ``~~strike~~``) into the inflight preview.
+    Clean those out so the session switcher row shows stable, readable text.
+    """
+    # Strip inline strikethrough markers (~~text~~) — leaves the inner text.
+    clean = text.replace("~~", "")
+    # Trim common transient streaming artifacts.
+    for noise in ("preparing terminal", "preparing terminal…"):
+        clean = clean.replace(noise, "").replace("  ", " ").strip()
+    return " ".join(clean.split())
+
+
 def _message_preview(history: list) -> str:
     for msg in reversed(history or []):
         text = _content_display_text(msg.get("content", msg.get("text", ""))).strip()
         if text:
-            return " ".join(text.split())[:160]
+            return _clean_preview_text(" ".join(text.split())[:160])
     return ""
 
 
@@ -8588,10 +8603,10 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     preview = _message_preview(history)
     if queued:
         preview = queued.get("user") or preview
-        preview = " ".join(str(preview).split())[:160]
+        preview = _clean_preview_text(" ".join(str(preview).split())[:160])
     elif inflight:
         preview = inflight.get("assistant") or inflight.get("user") or preview
-        preview = " ".join(str(preview).split())[:160]
+        preview = _clean_preview_text(" ".join(str(preview).split())[:160])
     now = time.time()
     return {
         "current": sid == current_sid,
@@ -10769,13 +10784,14 @@ def _run_prompt_submit(
             run_message = _prepend_note(run_message, _hud_surface_note(session))
 
             def _stream(delta):
+                cleaned = _clean_preview_text(str(delta)) if isinstance(delta, str) else delta
                 with session["history_lock"]:
-                    _append_inflight_delta(session, delta)
-                payload = {"text": delta}
-                if streamer and (r := streamer.feed(delta)) is not None:
+                    _append_inflight_delta(session, cleaned)
+                payload = {"text": cleaned}
+                if streamer and (r := streamer.feed(cleaned)) is not None:
                     payload["rendered"] = r
-                if tts_queue is not None and isinstance(delta, str):
-                    tts_queue.put(delta)
+                if tts_queue is not None and isinstance(cleaned, str):
+                    tts_queue.put(cleaned)
                 _emit("message.delta", sid, payload)
 
             # Surface interim assistant text (commentary emitted alongside

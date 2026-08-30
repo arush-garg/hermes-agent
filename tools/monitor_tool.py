@@ -118,7 +118,10 @@ def restore_monitors(session_id: str) -> int:
     persisted = _load_persisted_monitors()
     restored = 0
     for entry in persisted:
-        if entry.get("session_id") != session_id:
+        # Match by prefix so monitors survive session restarts
+        # (stored session_id may be date-only prefix like 20260826
+        # while register_agent gets full ID like 20260826_220517_xxx)
+        if not entry.get("session_id", "").startswith(session_id[:8]):
             continue
         if not entry.get("enabled", True):
             continue
