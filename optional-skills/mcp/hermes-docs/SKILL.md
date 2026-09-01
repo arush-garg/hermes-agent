@@ -1,6 +1,6 @@
 ---
 name: hermes-docs
-description: Search, navigate, and read the complete Hermes Agent documentation via MCP.
+description: Search and read Hermes docs via MCP.
 version: 1.0.0
 author: Joerg Peetz (JPeetz)
 license: MIT
@@ -8,8 +8,6 @@ platforms:
   - linux
   - macos
   - windows
-metadata:
-  hermes: true
 tags:
   - MCP
   - Documentation
