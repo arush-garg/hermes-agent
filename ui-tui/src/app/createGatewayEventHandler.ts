@@ -1525,7 +1525,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'agent.event': {
         const { event_type, context } = ev.payload ?? {}
-        if (!event_type) return
+
+        if (!event_type) {return}
 
         // Forward subagent events through the same pipeline by handling
         // them directly here (they have the same payload structure as
@@ -1534,8 +1535,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           // Dispatch to the appropriate handler by falling through
           // We'll use a helper to avoid recursion
           handleSubagentEvent(event_type, context)
+
           return
         }
+
         // Other lifecycle events (session:compress, etc.) could be handled here
         return
       }
@@ -1560,6 +1563,7 @@ function handleSubagentEvent(event_type: string, payload: any): void {
       } else {
         refreshDelegationStatus()
       }
+
       return
 
     case 'subagent.start':
@@ -1570,8 +1574,8 @@ function handleSubagentEvent(event_type: string, payload: any): void {
       // CLI→gateway path), so nudge here too.  Once-per-turn guarded, so
       // hooking both events is safe.
       maybeNudgeAgents()
-      return
 
+      return
     case 'subagent.thinking': {
       const text = String(payload.text ?? '').trim()
 
@@ -1589,6 +1593,7 @@ function handleSubagentEvent(event_type: string, payload: any): void {
         }),
         { createIfMissing: false }
       )
+
       return
     }
 
@@ -1606,6 +1611,7 @@ function handleSubagentEvent(event_type: string, payload: any): void {
         }),
         { createIfMissing: false }
       )
+
       return
     }
 
@@ -1634,6 +1640,7 @@ function handleSubagentEvent(event_type: string, payload: any): void {
         }),
         { createIfMissing: false }
       )
+
       return
     }
 
@@ -1664,6 +1671,7 @@ function handleSubagentEvent(event_type: string, payload: any): void {
         }),
         { createIfMissing: false }
       )
+
       return
     }
 
@@ -1679,6 +1687,7 @@ function handleSubagentEvent(event_type: string, payload: any): void {
         c => ({ notes: pushNote(c.notes, payload.accepted ? '✓ steered' : '✗ steer failed') }),
         { createIfMissing: false }
       )
+
       return
     }
   }
