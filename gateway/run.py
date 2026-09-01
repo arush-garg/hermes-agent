@@ -915,28 +915,43 @@ def _format_exec_approval_fallback(
     )
 
 def _gateway_provider_error_reply(text: str) -> str:
-    """Map raw provider/API errors to a short user-safe Telegram reply."""
+    """Map raw provider/API errors to a configurable user-safe reply."""
     if _GATEWAY_AUTH_ERROR_RE.search(text):
-        return (
+        category = "authentication"
+        default = (
             "⚠️ Provider authentication failed. Check the configured credentials; "
             "raw provider details are in the gateway logs."
         )
-    if _GATEWAY_PROVIDER_POLICY_RE.search(text):
-        return (
+    elif _GATEWAY_PROVIDER_POLICY_RE.search(text):
+        category = "policy"
+        default = (
             "⚠️ The model provider rejected the request. I kept the raw provider "
             "error out of chat; check gateway logs for details or try rephrasing."
         )
-    if _GATEWAY_RATE_LIMIT_RE.search(text):
-        return "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
-    if _GATEWAY_CONNECTION_ERROR_RE.search(text):
-        return (
+    elif _GATEWAY_RATE_LIMIT_RE.search(text):
+        category = "rate_limit"
+        default = "⏱️ The model provider is rate-limiting requests. Please wait a moment and try again."
+    elif _GATEWAY_CONNECTION_ERROR_RE.search(text):
+        category = "connection"
+        default = (
             "⚠️ The model server is not responding — it looks like the configured "
             "model endpoint is not running or is unreachable."
         )
-    return (
-        "⚠️ The model provider failed after retries. I kept raw provider details "
-        "out of chat; check gateway logs for diagnostics."
-    )
+    else:
+        category = "generic"
+        default = (
+            "⚠️ The model provider failed after retries. I kept raw provider details "
+            "out of chat; check gateway logs for diagnostics."
+        )
+
+    try:
+        gateway_config = _load_gateway_config().get("gateway", {})
+        configured = gateway_config.get("provider_error_replies", {}).get(category)
+        if isinstance(configured, str) and configured.strip():
+            return configured
+    except (AttributeError, TypeError):
+        pass
+    return default
 
 
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
@@ -7251,6 +7266,11 @@ class TurnRunner:
             "failure_reason": (
                 ctx.result_holder[0].get("failure_reason") if ctx.result_holder[0] else None
             ),
+            "error_type": ctx.result_holder[0].get("error_type") if ctx.result_holder[0] else None,
+            "status_code": ctx.result_holder[0].get("status_code") if ctx.result_holder[0] else None,
+            "retry_count": ctx.result_holder[0].get("retry_count") if ctx.result_holder[0] else None,
+            "max_retries": ctx.result_holder[0].get("max_retries") if ctx.result_holder[0] else None,
+            "rate_limit": ctx.result_holder[0].get("rate_limit") if ctx.result_holder[0] else None,
             "completed": ctx.result_holder[0].get("completed") if ctx.result_holder[0] else None,
             "interrupted": ctx.result_holder[0].get("interrupted", False) if ctx.result_holder[0] else False,
             "partial": ctx.result_holder[0].get("partial", False) if ctx.result_holder[0] else False,
@@ -22728,6 +22748,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "response": (response or "")[:500],
                 "model": agent_result.get("model", ""),
                 "provider": agent_result.get("provider", ""),
+                "error_type": agent_result.get("error_type"),
+                "status_code": agent_result.get("status_code"),
+                "retry_count": agent_result.get("retry_count"),
+                "max_retries": agent_result.get("max_retries"),
+                "rate_limit": agent_result.get("rate_limit"),
             })
             
             # Check for pending process watchers (check_interval on background processes)
@@ -27404,8 +27429,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     raw_sid = _sk
             if raw_sid:
                 adapter = self.adapters.get(Platform.API_SERVER)
-                from gateway.wake import adapter_supports_push, deliver_wake
+                from gateway.wake import (
+                    adapter_supports_push,
+                    deliver_wake,
+                    persist_delegation_delivery,
+                )
                 if adapter is not None and not adapter_supports_push(adapter):
+                    if evt.get("type") == "async_delegation":
+                        # #85957: after the parent turn's event.complete the
+                        # CLIENT owns the next turn on this stateless surface.
+                        # Persist the completion as a durable delivery row —
+                        # never self-post it as a new role=user prompt.
+                        try:
+                            logger.info(
+                                "Async delegation completion — persisting "
+                                "delivery row for api_server session %s "
+                                "(no wake turn)",
+                                raw_sid,
+                            )
+                            await persist_delegation_delivery(
+                                adapter, text=synth_text,
+                                session_id=raw_sid, evt=evt,
+                            )
+                            return True
+                        except Exception as e:
+                            logger.warning(
+                                "Async delegation delivery persist failed "
+                                "for session %s: %s",
+                                raw_sid, e,
+                            )
+                            return False
                     try:
                         logger.info(
                             "Watch pattern notification — waking api_server "
@@ -27471,8 +27524,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # which binds chat_id = session_id). handle_message would run the
             # wake under a build_session_key()-derived key that never matches
             # the raw X-Hermes-Session-Id session — self-post instead.
-            from gateway.wake import deliver_wake
+            from gateway.wake import deliver_wake, persist_delegation_delivery
             raw_sid = str(evt.get("origin_session_id") or "").strip() or str(source.chat_id or "")
+            if evt.get("type") == "async_delegation":
+                # #85957: same client-owns-the-turn rule as the raw-key branch
+                # above — persist the completion as a delivery row, never
+                # self-post it as a new role=user prompt.
+                try:
+                    logger.info(
+                        "Async delegation completion — persisting delivery "
+                        "row for api_server session %s (no wake turn)",
+                        raw_sid,
+                    )
+                    await persist_delegation_delivery(
+                        adapter, text=synth_text, session_id=raw_sid, evt=evt,
+                    )
+                    return True
+                except Exception as e:
+                    logger.warning(
+                        "Async delegation delivery persist failed for "
+                        "session %s: %s",
+                        raw_sid, e,
+                    )
+                    return False
             try:
                 logger.info(
                     "Watch pattern notification — waking api_server session "
