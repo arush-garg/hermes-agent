@@ -1,8 +1,4 @@
-import { readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
-
-import { Box, Link, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
+import { Box, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
@@ -16,7 +12,6 @@ import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
-import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
@@ -27,105 +22,11 @@ import { scrollbarColors } from './overlayPrimitives.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
-const KICKBACKS_AD_CACHE = join(homedir(), '.kickbacks', 'hermes-ad.json')
-const KICKBACKS_TUI_AD_MAX_AGE_MS = 10 * 60 * 1000
-
-
 
 // Keep verb segment width stable so status-bar content to the right doesn't
 // jitter when the ticker rotates between short/long verbs.
 export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
 export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
-
-interface KickbacksTickerAd {
-  text: string
-  url: string
-}
-
-type KickbacksAdClickEvent = {
-  localCol?: number
-  stopImmediatePropagation: () => void
-}
-
-const cleanAdText = (value: unknown): string => {
-  if (typeof value !== 'string') {
-    return ''
-  }
-
-  return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, '').trim()
-}
-
-const safeHttpUrl = (value: unknown): string => {
-  const raw = cleanAdText(value)
-
-  if (!raw) {
-    return ''
-  }
-
-  try {
-    const parsed = new URL(raw)
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : ''
-  } catch {
-    return ''
-  }
-}
-
-export const readKickbacksTickerAd = (
-  now = Date.now(),
-  cachePath = process.env.KICKBACKS_HERMES_TUI_AD_CACHE || KICKBACKS_AD_CACHE
-): KickbacksTickerAd | null => {
-  try {
-    const raw = JSON.parse(readFileSync(cachePath, 'utf8')) as Record<string, unknown>
-    const text = cleanAdText(raw.ad_text)
-    const url = safeHttpUrl(raw.click_url)
-    const ts = typeof raw.ts === 'number' ? raw.ts : 0
-
-    if (!text || !url || !ts || now - ts > KICKBACKS_TUI_AD_MAX_AGE_MS || ts > now + 60_000) {
-      return null
-    }
-
-    return { text, url }
-  } catch {
-    return null
-  }
-}
-
-export function KickbacksTickerAdText({
-  ad,
-  onOpen = openExternalUrl
-}: {
-  ad: KickbacksTickerAd
-  onOpen?: (url: string) => boolean
-}) {
-  return (
-    <Box
-      flexDirection="row"
-      onClick={(event: KickbacksAdClickEvent) => {
-        event.stopImmediatePropagation()
-        onOpen(ad.url)
-      }}
-    >
-      <Link url={ad.url}>{ad.text}</Link>
-    </Box>
-  )
-}
-
-export const handleKickbacksAdClick = (
-  event: KickbacksAdClickEvent,
-  ad: KickbacksTickerAd,
-  adStartCol = 0,
-  onOpen = openExternalUrl
-) => {
-  const localCol = typeof event.localCol === 'number' ? event.localCol : adStartCol
-  const adEndCol = adStartCol + stringWidth(ad.text)
-
-  if (localCol < adStartCol || localCol >= adEndCol) {
-    return
-  }
-
-  event.stopImmediatePropagation()
-  onOpen(ad.url)
-}
 
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
@@ -218,7 +119,17 @@ export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean):
   return indicatorFrameWidth(style) + verb + duration
 }
 
-function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: null | number; style: IndicatorStyle }) {
+function FaceTicker({
+  color,
+  startedAt,
+  style,
+  verbOverride
+}: {
+  color: string
+  startedAt?: null | number
+  style: IndicatorStyle
+  verbOverride?: string
+}) {
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
   const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
   const [now, setNow] = useState(() => Date.now())
@@ -227,8 +138,11 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   // Pre-compute cadence + verb-visibility for the active style so an
   // `/indicator` switch re-arms the interval (and skips the verb timer
   // for verb-less styles like `unicode`) without leaving the previous
-  // timer dangling.
+  // timer dangling. A frozen override (idle compaction) always shows the
+  // verb so "compacting…" is visible even in unicode style (#97239).
   const { intervalMs, showVerb } = renderIndicator(style, 0)
+  const freezeVerb = Boolean(verbOverride)
+  const displayVerb = freezeVerb || showVerb
 
   useEffect(() => {
     // An overlay is painted OVER the status rule (the modal widget slot, or a
@@ -246,9 +160,10 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
 
     const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
     const clock = setInterval(() => setNow(Date.now()), 1000)
-    // Verb timer is gated on `showVerb` — `unicode` style hides the verb
-    // entirely, so cycling `verbTick` would be an avoidable re-render.
-    const verb = showVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
+    // Verb timer is gated on `displayVerb` — `unicode` style hides the verb
+    // entirely, so cycling `verbTick` would be an avoidable re-render. A
+    // frozen override does not rotate.
+    const verb = displayVerb && !freezeVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
 
     return () => {
       clearInterval(glyph)
@@ -258,34 +173,16 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
         clearInterval(verb)
       }
     }
-  }, [intervalMs, isOccluded, showVerb])
+  }, [displayVerb, freezeVerb, intervalMs, isOccluded])
 
   const { frame } = renderIndicator(style, tick)
-  const verb = VERBS[verbTick % VERBS.length] ?? ''
-  const ad = showVerb ? readKickbacksTickerAd(now) : null
-  const verbSegment = showVerb ? ` ${padVerb(verb)}` : ''
+  const verb = verbOverride ?? VERBS[verbTick % VERBS.length] ?? ''
+  const verbSegment = displayVerb ? ` ${padVerb(verb)}` : ''
   // Leading space keeps a gap between the frame and the duration when the
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
   // IS shown, its trailing padding already provides the gap, so the extra
   // space is harmless.
   const durationSegment = startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''
-
-  if (ad) {
-    const adStartCol = stringWidth(`${frame} `)
-
-    return (
-      <Box
-        flexDirection="row"
-        onClick={(event: KickbacksAdClickEvent) => {
-          handleKickbacksAdClick(event, ad, adStartCol)
-        }}
-      >
-        <Text color={color}>{frame} </Text>
-        <KickbacksTickerAdText ad={ad} />
-        <Text color={color}>{durationSegment}</Text>
-      </Box>
-    )
-  }
 
   return (
     <Text color={color}>
@@ -592,6 +489,7 @@ export function StatusRule({
   cwdLabel,
   cols,
   busy,
+  compacting = false,
   status,
   statusBarFields = null,
   statusColor,
@@ -783,7 +681,12 @@ export function StatusRule({
             </Text>
           ) : null}
           {busy ? (
-            <FaceTicker color={statusColor} startedAt={turnStartedAt} style={indicatorStyle} />
+            <FaceTicker
+              color={statusColor}
+              startedAt={turnStartedAt}
+              style={indicatorStyle}
+              verbOverride={compacting ? 'compacting' : undefined}
+            />
           ) : showNotice ? null : (
             <Text color={statusColor} wrap="truncate-end">
               {status}
@@ -1035,6 +938,8 @@ interface StatusRuleProps {
   lastTurnEndedAt?: null | number
   liveSessionCount: number
   busy: boolean
+  // Context compaction in progress — FaceTicker freezes on "compacting".
+  compacting?: boolean
   cols: number
   cwdLabel: string
   model: string

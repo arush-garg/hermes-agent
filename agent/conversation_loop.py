@@ -33,14 +33,42 @@ from agent.conversation_compression import (
     COMPRESSION_RETRY_TOKENS_STATUS_TEMPLATE,
     COMPRESSION_RETRY_TOO_LARGE_STATUS_TEMPLATE,
     PRE_API_COMPRESSION_STATUS_TEMPLATE,
+    compression_blocked_transiently,
     compression_skipped_due_to_lock,
+    context_compression_timed_out,
     conversation_history_after_compression,
 )
 from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
+
+# Session-terminate marker for long-running sessions (#99869).
+def _record_session_interruption(agent, reason: str, last_action: str = "") -> None:
+    """Best-effort: write ~/.hermes/sessions/<id>.interrupted marker.
+
+    Called when a turn ends via kill/timeout/auth-error/context-exhaustion
+    so the next session can triage instead of trusting stale state.
+    """
+    try:
+        sid = getattr(agent, "session_id", "") or ""
+        if not sid:
+            return
+        last_action = (last_action or "")[:2000]
+        reason = (reason or "interrupted")[:500]
+        if not last_action:
+            try:
+                msgs = getattr(agent, "_last_tool_action", "") or ""
+                if msgs:
+                    last_action = str(msgs)[:2000]
+            except Exception:
+                pass
+        from tools.checkpoint_manager import write_interrupted_marker
+        write_interrupted_marker(sid, last_action=last_action, reason=reason)
+    except Exception:
+        pass
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_metadata import append_message
 from agent.turn_context import (
+    PreflightCompressionTimedOut,
     _compression_warrants_another_preflight_pass,
     _review_fork_first_request_pending,
     build_turn_context,
@@ -294,6 +322,16 @@ def _should_skip_model_call_for_reference_handoff(
 _HANDOFF_SKIP_FINAL_RESPONSE = (
     "Context was compacted. The previous response is complete — "
     "awaiting your next message."
+)
+
+# Terminal final_response for a turn ended because context compression hit its
+# host progress-aware timeout while the request was still oversized (#98722,
+# salvaged from #98741). Sending the unchanged request would only bounce off
+# the provider's overflow error and re-enter compression in the same turn.
+_COMPRESSION_TIMEOUT_FINAL_RESPONSE = (
+    "Context compression timed out without reducing this conversation. "
+    "No messages were dropped. Start a fresh session with /new, or check "
+    "auxiliary.compression before retrying /compress."
 )
 
 
@@ -1513,38 +1551,57 @@ def _compression_deferred_result(
     agent,
     messages: List[Dict],
     api_call_count: int,
+    reason: str = "lock",
 ) -> Dict[str, Any]:
-    """Build the soft turn result for a lock-contended compression defer.
+    """Build the soft turn result for a transiently-deferred compression.
 
-    Another path (a sibling turn, a background review fork, a manual
-    ``/compress``) holds this session's compression lock, so every
-    compression pass this turn no-oped and the request still does not fit.
-    This is a TEMPORARY condition — the lock winner is actively shrinking
-    the same session — so the turn must end as a soft defer
+    Two transient shapes funnel here, and BOTH must end as a soft defer
     (``compression_deferred``), never as ``compression_exhausted``: the
-    gateway auto-resets (wipes) the session on exhaustion (#9893/#35809),
-    which would destroy a session that the concurrent compressor is about
-    to make healthy again.
+    gateway auto-resets (wipes) the session on exhaustion (#9893/#35809).
+
+    * ``reason="lock"`` — another path (a sibling turn, a background review
+      fork, a manual ``/compress``) holds this session's compression lock,
+      so every compression pass this turn no-oped and the request still does
+      not fit. The lock winner is actively shrinking the same session.
+    * ``reason="transient_block"`` — the compressor is in a timed transient
+      guard (summary-failure cooldown / structural backoff, e.g. one just
+      recorded by the host ceiling timeout, #97488). The no-op says nothing
+      about compressibility; treating it as exhaustion falsely auto-reset
+      sessions whose compression was merely cooling down.
 
     ``failed`` stays False so the gateway persists the user turn (transient
     branch) and retry-next-message semantics apply.
     """
-    holder = getattr(agent, "_compression_skipped_due_to_lock", None)
-    logger.info(
-        "turn deferred: compression lock held by another path "
-        "(session=%s holder=%s) — not counting as compression exhaustion",
-        agent.session_id or "none",
-        holder if isinstance(holder, str) else "unconfirmed",
-    )
+    if reason == "transient_block":
+        block = getattr(agent, "_compression_blocked_transient", None)
+        logger.info(
+            "turn deferred: compression transiently blocked (%s) "
+            "(session=%s) — not counting as compression exhaustion",
+            block if isinstance(block, str) else "unknown guard",
+            agent.session_id or "none",
+        )
+        _final = (
+            "Context compression is temporarily paused after a recent "
+            "failed attempt. Please retry in a moment — compression will "
+            "resume automatically (or run /compress to force a retry now)."
+        )
+    else:
+        holder = getattr(agent, "_compression_skipped_due_to_lock", None)
+        logger.info(
+            "turn deferred: compression lock held by another path "
+            "(session=%s holder=%s) — not counting as compression exhaustion",
+            agent.session_id or "none",
+            holder if isinstance(holder, str) else "unconfirmed",
+        )
+        _final = (
+            "Context compression is already running for this session. "
+            "Please retry in a moment — your next message will be processed "
+            "once the concurrent compression finishes."
+        )
     try:
         agent._flush_status_buffer()
     except Exception:
         pass
-    _final = (
-        "Context compression is already running for this session. "
-        "Please retry in a moment — your next message will be processed "
-        "once the concurrent compression finishes."
-    )
     return {
         "final_response": _final,
         "messages": messages,
@@ -1887,6 +1944,7 @@ def run_conversation(
     persist_user_timestamp: Optional[float] = None,
     persist_user_display_kind: Optional[str] = None,
     persist_user_display_metadata: Optional[Dict[str, Any]] = None,
+    persist_user_platform_id: Optional[str] = None,
     moa_config: Optional[dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
@@ -1912,6 +1970,10 @@ def run_conversation(
             the message unchanged.
         persist_user_display_metadata: Optional payload for that event
             (e.g. a delegation's task count).
+        persist_user_platform_id: Optional platform-side message id (e.g. the
+            Discord/Telegram message id) to store as metadata on that
+            persisted user message, so restart drain-window recovery can
+            dedup an interrupted turn against the transcript.
                 or queuing follow-up prefetch work.
 
     Returns:
@@ -1953,28 +2015,73 @@ def run_conversation(
     # ``build_turn_context``.  It mutates ``agent`` exactly as the inline code
     # did and returns the locals the loop below reads back.  See
     # ``agent/turn_context.py``.
-    _ctx = build_turn_context(
-        agent,
-        user_message,
-        system_message,
-        conversation_history,
-        task_id,
-        stream_callback,
-        persist_user_message,
-        persist_user_timestamp,
-        persist_user_display_kind=persist_user_display_kind,
-        persist_user_display_metadata=persist_user_display_metadata,
-        restore_or_build_system_prompt=_restore_or_build_system_prompt,
-        install_safe_stdio=_install_safe_stdio,
-        sanitize_surrogates=_sanitize_surrogates,
-        summarize_user_message_for_log=_summarize_user_message_for_log,
-        set_session_context=set_session_context,
-        set_current_write_origin=set_current_write_origin,
-        ra=_ra,
-        # MoA turns append per-call aggregated context to the API copy of the
-        # user message, so no byte-stable api_content sidecar can be stamped.
-        moa_active=bool(moa_config),
-    )
+    try:
+        _ctx = build_turn_context(
+            agent,
+            user_message,
+            system_message,
+            conversation_history,
+            task_id,
+            stream_callback,
+            persist_user_message,
+            persist_user_timestamp,
+            persist_user_display_kind=persist_user_display_kind,
+            persist_user_display_metadata=persist_user_display_metadata,
+            persist_user_platform_id=persist_user_platform_id,
+            restore_or_build_system_prompt=_restore_or_build_system_prompt,
+            install_safe_stdio=_install_safe_stdio,
+            sanitize_surrogates=_sanitize_surrogates,
+            summarize_user_message_for_log=_summarize_user_message_for_log,
+            set_session_context=set_session_context,
+            set_current_write_origin=set_current_write_origin,
+            ra=_ra,
+            # MoA turns append per-call aggregated context to the API copy of the
+            # user message, so no byte-stable api_content sidecar can be stamped.
+            moa_active=bool(moa_config),
+        )
+    except PreflightCompressionTimedOut as _preflight_timeout_exc:
+        # Turn-start fail-closed boundary (#98424): preflight compression hit
+        # the host's progress-aware timeout while the request was still
+        # oversized, so no provider call was sent. Convert the typed exception
+        # into the same typed recovery result the in-loop consumers return
+        # (salvaged #98741 / PR #99710) instead of letting it escape to the
+        # surfaces' generic exception handlers — the gateway deliberately
+        # hides raw exception text from users, which would bury the
+        # actionable "run /compress and retry" guidance and skip the
+        # compression_exhausted clean-session recovery contract.
+        logger.warning(
+            "Turn-start preflight compression timed out — ending turn with "
+            "typed recovery result: %s",
+            _preflight_timeout_exc,
+        )
+        # build_turn_context registered this turn's in-flight tripwire slot
+        # (note_turn_start) but the early return skips the persist funnel
+        # that normally clears it — clear it here so the next turn does not
+        # log a spurious "concurrent turns on one session" warning. The
+        # inbound user row is intentionally NOT persisted on this path: the
+        # gateway skips transcript persistence for compression_exhausted
+        # results to prevent the session-growth loop (#7100), and the
+        # auto-reset moves future input to a clean session.
+        from agent.agent_runtime_helpers import note_turn_persisted
+
+        note_turn_persisted(agent)
+        # Intentionally NOT _COMPRESSION_TIMEOUT_FINAL_RESPONSE: the boundary's
+        # exception text carries per-request context (token count, "provider
+        # call was not sent") that is the actionable guidance this handler
+        # exists to surface; the in-loop constant describes a different state
+        # (compression ran and could not reduce).
+        _final_response = str(_preflight_timeout_exc)
+        return {
+            "final_response": _final_response,
+            "messages": list(conversation_history or []),
+            "completed": False,
+            "api_calls": 0,
+            "error": _final_response,
+            "partial": True,
+            "failed": True,
+            "compression_exhausted": True,
+            "turn_exit_reason": "context_compression_timeout",
+        }
     user_message = _ctx.user_message
     original_user_message = _ctx.original_user_message
     messages = _ctx.messages
@@ -2014,7 +2121,6 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
-    turn_restart_attempted = False
     # One resolved per-turn compression attempt cap, shared by every site that
     # consumes ``compression_attempts``: the pre-API pressure gate, the
     # overflow/413 retry handlers, and the post-tool compaction gate. The
@@ -2027,7 +2133,10 @@ def run_conversation(
     max_compression_attempts = getattr(agent, "max_compression_attempts", 3)
     _last_preflight_pressure: Optional[int] = None
     _preflight_compression_blocked = _ctx.preflight_compression_blocked
-    restart_with_turn_recovery = False  # Paired with turn_restart_attempted
+    # Armed when a compression host-timeout terminates the turn (#98722,
+    # salvaged from #98741); finalize below reuses the gateway's existing
+    # context-recovery contract (error/partial/compression_exhausted).
+    _compression_timeout_exhausted = False
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
     # Last composed answer intentionally held back by a verification gate. If
     # that continuation consumes the remaining budget, this is the best
@@ -2058,6 +2167,37 @@ def run_conversation(
     # (early failure / interrupt) so the hook receives None rather than a
     # stale prior turn's usage.
     agent._last_turn_usage = None
+
+    # Surface recent interrupted markers from prior sessions (#99869):
+    # long loops that died mid-write leave a signal for the next session.
+    try:
+        from tools.checkpoint_manager import list_interrupted_markers
+        _recent_markers = list_interrupted_markers()
+        if _recent_markers:
+            _now = __import__("time").time()
+            # Only surface markers from the last 24h to avoid stale noise.
+            _recent = [m for m in _recent_markers if _now - m.get("timestamp", 0) < 86400]
+            if _recent:
+                agent._vprint(
+                    "⚠️  Previous long-running session was interrupted before completing its task.",
+                    force=True,
+                )
+                for _m in _recent[:3]:
+                    _sid = _m.get("session_id", "?")[:12]
+                    _when = _m.get("iso_time", "")
+                    _reason = _m.get("reason", "")
+                    _act = (_m.get("last_action", "") or "")[:80]
+                    agent._vprint(
+                        f"   • session {_sid} at {_when} — {_reason} last_action={_act}",
+                        force=True,
+                    )
+                agent._vprint(
+                    "   Partial file mutations may have been left on disk. "
+                    "Check `hermes checkpoints` / `/rollback` before trusting state.",
+                    force=True,
+                )
+    except Exception:
+        pass
 
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
@@ -2284,7 +2424,10 @@ def run_conversation(
         # repair_message_sequence_with_cursor also recomputes the SessionDB
         # flush cursor (_last_flushed_db_idx) when repair compacts the list,
         # so the turn-end flush doesn't skip the assistant/tool chain (#44837).
-        from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
+        from agent.agent_runtime_helpers import (
+            fill_empty_non_final_wire_payload,
+            repair_message_sequence_with_cursor,
+        )
         repaired_seq = repair_message_sequence_with_cursor(agent, messages)
         if repaired_seq > 0:
             request_logger.info(
@@ -2314,28 +2457,8 @@ def run_conversation(
             # from every outgoing copy so strict OpenAI-compatible backends
             # don't reject the request after a model switch or resumed typed
             # event row enters the live history.
-            _display_kind = api_msg.pop("display_kind", None)
+            api_msg.pop("display_kind", None)
             api_msg.pop("display_metadata", None)
-
-            # Legacy hidden redirect placeholders (#88955): rows persisted
-            # BEFORE the writer-side api_content stamp in
-            # _apply_active_turn_redirect are content="" with no sidecar.
-            # Once display_kind is stripped the pre-call sanitizer
-            # (repair_empty_non_final_messages) would re-heal such a row on
-            # every call forever, since the durable transcript is never
-            # mutated. Give the wire copy the same neutral payload here so
-            # old sessions converge too. Never the interrupt scaffold —
-            # replaying scaffold bytes as assistant text is #81841.
-            if (
-                _display_kind == "hidden"
-                and api_msg.get("role") == "assistant"
-                and not _api_content
-                and not (api_msg.get("content") or "").strip()
-                and not api_msg.get("tool_calls")
-            ):
-                from agent.agent_runtime_helpers import _INTERRUPTED_PLACEHOLDER
-
-                api_msg["content"] = _INTERRUPTED_PLACEHOLDER
 
             # Durable row identity stamped by _rows_to_conversation so the
             # desktop can address a specific persisted message (reactions).
@@ -2393,6 +2516,16 @@ def run_conversation(
             # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
             if "finish_reason" in api_msg:
                 api_msg.pop("finish_reason")
+            # Empty non-final user/assistant turns (#88955 hidden placeholders
+            # and #96870 stream-death / host-fed empties): once display_kind
+            # and api_content are stripped, the pre-call sanitizer would
+            # re-heal the wire copy on every send and flood errors.log.
+            # Fill the WIRE copy here so the sanitizer has nothing to do.
+            # Durable history is not mutated. After reasoning copy so a
+            # thinking-only turn keeps its payload and is not rewritten.
+            fill_empty_non_final_wire_payload(
+                api_msg, is_final=(idx == len(messages) - 1)
+            )
             # _thinking_prefill survives here intentionally: the drop pass below
             # needs it. The transport strips all underscore keys before the wire.
             # Strip length-continuation marks; not every transport drops underscore keys.
@@ -2538,6 +2671,24 @@ def run_conversation(
         # manual message manipulation are always caught.
         api_messages = agent._sanitize_api_messages(api_messages)
 
+        # One-time repeated-heal escalation notice (#96870): if the sanitizer
+        # above just crossed the per-session heal threshold, deliver the
+        # queued notice through the status/warning callback — the normal
+        # out-of-band delivery channel (gateway status message / CLI print).
+        # NEVER appended to messages/api_messages: conversation context and
+        # the cached prompt prefix stay byte-identical.
+        try:
+            from agent.agent_runtime_helpers import (
+                consume_pending_sanitizer_heal_notice,
+            )
+
+            _heal_notice = consume_pending_sanitizer_heal_notice()
+            if _heal_notice:
+                agent._emit_warning(_heal_notice)
+        except Exception:
+            # A notice hiccup must never break the send path.
+            logger.debug("sanitizer heal notice delivery failed", exc_info=True)
+
         # Drop thinking-only assistant turns (reasoning but no visible
         # output and no tool_calls) and merge any adjacent user messages
         # left behind. Prevents Anthropic 400s ("The final block in an
@@ -2654,7 +2805,19 @@ def run_conversation(
         # messages walk inside estimate_request_tokens_rough. Tools added
         # separately (compression needs them: 50+ tools = 20-30K tokens).
         # total_chars is a rough (~) proxy — verbose log + hook metric only.
-        approx_tokens = estimate_messages_tokens_rough(api_messages)
+        # Charge stale thinking only when the active route actually replays
+        # it (#84371): on codex_responses the text keys never ship (the
+        # encrypted item sidecars — charged unconditionally — carry the
+        # chain), so counting them here re-created the trigger/tail-walk
+        # disagreement that dead-looped compaction.
+        from agent.turn_context import _agent_stale_thinking_on_wire
+
+        if _agent_stale_thinking_on_wire(agent):
+            approx_tokens = estimate_messages_tokens_rough(api_messages)
+        else:
+            approx_tokens = estimate_messages_tokens_rough(
+                api_messages, charge_stale_thinking=False
+            )
         # Route-aware pressure: when the upcoming request is eligible for
         # native Responses compaction the transport will checkpoint-prune
         # the payload before sending — the generic durable-history figure
@@ -2818,16 +2981,37 @@ def run_conversation(
                 approx_tokens=request_pressure_tokens,
                 task_id=effective_task_id,
             )
-            if messages is _pre_api_input and compression_skipped_due_to_lock(agent):
-                # #69870 lock-skip: another path holds this session's
-                # compression lock, so this pass no-oped. That is a temporary
-                # DEFER, not evidence about compressibility — refund the
-                # attempt (it must not burn the shared overflow-recovery
-                # budget toward compression_exhausted → gateway auto-reset,
-                # #9893/#35809) and leave the insufficient-progress blocker
-                # unarmed. Proceed with the current request: if it truly does
-                # not fit, the provider's 413/overflow handler returns the
-                # soft compression_deferred result with that stronger signal.
+            if context_compression_timed_out(agent):
+                # Host progress-aware timeout (#98722, salvaged from #98741):
+                # this preflight iteration never reached the provider. Refund
+                # its provisional call/budget exactly like a successful
+                # pre-API compaction, then stop before the unchanged oversized
+                # request reaches the provider — its overflow error would only
+                # invoke compression again on the same transcript with the
+                # wait budget already spent.
+                api_call_count -= 1
+                agent._api_call_count = api_call_count
+                agent.iteration_budget.refund()
+                final_response = _COMPRESSION_TIMEOUT_FINAL_RESPONSE
+                failed = True
+                _compression_timeout_exhausted = True
+                _turn_exit_reason = "context_compression_timeout"
+                break
+            if messages is _pre_api_input and (
+                compression_skipped_due_to_lock(agent)
+                or compression_blocked_transiently(agent)
+            ):
+                # #69870 lock-skip / #97488 transient-block: this pass
+                # no-oped for a TEMPORARY reason (another path holds the
+                # compression lock, or a timed cooldown/backoff guard is
+                # active). That is a temporary DEFER, not evidence about
+                # compressibility — refund the attempt (it must not burn the
+                # shared overflow-recovery budget toward
+                # compression_exhausted → gateway auto-reset, #9893/#35809)
+                # and leave the insufficient-progress blocker unarmed.
+                # Proceed with the current request: if it truly does not
+                # fit, the provider's 413/overflow handler returns the soft
+                # compression_deferred result with that stronger signal.
                 compression_attempts -= 1
                 _last_preflight_pressure = None
                 if pending_moa_prepared_request is _moa_prepared_request:
@@ -3237,13 +3421,6 @@ def run_conversation(
                     agent.provider in {"copilot-acp"}
                     or str(agent.base_url or "").lower().startswith("acp://")
                     or str(agent.base_url or "").lower().startswith("acp+tcp://")
-                ):
-                    _use_streaming = False
-                # ClaudeCLIClient spawns the `claude` binary and returns a
-                # plain SimpleNamespace (not a stream iterator) — same as ACP.
-                elif (
-                    agent.provider == "claude-cli"
-                    or str(agent.base_url or "").lower().startswith("claude-cli://")
                 ):
                     _use_streaming = False
                 # MoA streams only when a display/TTS consumer is present to
@@ -4551,6 +4728,7 @@ def run_conversation(
                 api_elapsed = time.time() - api_start_time
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupted during API call.", force=True)
                 interrupted = True
+                _record_session_interruption(agent, "interrupted_during_api_call", last_action="api_call")
                 # Preserve any assistant text already streamed to the user
                 # before the stop landed. Dropping it leaves history with no
                 # record of the half-finished reply on screen, so the next turn
@@ -5375,6 +5553,7 @@ def run_conversation(
                         _retry.restart_with_redirected_messages = True
                         break
                     agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during error handling, aborting retries.", force=True)
+                    _record_session_interruption(agent, f"interrupted_during_error:{error_type}", last_action=str(api_error)[:500])
                     _interrupt_text = f"Operation interrupted: handling API error ({error_type}: {agent._clean_error_message(str(api_error))})."
                     close_interrupted_tool_sequence(messages, _interrupt_text)
                     agent._persist_session(messages, conversation_history)
@@ -5448,6 +5627,7 @@ def run_conversation(
                         "(compression.enabled: false). Run /compress to compact manually, "
                         "/new to start fresh, or switch to a larger-context model."
                     )
+                    _record_session_interruption(agent, "context_overflow_compaction_disabled", last_action=_final_response[:500])
                     return {
                         "final_response": _final_response,
                         "messages": messages,
@@ -5581,11 +5761,6 @@ def run_conversation(
                             agent._credential_pool,
                         )
                     )
-                    # For transient rate limits (e.g. NIM per-minute RPM),
-                    # give the primary provider one retry with backoff before
-                    # falling back.  Billing errors are not transient and
-                    # should still fall back immediately.
-                    _billing_exhausted = classified.reason == FailoverReason.billing
                     if not pool_may_recover:
                         if _is_upstream:
                             _upstream_name = (classified.error_context or {}).get(
@@ -5817,6 +5992,18 @@ def run_conversation(
                         return _compression_deferred_result(
                             agent, messages, api_call_count
                         )
+                    if messages is _overflow_input and compression_blocked_transiently(agent):
+                        # #97488 transient-block: compression no-oped because a
+                        # timed guard (host-timeout cooldown / structural
+                        # backoff) is active — a temporary defer, not evidence
+                        # of incompressibility. Never classify it as
+                        # compression_exhausted (gateway auto-reset).
+                        compression_attempts -= 1
+                        agent._persist_session(messages, conversation_history)
+                        return _compression_deferred_result(
+                            agent, messages, api_call_count,
+                            reason="transient_block",
+                        )
                     conversation_history = conversation_history_after_compression(
                         agent, messages, conversation_history
                     )
@@ -5974,6 +6161,15 @@ def run_conversation(
                                 agent._persist_session(messages, conversation_history)
                                 return _compression_deferred_result(
                                     agent, messages, api_call_count
+                                )
+                            if messages is _overflow_input and compression_blocked_transiently(agent):
+                                # #97488: timed transient guard — defer, never
+                                # exhaustion (gateway auto-reset).
+                                compression_attempts -= 1
+                                agent._persist_session(messages, conversation_history)
+                                return _compression_deferred_result(
+                                    agent, messages, api_call_count,
+                                    reason="transient_block",
                                 )
                             conversation_history = conversation_history_after_compression(
                                 agent, messages, conversation_history
@@ -6135,6 +6331,39 @@ def run_conversation(
                         return _compression_deferred_result(
                             agent, messages, api_call_count
                         )
+                    if messages is _overflow_input and compression_blocked_transiently(agent):
+                        # #97488 transient-block: a timed guard (host-timeout
+                        # cooldown / structural backoff) no-oped this pass —
+                        # defer softly, never compression_exhausted (which
+                        # would auto-reset the session).
+                        compression_attempts -= 1
+                        agent._persist_session(messages, conversation_history)
+                        return _compression_deferred_result(
+                            agent, messages, api_call_count,
+                            reason="transient_block",
+                        )
+                    if context_compression_timed_out(agent):
+                        # Host progress-aware timeout (#98722, salvaged from
+                        # #98741): the provider proved the request does not
+                        # fit, but this recovery pass spent the full wait
+                        # budget without a committed summary. Re-sending the
+                        # unchanged request would bounce off the same overflow
+                        # error and re-enter compression in the same turn. End
+                        # the turn with the typed recovery contract instead —
+                        # transcript intact, no further doomed provider sends.
+                        agent._persist_session(messages, conversation_history)
+                        _final_response = _COMPRESSION_TIMEOUT_FINAL_RESPONSE
+                        return {
+                            "final_response": _final_response,
+                            "messages": messages,
+                            "completed": False,
+                            "api_calls": api_call_count,
+                            "error": _final_response,
+                            "partial": True,
+                            "failed": True,
+                            "compression_exhausted": True,
+                            "turn_exit_reason": "context_compression_timeout",
+                        }
                     conversation_history = conversation_history_after_compression(
                         agent, messages, conversation_history
                     )
@@ -6495,16 +6724,6 @@ def run_conversation(
                         agent._fallback_index = 0
                         agent._fallback_activated = False
                         continue
-                    # After primary-transport recovery also fails, try a
-                    # full turn restart with a continuation nudge before
-                    # attempting provider fallback.  Capped at one restart
-                    # per turn via turn_restart_attempted.
-                    if not turn_restart_attempted and agent._try_turn_restart(
-                        api_error, messages,
-                    ):
-                        turn_restart_attempted = True
-                        restart_with_turn_recovery = True
-                        break
                     # Try fallback before giving up entirely
                     if agent._has_pending_fallback():
                         agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
@@ -6850,10 +7069,6 @@ def run_conversation(
                 messages, user_message
             )
             agent._persist_user_message_idx = current_turn_user_idx
-            continue
-
-        if restart_with_turn_recovery:
-            restart_with_turn_recovery = False
             continue
 
         if _retry.restart_with_rebuilt_messages:
@@ -8763,10 +8978,33 @@ def run_conversation(
                 # break sites that set final_response without appending.
                 break
     
+    # Session-terminate marker for long-running sessions (#99869):
+    # if the turn ended via interruption / failure / context-exhaustion,
+    # record a marker so the next session can triage.
+    try:
+        _failure_reason = ""
+        if interrupted:
+            _failure_reason = f"interrupted:{_turn_exit_reason}"
+        elif failed:
+            _failure_reason = f"failed:{_turn_exit_reason}:{str(final_response)[:300]}"
+        elif _compression_timeout_exhausted:
+            _failure_reason = "compression_exhausted"
+        _resp_text = str(final_response or "")
+        if "AuthenticationError" in _resp_text or " 401" in _resp_text or ("auth" in _resp_text.lower() and "error" in _resp_text.lower()):
+            _failure_reason = _failure_reason or f"auth_error:{_resp_text[:300]}"
+        elif "exit 124" in _resp_text or "timeout" in _resp_text.lower() and "124" in _resp_text:
+            _failure_reason = _failure_reason or f"timeout_124:{_resp_text[:300]}"
+        elif "context" in _resp_text.lower() and ("exhaust" in _resp_text.lower() or "overflow" in _resp_text.lower()):
+            _failure_reason = _failure_reason or f"context_exhausted:{_resp_text[:300]}"
+        if _failure_reason:
+            _record_session_interruption(agent, _failure_reason, last_action=_turn_exit_reason)
+    except Exception:
+        pass
+
     # Post-loop turn finalization extracted to agent/turn_finalizer.finalize_turn
     # (god-file decomposition Phase 1 step 4). Behavior-neutral: the assembled
     # result dict is returned exactly as before.
-    return finalize_turn(
+    result = finalize_turn(
         agent,
         final_response=final_response,
         api_call_count=api_call_count,
@@ -8783,6 +9021,26 @@ def run_conversation(
         _pending_verification_response=_pending_verification_response,
         _pending_verification_response_previewed=_pending_verification_response_previewed,
     )
+    # On clean completion, clear this session's interrupted marker if any
+    # (it was triaged successfully). Best-effort.
+    try:
+        if not interrupted and not failed and not _compression_timeout_exhausted:
+            from tools.checkpoint_manager import clear_interrupted_marker
+            _sid = getattr(agent, "session_id", "") or ""
+            if _sid:
+                clear_interrupted_marker(_sid)
+    except Exception:
+        pass
+
+    if _compression_timeout_exhausted:
+        # Reuse the gateway's existing context-recovery contract (#98722,
+        # salvaged from #98741). The bloated transcript remains intact while
+        # future input can move to a clean session instead of replaying the
+        # summarize-timeout loop.
+        result["error"] = _COMPRESSION_TIMEOUT_FINAL_RESPONSE
+        result["partial"] = True
+        result["compression_exhausted"] = True
+    return result
 
 
 
