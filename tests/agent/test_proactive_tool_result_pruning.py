@@ -15,6 +15,7 @@ from agent.context_compressor import (
     ContextCompressor,
     _PRUNED_TOOL_PLACEHOLDER,
     _estimate_msg_budget_tokens,
+    prune_messages_for_handoff,
 )
 
 LARGE_WINDOW = 1_000_000
@@ -70,6 +71,65 @@ def _build(n_pairs, big_indices, big_chars=9000, small="ok"):
 
 def _tool_by_id(msgs, cid):
     return [m for m in msgs if m.get("role") == "tool" and m.get("tool_call_id") == cid][0]
+
+
+def test_handoff_pruning_reuses_deterministic_pruner_without_mutating_input():
+    messages = _build(8, big_indices={0}, big_chars=9000)
+    original_content = _tool_by_id(messages, "call_0")["content"]
+
+    result = prune_messages_for_handoff(messages, protect_last_n=4)
+
+    assert len(_tool_by_id(result, "call_0")["content"]) < len(original_content)
+    assert _tool_by_id(messages, "call_0")["content"] == original_content
+    assert [message["role"] for message in result] == [
+        message["role"] for message in messages
+    ]
+    assert _tool_by_id(result, "call_0")["tool_call_id"] == "call_0"
+
+
+def test_handoff_pruning_redacts_secrets_in_content_and_tool_arguments():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_secret",
+                    "type": "function",
+                    "function": {
+                        "name": "terminal",
+                        "arguments": (
+                            '{"cmd":"curl -H \'Authorization: Bearer '
+                            "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890\' "
+                            'https://example.test"}'
+                        ),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_secret",
+            "content": "token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
+            "api_content": "raw-token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "password=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890",
+                }
+            ],
+        },
+    ]
+
+    result = prune_messages_for_handoff(messages, protect_last_n=20)
+    serialized = str(result)
+
+    assert "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890" not in serialized
+    assert "***" in serialized
+    assert all("api_content" not in message for message in result)
 
 
 def test_prunes_below_compression_threshold():

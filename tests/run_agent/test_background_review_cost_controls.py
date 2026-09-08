@@ -112,8 +112,39 @@ def test_routing_resolution_failure_falls_back_to_parent():
 
 
 # ---------------------------------------------------------------------------
-# _digest_history — routed-path compact replay
+# Deterministic structure-preserving background-review handoff
 # ---------------------------------------------------------------------------
+
+
+def test_review_history_prunes_tool_outputs_without_losing_structure():
+    messages = [
+        _msg("user", "inspect logs"),
+        _msg(
+            "assistant",
+            "",
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "terminal", "arguments": '{"cmd":"test"}'},
+                }
+            ],
+        ),
+        {"role": "tool", "tool_call_id": "call_1", "content": "x" * 9000},
+    ] + [_msg("user", f"tail{i}") for i in range(24)]
+
+    history = br._prepare_review_history(messages)
+
+    assert [message["role"] for message in history] == [
+        message["role"] for message in messages
+    ]
+    tool_result = next(message for message in history if message.get("role") == "tool")
+    assert len(tool_result["content"]) < 9000
+    assert tool_result["tool_call_id"] == "call_1"
+    assert messages[2]["content"] == "x" * 9000
+
+
+# Legacy digest remains covered while callers migrate to structure-preserving pruning.
 
 def test_digest_under_tail_returns_full():
     msgs = [_msg("user", "hi"), _msg("assistant", "hello")]

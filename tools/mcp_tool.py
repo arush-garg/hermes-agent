@@ -5756,8 +5756,82 @@ def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     return safe_servers
 
 
+def _translate_claude_mcp_entry(entry: dict) -> Optional[dict]:
+    """Translate one Claude/Cursor-style MCP entry into Hermes config.
+
+    Project-local ``.mcp.json`` files use the ``mcpServers`` shape popularized
+    by Claude Code/Cursor.  Hermes already accepts the same transport keys for
+    stdio (``command``/``args``/``env``) and remote transports (``url``), but
+    Claude-style entries commonly include a ``type`` discriminator.  Strip that
+    discriminator after validating the entry and map ``type: sse`` to Hermes'
+    explicit ``transport: sse`` flag.
+    """
+    if not isinstance(entry, dict):
+        return None
+
+    cfg = {k: v for k, v in entry.items() if k != "type"}
+    transport_type = str(entry.get("type") or "").strip().lower()
+
+    if transport_type == "sse":
+        if not cfg.get("url"):
+            return None
+        cfg["transport"] = "sse"
+        return cfg
+
+    if transport_type == "http":
+        if not cfg.get("url"):
+            return None
+        cfg.pop("transport", None)
+        return cfg
+
+    if transport_type == "stdio":
+        if not cfg.get("command"):
+            return None
+        return cfg
+
+    if cfg.get("command") or cfg.get("url"):
+        return cfg
+    return None
+
+
+def _load_project_mcp_json(workspace_root: Optional[str] = None) -> Dict[str, dict]:
+    """Load additive MCP servers from ``<workspace>/.mcp.json``.
+
+    The file follows Claude/Cursor's ``{"mcpServers": {...}}`` shape. Invalid
+    files or entries are ignored so a bad project config cannot disable global
+    MCP servers.
+    """
+    root = workspace_root or _workspace_folder()
+    path = os.path.join(os.path.expanduser(str(root)), ".mcp.json")
+    if not os.path.isfile(path):
+        return {}
+
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Could not load project MCP config %s: %s", path, exc)
+        return {}
+
+    if not isinstance(data, dict):
+        return {}
+    entries = data.get("mcpServers")
+    if not isinstance(entries, dict):
+        return {}
+
+    servers: Dict[str, dict] = {}
+    for name, entry in entries.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        translated = _translate_claude_mcp_entry(entry)
+        if translated is None:
+            continue
+        servers[name] = translated
+    return servers
+
+
 def _load_mcp_config() -> Dict[str, dict]:
-    """Read ``mcp_servers`` from the Hermes config file.
+    """Read MCP servers from Hermes config plus project ``.mcp.json``.
 
     Returns a dict of ``{server_name: server_config}`` or empty dict.
     Server config can contain either ``command``/``args``/``env`` for stdio
@@ -5766,6 +5840,8 @@ def _load_mcp_config() -> Dict[str, dict]:
 
     ``${ENV_VAR}`` placeholders in string values are resolved from
     ``os.environ`` (which includes ``~/.hermes/.env`` loaded at startup).
+    Project-local ``.mcp.json`` servers are additive-only: existing global or
+    plugin MCP server names win on conflicts.
     """
     try:
         from hermes_cli.config import load_config
@@ -5804,6 +5880,21 @@ def _load_mcp_config() -> Dict[str, dict]:
                 safe_servers[name] = dict(cfg)
         except Exception:
             logger.debug("Failed to load portable MCP servers", exc_info=True)
+        try:
+            project_servers = _load_project_mcp_json()
+            for name, cfg in _filter_suspicious_mcp_servers(project_servers).items():
+                if name in safe_servers:
+                    logger.warning(
+                        "Project MCP server '%s' conflicts with existing config; skipping",
+                        name,
+                    )
+                    continue
+                interpolated = _interpolate_env_vars(cfg)
+                if isinstance(interpolated, dict):
+                    _warn_hidden_whitespace(name, interpolated)
+                    safe_servers[name] = interpolated
+        except Exception:
+            logger.debug("Failed to load project MCP servers", exc_info=True)
         return safe_servers
     except Exception as exc:
         logger.debug("Failed to load MCP config: %s", exc)

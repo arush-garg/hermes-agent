@@ -26,6 +26,7 @@ from pathlib import Path
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.context_compressor import prune_messages_for_handoff
 from agent.thread_scoped_output import thread_scoped_silence
 
 logger = logging.getLogger(__name__)
@@ -412,6 +413,11 @@ def _msg_text(m: Dict) -> str:
     if isinstance(c, list):
         return " ".join(b.get("text", "") for b in c if isinstance(b, dict)).strip()
     return ""
+
+
+def _prepare_review_history(messages_snapshot: List[Dict]) -> List[Dict]:
+    """Build deterministic, structure-preserving history for a review fork."""
+    return prune_messages_for_handoff(messages_snapshot, protect_last_n=24)
 
 
 def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]:
@@ -1617,13 +1623,10 @@ def _run_review_in_thread(
                     review_run is None or review_run.begin_request(review_agent)
                 )
                 if request_admitted:
-                    # Routed to a different model -> replay a digest (cache is cold
-                    # on that model anyway, so minimise cold-written tokens). Same
-                    # model -> replay the full snapshot (warm cache reads).
-                    _review_history = (
-                        _digest_history(messages_snapshot) if _routed
-                        else messages_snapshot
-                    )
+                    # Every review fork receives the same deterministic,
+                    # structure-preserving handoff. Large historical tool payloads
+                    # are summarized without another model call.
+                    _review_history = _prepare_review_history(messages_snapshot)
                     review_agent.run_conversation(
                         user_message=(
                             prompt

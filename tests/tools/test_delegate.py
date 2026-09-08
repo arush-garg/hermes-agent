@@ -73,6 +73,7 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("goal", task_props)
         self.assertIn("context", task_props)
         self.assertIn("output_schema", task_props)
+        self.assertEqual(task_props["give_compressed_context"]["type"], "boolean")
         # toolsets is intentionally NOT exposed to the model — subagents always
         # inherit the parent's toolsets. Letting the model name toolsets was a
         # capability-selection surface the model should not control.
@@ -296,6 +297,96 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
 
+    def test_compressed_context_is_opt_in_per_task(self):
+        parent = _make_mock_parent(depth=0)
+        parent._session_messages = [
+            {"role": "user", "content": "Earlier requirement"},
+            {"role": "assistant", "content": "Earlier response"},
+        ]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "ok",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                tasks=[
+                    {
+                        "goal": "Use earlier requirements while inspecting the code",
+                        "give_compressed_context": True,
+                    }
+                ],
+                parent_agent=parent,
+            )
+
+        _, kwargs = mock_child.run_conversation.call_args
+        self.assertEqual(kwargs["conversation_history"], parent._session_messages)
+        self.assertIsNot(kwargs["conversation_history"], parent._session_messages)
+
+    def test_compressed_context_prunes_large_historical_tool_output(self):
+        parent = _make_mock_parent(depth=0)
+        parent._session_messages = [
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "terminal", "arguments": '{"cmd":"test"}'},
+            }]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "x" * 9000},
+        ] + [{"role": "user", "content": f"tail {i}"} for i in range(20)]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "ok",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                tasks=[{
+                    "goal": "Use compressed history while inspecting prior work",
+                    "give_compressed_context": True,
+                }],
+                parent_agent=parent,
+            )
+
+        _, kwargs = mock_child.run_conversation.call_args
+        tool_result = next(
+            message
+            for message in kwargs["conversation_history"]
+            if message.get("role") == "tool"
+        )
+        self.assertLess(len(tool_result["content"]), 9000)
+        self.assertEqual(parent._session_messages[1]["content"], "x" * 9000)
+
+    def test_child_starts_fresh_when_compressed_context_not_requested(self):
+        parent = _make_mock_parent(depth=0)
+        parent._session_messages = [
+            {"role": "user", "content": "Earlier requirement"},
+        ]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "ok",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                tasks=[{"goal": "Inspect this task without inherited conversation"}],
+                parent_agent=parent,
+            )
+
+        _, kwargs = mock_child.run_conversation.call_args
+        self.assertIsNone(kwargs["conversation_history"])
+
     def test_child_gets_dedicated_session_db_not_parents_handle(self):
         """#81267: children must not share the parent's SessionDB object.
 
@@ -510,7 +601,12 @@ class TestToolNamePreservation(unittest.TestCase):
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
 
-            def capture_and_return(user_message, task_id=None, stream_callback=None):
+            def capture_and_return(
+                user_message,
+                task_id=None,
+                stream_callback=None,
+                conversation_history=None,
+            ):
                 captured["saved"] = list(mock_child._delegate_saved_tool_names)
                 return {"final_response": "ok", "completed": True, "api_calls": 1}
 
@@ -1278,6 +1374,29 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
     # --- Custom-endpoint identity resolution (issue #7833) ---
 
+    def test_custom_provider_uses_parent_live_endpoint_for_pool_identity(self):
+        parent = _make_mock_parent()
+        parent.provider = "custom"
+        parent.base_url = "https://stale.example/v1"
+        parent._client_kwargs = {"base_url": "https://live.example/v1"}
+        parent._credential_pool = MagicMock()
+
+        with (
+            patch(
+                "agent.credential_pool.get_custom_provider_pool_key",
+                side_effect=lambda url: {
+                    "https://live.example/v1": "custom:live",
+                    "https://stale.example/v1": "custom:stale",
+                }.get(url),
+            ),
+            patch("agent.credential_pool.load_pool") as load_pool,
+        ):
+            result = _resolve_child_credential_pool(
+                "custom", parent, "https://live.example/v1"
+            )
+
+        self.assertIs(result, parent._credential_pool)
+        load_pool.assert_not_called()
 
     @patch(
         "tools.delegate_tool._load_config",
@@ -2006,7 +2125,12 @@ class TestOrchestratorEndToEnd(unittest.TestCase):
                 m.thinking_callback = None
                 orch_mock["agent"] = m
 
-                def _orchestrator_run(user_message=None, task_id=None, stream_callback=None):
+                def _orchestrator_run(
+                    user_message=None,
+                    task_id=None,
+                    stream_callback=None,
+                    conversation_history=None,
+                ):
                     # Re-entrant: orchestrator spawns two leaves
                     delegate_task(
                         tasks=[
@@ -2152,6 +2276,87 @@ class TestFallbackModelInheritance(unittest.TestCase):
                 max_iterations=10,
                 parent_agent=parent,
                 task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertIsNone(kwargs["fallback_model"])
+
+    def test_same_route_provider_override_inherits_parent_fallback_chain(self):
+        """A provider pin to the parent's live route still inherits fallbacks."""
+        parent = _make_mock_parent(depth=0)
+        parent._client_kwargs = {"base_url": "https://openrouter.ai/api/v1"}
+        fallback_entry = {
+            "provider": "groq",
+            "model": "llama-3.3-70b-versatile",
+        }
+        parent._fallback_chain = [fallback_entry]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test same-route fallback inheritance",
+                context=None,
+                toolsets=None,
+                model="anthropic/claude-haiku-4.5",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_provider="openrouter",
+                override_base_url="https://openrouter.ai/api/v1/",
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["fallback_model"], [fallback_entry])
+
+    def test_same_provider_different_endpoint_disables_parent_fallback_chain(self):
+        """A same-provider pin to a different endpoint is still a route change."""
+        parent = _make_mock_parent(depth=0)
+        parent._client_kwargs = {"base_url": "https://openrouter.ai/api/v1"}
+        parent._fallback_chain = [
+            {"provider": "groq", "model": "llama-3.3-70b-versatile"}
+        ]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test different-endpoint fallback suppression",
+                context=None,
+                toolsets=None,
+                model="anthropic/claude-haiku-4.5",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_provider="openrouter",
+                override_base_url="https://openrouter.example/v1",
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertIsNone(kwargs["fallback_model"])
+
+    def test_explicit_endpoint_does_not_match_implicit_parent_endpoint(self):
+        """An explicit child endpoint cannot equal an unknown provider default."""
+        parent = _make_mock_parent(depth=0)
+        parent.base_url = None
+        parent._client_kwargs = {}
+        parent._fallback_chain = [
+            {"provider": "groq", "model": "llama-3.3-70b-versatile"}
+        ]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="test explicit endpoint fallback suppression",
+                context=None,
+                toolsets=None,
+                model="anthropic/claude-haiku-4.5",
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+                override_provider="openrouter",
+                override_base_url="https://openrouter.example/v1",
             )
 
         _, kwargs = MockAgent.call_args

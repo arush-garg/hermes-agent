@@ -8,7 +8,7 @@ modes. Top-level model calls run in the background; orchestrator children
 wait for their own workers so they can synthesize the results.
 
 Each child gets:
-  - A fresh conversation (no parent history)
+  - A fresh conversation by default, or optional deterministic-pruned parent history
   - Its own task_id (own terminal session, file ops cache)
   - The parent's toolsets, with child-only blocked tools stripped
   - A focused system prompt built from the delegated goal + context
@@ -1717,6 +1717,36 @@ def _inherit_parent_base_url(parent_agent, fallback_base_url: Optional[str]) -> 
     return fallback_base_url or None
 
 
+def _delegation_uses_parent_route(
+    parent_agent,
+    override_provider: Optional[str],
+    override_base_url: Optional[str],
+) -> bool:
+    """Return whether delegation resolves to the parent's provider endpoint."""
+    from agent.backend_identity import BackendIdentity, same_endpoint
+
+    parent_provider = getattr(parent_agent, "provider", None)
+    parent_base_url = _inherit_parent_base_url(
+        parent_agent, getattr(parent_agent, "base_url", None)
+    )
+    parent_route = BackendIdentity.build(
+        provider=parent_provider,
+        base_url=parent_base_url,
+    )
+    if override_base_url and not parent_base_url:
+        # Parent uses provider default while child explicitly names an endpoint;
+        # equivalence is unprovable, so preserve #80450's fail-loud posture.
+        return False
+    child_route = BackendIdentity.build(
+        provider=override_provider or parent_provider,
+        base_url=override_base_url or parent_base_url,
+    )
+    return (
+        parent_route.provider == child_route.provider
+        and same_endpoint(parent_route, child_route)
+    )
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -1998,17 +2028,16 @@ def _build_child_agent(
     # agent does.  _fallback_chain is a list accepted by AIAgent's
     # fallback_model parameter (which handles both list and dict forms).
     #
-    # EXCEPT when the user pinned delegation.provider: an explicit pin means
-    # "children run on THIS provider".  Inheriting the parent chain would let
-    # a mid-run auth/429 failure silently reroute the quiet-mode child onto
-    # the parent's fallback models with no surfaced signal (#80450) — the
-    # same class of silent-drag the override_provider filter-clearing below
-    # already prevents for OpenRouter routing preferences.  Predictability >
-    # liveness for explicit pins: the pinned child fails loudly instead.
+    # EXCEPT when a delegation pin changes provider or endpoint. Inheriting the
+    # parent chain across a route change would let a quiet-mode child silently
+    # reroute after auth/429 failure (#80450). A same-route pin is only an
+    # explicit restatement of the parent's route, so it keeps the chain.
     parent_fallback = (
-        None
-        if override_provider
-        else (getattr(parent_agent, "_fallback_chain", None) or None)
+        (getattr(parent_agent, "_fallback_chain", None) or None)
+        if _delegation_uses_parent_route(
+            parent_agent, override_provider, override_base_url
+        )
+        else None
     )
 
     # Inherit the parent's OpenRouter provider-preference filters by default
@@ -2585,6 +2614,25 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
         )
 
 
+def _compressed_parent_history(parent_agent) -> Optional[List[Dict[str, Any]]]:
+    """Return a deterministic pruned copy of the parent's persisted history."""
+    messages = getattr(parent_agent, "_session_messages", None)
+    if not isinstance(messages, list) or not messages:
+        return None
+
+    from agent.context_compressor import prune_messages_for_handoff
+
+    # The shared helper snapshots nested payloads before pruning, so parent
+    # progress cannot mutate this child's handoff while it is assembled.
+    return prune_messages_for_handoff(
+        messages,
+        model=str(getattr(parent_agent, "model", "") or ""),
+        provider=str(getattr(parent_agent, "provider", "") or ""),
+        api_mode=str(getattr(parent_agent, "api_mode", "") or ""),
+        base_url=str(getattr(parent_agent, "base_url", "") or ""),
+    )
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
@@ -2594,6 +2642,7 @@ def _run_single_child(
     owner_session_id: Optional[str] = None,
     owner_transport: Any = None,
     owner_session_record: Any = None,
+    give_compressed_context: bool = False,
     **_kwargs,
 ) -> Dict[str, Any]:
     """
@@ -2671,7 +2720,6 @@ def _run_single_child(
     # calls are not interrupted. Fire an interrupt when the child is idle
     # (between API calls, no tool running) for longer than child_timeout.
     _last_progress_ts = [time.time()]
-    _inactivity_exceeded = threading.Event()
 
     def _heartbeat_loop():
         while not _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
@@ -2721,14 +2769,13 @@ def _run_single_child(
                     # Idle between API calls — accumulate inactivity.
                     _stale_count[0] += 1
                     idle_secs = time.time() - _last_progress_ts[0]
-                    if idle_secs >= child_timeout:
+                    if child_timeout is not None and idle_secs >= child_timeout:
                         logger.warning(
                             "Subagent %d inactivity timeout: no API call for "
                             "%.0fs (tool=<none>) — interrupting",
                             task_index,
                             idle_secs,
                         )
-                        _inactivity_exceeded.set()
                         try:
                             if hasattr(child, "interrupt"):
                                 child.interrupt()
@@ -2999,6 +3046,12 @@ def _run_single_child(
             except Exception as e:
                 logger.debug("Child text relay failed: %s", e)
 
+        conversation_history = (
+            _compressed_parent_history(parent_agent)
+            if give_compressed_context
+            else None
+        )
+
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
@@ -3008,6 +3061,7 @@ def _run_single_child(
                     user_message=goal,
                     task_id=child_task_id,
                     stream_callback=_relay_child_text,
+                    conversation_history=conversation_history,
                 )
 
         _child_context = contextvars.copy_context()
@@ -4249,6 +4303,9 @@ def delegate_task(
                 owner_session_id=_origin_ui_session_id or None,
                 owner_transport=_origin_owner_transport,
                 owner_session_record=_origin_owner_session_record,
+                give_compressed_context=is_truthy_value(
+                    _t.get("give_compressed_context"), default=False
+                ),
             )
             results.append(result)
         else:
@@ -4274,6 +4331,9 @@ def delegate_task(
                         owner_session_id=_origin_ui_session_id or None,
                         owner_transport=_origin_owner_transport,
                         owner_session_record=_origin_owner_session_record,
+                        give_compressed_context=is_truthy_value(
+                            t.get("give_compressed_context"), default=False
+                        ),
                     )
                     futures[future] = i
 
@@ -4725,7 +4785,9 @@ def _resolve_child_credential_pool(
 
             # Reuse the parent's pool only when it is the same custom endpoint.
             parent_key = get_custom_provider_pool_key(
-                getattr(parent_agent, "base_url", None)
+                _inherit_parent_base_url(
+                    parent_agent, getattr(parent_agent, "base_url", None)
+                )
             )
             if (
                 parent_pool is not None
@@ -5231,7 +5293,8 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "description": (
                                 "What this subagent should accomplish. Be "
-                                "specific and self-contained — it knows "
+                                "specific and self-contained. Unless "
+                                "give_compressed_context is true, it knows "
                                 "nothing about your conversation history."
                             ),
                         },
@@ -5254,6 +5317,16 @@ DELEGATE_TASK_SCHEMA = {
                                 "schema_valid, plus schema_errors on "
                                 "failure). Keep it forgiving — require only "
                                 "fields you will read."
+                            ),
+                        },
+                        "give_compressed_context": {
+                            "type": "boolean",
+                            "description": (
+                                "Optional, default false. When true, give this "
+                                "child a deterministic pruned copy of prior "
+                                "conversation history. Large historical tool "
+                                "outputs are summarized without another model "
+                                "call. Leave false for a fresh isolated child."
                             ),
                         },
                     },

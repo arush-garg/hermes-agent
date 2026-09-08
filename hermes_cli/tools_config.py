@@ -35,7 +35,24 @@ from hermes_cli.toolset_scope import (
     _TOOLSET_PLATFORM_RESTRICTIONS,
     toolset_allowed_for_platform as _toolset_allowed_for_platform,
 )
-from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
+try:
+    from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, fal_key_is_configured
+except ImportError:
+    # Fallback when the running gateway has a stale sys.modules entry for
+    # tools.tool_backend_helpers (loaded before NOUS_MANAGED_PROVIDER was added
+    # on 2026-08-19).  A gateway restart clears this permanently; this guard
+    # lets Discord keep working without requiring one.
+    NOUS_MANAGED_PROVIDER = "nous"
+
+    def fal_key_is_configured() -> bool:  # type: ignore[misc]
+        """Inline replica — see tools.tool_backend_helpers.fal_key_is_configured."""
+        import os
+        try:
+            from hermes_cli.config import get_env_value
+            value = get_env_value("FAL_KEY")
+        except Exception:
+            value = os.getenv("FAL_KEY", "")
+        return bool(value and str(value).strip())
 from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger(__name__)

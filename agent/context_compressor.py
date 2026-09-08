@@ -8790,6 +8790,84 @@ def _handoff_carries_live_user_content(message: Any) -> bool:
     )
 
 
+def _redact_handoff_value(value: Any) -> Any:
+    """Redact strings recursively while preserving multimodal content shape."""
+    if isinstance(value, str):
+        return redact_sensitive_text(
+            value,
+            force=True,
+            redact_url_credentials=True,
+        )
+    if isinstance(value, list):
+        return [_redact_handoff_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_handoff_value(item) for key, item in value.items()}
+    return value
+
+
+def prune_messages_for_handoff(
+    messages: List[Dict[str, Any]],
+    *,
+    protect_last_n: int = 20,
+    model: str = "",
+    provider: str = "",
+    api_mode: str = "",
+    base_url: str = "",
+) -> List[Dict[str, Any]]:
+    """Return a structure-preserving deterministic copy for agent handoff."""
+    if not messages:
+        return []
+
+    compressor = ContextCompressor(
+        model=model,
+        provider=provider,
+        api_mode=api_mode,
+        base_url=base_url,
+        protect_last_n=protect_last_n,
+        quiet_mode=True,
+    )
+    pruned, _ = compressor._prune_old_tool_results(
+        copy.deepcopy(messages),
+        protect_tail_count=max(0, int(protect_last_n)),
+    )
+    _prune_stale_reasoning_replay(pruned)
+    # Agent handoff crosses an isolation boundary. Keep wire structure while
+    # removing reusable credentials from both tool summaries and untouched tail.
+    for message in pruned:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, (str, list, dict)):
+            message["content"] = _redact_handoff_value(content)
+        # Handoff is a fresh request on another agent. Never carry replay-only
+        # sidecars whose bytes may differ from sanitized visible content.
+        drop_stale_api_content(message)
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        sanitized_calls = []
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                sanitized_calls.append(tool_call)
+                continue
+            function = tool_call.get("function")
+            if not isinstance(function, dict):
+                sanitized_calls.append(tool_call)
+                continue
+            arguments = function.get("arguments")
+            if isinstance(arguments, (str, list, dict)):
+                tool_call = {
+                    **tool_call,
+                    "function": {
+                        **function,
+                        "arguments": _redact_handoff_value(arguments),
+                    },
+                }
+            sanitized_calls.append(tool_call)
+        message["tool_calls"] = sanitized_calls
+    return pruned
+
+
 def reference_handoff_would_drive_next_model_call(
     messages: Optional[List[Dict[str, Any]]],
 ) -> bool:
