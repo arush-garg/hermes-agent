@@ -1,13 +1,12 @@
-import { Box, NoSelect, Text, useInput } from '@hermes/ink'
+import { Box, NoSelect, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { memo, useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 
 import { $turnState } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { $viewState, patchViewState } from '../app/viewStore.js'
-import { handleSubagentPanelKeyDown, type SubagentPanelAction } from '../app/subagentPanelKeys.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
-import type { SubagentProgress, SubagentStatus } from '../types.js'
+import type { SubagentStatus } from '../types.js'
 
 import { SubagentSteerInput } from './subagentSteerInput.js'
 
@@ -27,13 +26,16 @@ const STATUS_GLYPH: Record<string, string> = {
 const isRunningOrQueued = (s: SubagentStatus) => s === 'running' || s === 'queued'
 
 function formatElapsed(seconds: number): string {
-  if (seconds < 60) return `${Math.floor(seconds)}s`
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`
+  if (seconds < 60) {return `${Math.floor(seconds)}s`}
+
+  if (seconds < 3600) {return `${Math.floor(seconds / 60)}m`}
+
   return `${Math.floor(seconds / 3600)}h`
 }
 
 function truncateGoal(goal: string, maxLen: number): string {
-  if (goal.length <= maxLen) return goal
+  if (goal.length <= maxLen) {return goal}
+
   return goal.slice(0, Math.max(3, maxLen - 3)) + '...'
 }
 
@@ -53,8 +55,10 @@ export const SubagentPanel = memo(function SubagentPanel({ onInterrupt, onSteerS
   // Animate spinner for running subagents
   useEffect(() => {
     const hasRunning = subagents.some(s => isRunningOrQueued(s.status))
-    if (!hasRunning) return
+
+    if (!hasRunning) {return}
     const id = setInterval(() => setSpinnerIdx(i => (i + 1) % SPINNER_FRAMES.length), 500)
+
     return () => clearInterval(id)
   }, [subagents])
 
@@ -63,7 +67,7 @@ export const SubagentPanel = memo(function SubagentPanel({ onInterrupt, onSteerS
   const selected = topLevel[cursor]
   const selectedStatus = selected?.status
 
-  if (!topLevel.length) return null
+  if (!topLevel.length) {return null}
 
   return (
     <Box flexDirection="column" flexShrink={0}>
@@ -80,6 +84,7 @@ export const SubagentPanel = memo(function SubagentPanel({ onInterrupt, onSteerS
         const elapsed = item.durationSeconds ?? 0
         const color = isSelected ? theme.color.label : theme.color.muted
         const bg = isSelected ? theme.color.muted : undefined
+
         const statusColor =
           item.status === 'running' ? theme.color.accent
           : item.status === 'completed' || item.status === 'queued' ? theme.color.muted
@@ -87,7 +92,7 @@ export const SubagentPanel = memo(function SubagentPanel({ onInterrupt, onSteerS
           : theme.color.error
 
         return (
-          <Box key={item.id} backgroundColor={bg}>
+          <Box backgroundColor={bg} key={item.id}>
             <NoSelect>
               <Text color={color}>
                 <Text color={statusColor}>{item.status === 'running' ? SPINNER_FRAMES[spinnerIdx] : sg}</Text>{' '}
@@ -108,15 +113,15 @@ export const SubagentPanel = memo(function SubagentPanel({ onInterrupt, onSteerS
 
       {steerOpen && selected && (
         <SubagentSteerInput
-          subagentId={selected.id}
-          theme={theme}
-          onSteerSubmit={onSteerSubmit}
           onClose={() =>
             patchViewState(state => ({
               ...state,
               subagentPanel: { ...state.subagentPanel, steerOpen: false, steerTargetId: null }
             }))
           }
+          onSteerSubmit={onSteerSubmit}
+          subagentId={selected.id}
+          theme={theme}
         />
       )}
     </Box>

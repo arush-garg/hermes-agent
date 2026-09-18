@@ -9,9 +9,8 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $petBox } from '../app/petFlashStore.js'
-import { $uiState, getUiState } from '../app/uiStore.js'
-import { getViewState } from '../app/viewStore.js'
 import { $turnState } from '../app/turnStore.js'
+import { $uiState, getUiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
@@ -28,7 +27,6 @@ import { ActiveWidgetSlot, AmbientDock, AmbientRail, useAmbientRailWidth } from 
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
-import { SubagentDotsBar } from './subagentDotsBar.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
 import { FpsOverlay } from './fpsOverlay.js'
@@ -38,6 +36,7 @@ import { MessageLine } from './messageLine.js'
 import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
+import { SubagentDotsBar } from './subagentDotsBar.js'
 import { TextInput, type TextInputMouseApi } from './textInput.js'
 
 // Box geometry, kept here so the transcript's reservation math matches the
@@ -528,7 +527,9 @@ function SubagentDotsBarSlot({
   const turnState = useStore($turnState)
   const ui = useStore($uiState)
   const hasAgents = turnState.subagents.length > 0 || ui.bgTasks.size > 0
-  if (!hasAgents) return null
+
+  if (!hasAgents) {return null}
+
   return (
     <PerfPane id="subagent-dots">
       <SubagentDotsBar onInterrupt={onInterrupt} onSteerSubmit={onSteerSubmit} />
@@ -595,12 +596,14 @@ export const AppLayout = memo(function AppLayout({
             <SubagentDotsBarSlot
               onInterrupt={subagentId => {
                 const sid = getUiState().sid
+
                 if (sid) {
                   rpc<Record<string, unknown>>('subagent.interrupt', { session_id: sid, subagent_id: subagentId }).catch(() => {})
                 }
               }}
               onSteerSubmit={(subagentId, text) => {
                 const sid = getUiState().sid
+
                 if (sid && text.trim()) {
                   rpc<Record<string, unknown>>('session.steer', { session_id: sid, subagent_id: subagentId, text: text.trim() }).catch(() => {})
                 }

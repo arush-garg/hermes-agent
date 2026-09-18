@@ -27,16 +27,23 @@ function statusColor(status: SubagentStatus, theme: Theme): string {
   switch (status) {
     case 'running':
       return theme.color.accent
+
     case 'queued':
       return theme.color.label
+
     case 'completed':
       return theme.color.muted
+
     case 'interrupted':
+
     case 'timeout':
       return theme.color.warn
+
     case 'failed':
+
     case 'error':
       return theme.color.error
+
     default:
       return theme.color.muted
   }
@@ -82,12 +89,14 @@ export const SubagentDotsBar = memo(function SubagentDotsBar({ onInterrupt: _onI
 
   useEffect(() => {
     const hasRunning = topLevel.some(s => s.status === 'running')
-    if (!hasRunning) return
+
+    if (!hasRunning) {return}
     const id = setInterval(() => setSpinnerIdx(i => (i + 1) % SPINNER_FRAMES.length), 100)
+
     return () => clearInterval(id)
   }, [topLevel])
 
-  if (!hasAny) return null
+  if (!hasAny) {return null}
 
   const selected: SubagentProgress | undefined = topLevel[cursor]
 
@@ -141,8 +150,6 @@ export const SubagentDotsBar = memo(function SubagentDotsBar({ onInterrupt: _onI
       {/* ── Steer input (active mode, Enter pressed) ────────────────── */}
       {steerOpen && selected != null && (
         <SubagentSteerInput
-          subagentId={selected.id}
-          theme={theme}
           onClose={() =>
             patchViewState(state => ({
               ...state,
@@ -150,6 +157,8 @@ export const SubagentDotsBar = memo(function SubagentDotsBar({ onInterrupt: _onI
             }))
           }
           onSteerSubmit={onSteerSubmit}
+          subagentId={selected.id}
+          theme={theme}
         />
       )}
     </Box>

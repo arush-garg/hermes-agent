@@ -41,4 +41,4 @@ export const patchViewState = (next: Partial<ViewState> | ((state: ViewState) =>
 export const resetViewState = (): void => $viewState.set(buildViewState())
 
 // Re-export types for consumers
-export type { ViewState, ViewFocus, SubagentPanelState }
+export type { SubagentPanelState, ViewFocus, ViewState }
