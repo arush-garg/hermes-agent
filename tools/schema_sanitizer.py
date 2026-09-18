@@ -489,7 +489,7 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 out_k = renames.get(sub_k, sub_k)
                 new_props[out_k] = _sanitize_node(sub_v, f"{path}.{key}.{out_k}")
             out[key] = new_props
-        elif key in {"items", "additionalProperties"}:
+        elif key in {"items", "additionalProperties", "prefixItems"}:
             if isinstance(value, bool):
                 # Keep bool ``additionalProperties`` as-is — it's a valid form
                 # and widely accepted. ``items: true/false`` is non-standard
@@ -519,6 +519,8 @@ def _sanitize_node(node: Any, path: str) -> Any:
             else:
                 out[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
         else:
+            if key == "prefixItems":
+                continue  # Skip prefixItems as it's not supported by many LLM backends
             out[key] = _sanitize_node(value, f"{path}.{key}") if isinstance(value, (dict, list)) else value
 
     # Object nodes without properties: inject empty properties dict.

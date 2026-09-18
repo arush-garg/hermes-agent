@@ -27,12 +27,16 @@ class IterationBudget:
 
     ``execute_code`` (programmatic tool calling) iterations are refunded via
     :meth:`refund` so they don't eat into the budget.
+
+    Auto-continue tracking: ``_auto_continue_count`` counts how many times
+    the agent has auto-continued after budget exhaustion (for circuit breaker).
     """
 
     def __init__(self, max_total: int):
         self.max_total = max_total
         self._used = 0
         self._lock = threading.Lock()
+        self._auto_continue_count = 0
 
     def consume(self) -> bool:
         """Try to consume one iteration.  Returns True if allowed."""
@@ -58,5 +62,32 @@ class IterationBudget:
         with self._lock:
             return max(0, self.max_total - self._used)
 
+    @property
+    def exhausted(self) -> bool:
+        with self._lock:
+            return self._used >= self.max_total
 
-__all__ = ["IterationBudget"]
+    def extend_for_continuation(self, amount: int, limit: int) -> bool:
+        """Grant one bounded cycle without resetting cumulative usage."""
+        with self._lock:
+            if amount <= 0 or self._auto_continue_count >= limit:
+                return False
+            self.max_total += amount
+            self._auto_continue_count += 1
+            return True
+
+    def increment_auto_continue(self) -> int:
+        """Increment and return the auto-continue counter."""
+        with self._lock:
+            self._auto_continue_count += 1
+            return self._auto_continue_count
+
+    @property
+    def auto_continue_count(self) -> int:
+        with self._lock:
+            return self._auto_continue_count
+
+    def reset_auto_continue(self) -> None:
+        """Reset auto-continue counter (e.g., new user turn)."""
+        with self._lock:
+            self._auto_continue_count = 0

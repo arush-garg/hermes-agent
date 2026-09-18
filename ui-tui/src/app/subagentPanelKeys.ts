@@ -9,6 +9,7 @@ interface KeyState {
   downArrow: boolean
   upArrow: boolean
   leftArrow: boolean
+  rightArrow: boolean
   home: boolean
   end: boolean
   ctrl: boolean
@@ -35,11 +36,12 @@ export function handleSubagentPanelKeyDown(
   const { cursor, subagentCount, selectedStatus } = panel
   const hasModifier = key.ctrl || key.alt || key.meta
 
-  if ((key.downArrow || (ch === 'j' && !hasModifier)) && subagentCount > 0) {
+  // Horizontal navigation: right/l = next dot, left/h = previous dot
+  if ((key.rightArrow || (ch === 'l' && !hasModifier)) && subagentCount > 0) {
     return { type: 'navigate', cursor: Math.min(cursor + 1, subagentCount - 1) }
   }
 
-  if ((key.upArrow || (ch === 'k' && !hasModifier)) && subagentCount > 0) {
+  if ((key.leftArrow || (ch === 'h' && !hasModifier)) && subagentCount > 0) {
     return { type: 'navigate', cursor: Math.max(0, cursor - 1) }
   }
 
@@ -55,7 +57,8 @@ export function handleSubagentPanelKeyDown(
     return { type: 'interrupt' }
   }
 
-  if (key.escape || key.leftArrow || (ch === 'h' && !hasModifier)) {
+  // Escape exits dot-navigation focus back to the composer
+  if (key.escape) {
     return { type: 'exit' }
   }
 

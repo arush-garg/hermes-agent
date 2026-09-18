@@ -13036,6 +13036,13 @@ def _run_prompt_submit(
         tts_queue = None  # streaming-TTS feed for this turn (voice mode)
         thinking_started = False  # ambient thinking sound armed for this turn
         one_turn_restore = session.pop("one_turn_model_restore", None)
+        # /keep: propagate the per-turn skip-restore flag onto the agent before
+        # turn_context.py calls _restore_primary_runtime().
+        _keep_fallback = session.pop("_keep_fallback_next_turn", False)
+        if _keep_fallback:
+            _kf_agent = session.get("agent")
+            if _kf_agent is not None:
+                _kf_agent._keep_on_fallback_this_turn = True
         # True once a failed turn's snapshot was retained for resume replay —
         # tells the finally below to skip the normal inflight clear.
         turn_error_retained = False

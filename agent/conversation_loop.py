@@ -41,7 +41,79 @@ from agent.conversation_compression import (
 from agent.context_engine import automatic_compaction_status_message
 from agent.display import KawaiiSpinner
 
+def _interrupt_exit_reason(agent) -> str:
+    """Return a truthful, non-user-facing provenance label for an interrupt."""
+    message = str(getattr(agent, "_interrupt_message", "") or "")
+    if message.startswith("Cron job timed out (inactivity)"):
+        return "cron_inactivity_timeout"
+    if message.startswith("Session turn lease lost"):
+        return "session_turn_lease_lost"
+    if message.startswith("Session turn lease could not be refreshed"):
+        return "session_turn_lease_refresh_failed"
+    hard_event = getattr(agent, "_hard_interrupt_requested", None)
+    if (
+        hard_event is not None
+        and callable(getattr(hard_event, "is_set", None))
+        and hard_event.is_set()
+    ):
+        return "hard_interrupt"
+    return "interrupted_by_user"
+
+
 # Session-terminate marker for long-running sessions (#99869).
+def _surface_recent_interruption_warnings(agent) -> None:
+    """Show each recent interruption marker once, then acknowledge it.
+
+    Markers are cross-session recovery prompts, not persistent session state.
+    Leaving them in place made every unrelated turn during the 24-hour window
+    print the same alarming warning even after it had already been surfaced.
+    Acknowledgement happens only after the complete warning has been rendered;
+    unreadable/stale markers remain untouched.
+    """
+    try:
+        from tools.checkpoint_manager import (
+            clear_interrupted_marker,
+            list_interrupted_markers,
+        )
+
+        now = time.time()
+        recent = [
+            marker
+            for marker in list_interrupted_markers()
+            if now - marker.get("timestamp", 0) < 86400
+        ]
+        if not recent:
+            return
+
+        agent._vprint(
+            "⚠️  Previous long-running session was interrupted before completing its task.",
+            force=True,
+        )
+        for marker in recent[:3]:
+            session_id = marker.get("session_id", "")
+            agent._vprint(
+                "   • session "
+                f"{session_id[:12] or '?'} at {marker.get('iso_time', '')} — "
+                f"{marker.get('reason', '')} "
+                f"last_action={(marker.get('last_action', '') or '')[:80]}",
+                force=True,
+            )
+        agent._vprint(
+            "   Partial file mutations may have been left on disk. "
+            "Check `hermes checkpoints` / `/rollback` before trusting state.",
+            force=True,
+        )
+
+        # The notice is the triage handoff. Do not show it again on every later
+        # turn; a genuinely new interruption writes its own marker.
+        for marker in recent:
+            session_id = marker.get("session_id", "")
+            if session_id:
+                clear_interrupted_marker(session_id)
+    except Exception:
+        logger.debug("Could not surface interrupted-session markers", exc_info=True)
+
+
 def _record_session_interruption(agent, reason: str, last_action: str = "") -> None:
     """Best-effort: write ~/.hermes/sessions/<id>.interrupted marker.
 
@@ -2173,36 +2245,10 @@ def run_conversation(
     # stale prior turn's usage.
     agent._last_turn_usage = None
 
-    # Surface recent interrupted markers from prior sessions (#99869):
-    # long loops that died mid-write leave a signal for the next session.
-    try:
-        from tools.checkpoint_manager import list_interrupted_markers
-        _recent_markers = list_interrupted_markers()
-        if _recent_markers:
-            _now = __import__("time").time()
-            # Only surface markers from the last 24h to avoid stale noise.
-            _recent = [m for m in _recent_markers if _now - m.get("timestamp", 0) < 86400]
-            if _recent:
-                agent._vprint(
-                    "⚠️  Previous long-running session was interrupted before completing its task.",
-                    force=True,
-                )
-                for _m in _recent[:3]:
-                    _sid = _m.get("session_id", "?")[:12]
-                    _when = _m.get("iso_time", "")
-                    _reason = _m.get("reason", "")
-                    _act = (_m.get("last_action", "") or "")[:80]
-                    agent._vprint(
-                        f"   • session {_sid} at {_when} — {_reason} last_action={_act}",
-                        force=True,
-                    )
-                agent._vprint(
-                    "   Partial file mutations may have been left on disk. "
-                    "Check `hermes checkpoints` / `/rollback` before trusting state.",
-                    force=True,
-                )
-    except Exception:
-        pass
+    # Surface recent interrupted markers from prior sessions (#99869). A marker
+    # is acknowledged after one rendered warning so unrelated later turns do
+    # not keep reporting a completed/handled interruption for 24 hours.
+    _surface_recent_interruption_warnings(agent)
 
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
@@ -2218,7 +2264,79 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
-    while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+    cycle_call_limit = agent.max_iterations
+    while True:
+        if not agent._budget_grace_call and (
+            api_call_count >= cycle_call_limit or agent.iteration_budget.remaining <= 0
+        ):
+            if agent._interrupt_requested:
+                interrupted = True
+                _turn_exit_reason = _interrupt_exit_reason(agent)
+                break
+            if _review_input_budget_exhausted(agent):
+                _turn_exit_reason = "review_input_budget_exhausted"
+                break
+            from hermes_cli.config import load_config
+            from agent.iteration_budget import IterationBudget
+
+            try:
+                continuation_cfg = load_config().get("agent") or {}
+                continuation_limit = continuation_cfg.get("max_auto_continue", 3)
+            except Exception:
+                logger.warning("Could not read iteration continuation limit", exc_info=True)
+                continuation_limit = 0
+            budget = agent.iteration_budget
+            if (
+                type(continuation_limit) is not int
+                or continuation_limit <= 0
+                or not isinstance(budget, IterationBudget)
+                or budget.auto_continue_count >= continuation_limit
+                or agent.max_iterations <= 0
+            ):
+                break
+            try:
+                compacted, compacted_prompt = agent._compress_context(
+                    messages, system_message, task_id=effective_task_id,
+                )
+                if (
+                    context_compression_timed_out(agent)
+                    or compression_skipped_due_to_lock(agent)
+                    or compression_blocked_transiently(agent)
+                    or not compacted
+                    or compacted == messages
+                ):
+                    break
+                conversation_history = conversation_history_after_compression(
+                    agent, compacted, conversation_history,
+                )
+                messages = compacted
+                active_system_prompt = compacted_prompt
+                if agent._interrupt_requested:
+                    interrupted = True
+                    _turn_exit_reason = _interrupt_exit_reason(agent)
+                    break
+                if not budget.extend_for_continuation(agent.max_iterations, continuation_limit):
+                    break
+                cycle_call_limit = api_call_count + agent.max_iterations
+                messages = [*messages, {
+                    "role": "user",
+                    "content": (
+                        f"{budget.used} iterations complete. Previous conversation "
+                        "compacted. Keep working towards the user's stated goal."
+                    ),
+                    "display_kind": "auto_continue",
+                }]
+                # Compaction invalidates the old user-row index and request caches.
+                current_turn_user_idx = -1
+                pending_moa_prepared_request = None
+                _last_preflight_pressure = None
+                agent._persist_session(messages, conversation_history)
+                agent._emit_status(
+                    f"Continuing after compaction ({budget.auto_continue_count}/{continuation_limit})"
+                )
+            except Exception:
+                logger.warning("Iteration continuation failed; using limit fallback", exc_info=True)
+                break
         _redirect_text = agent._drain_pending_redirect()
         if _redirect_text:
             _apply_active_turn_redirect(agent, messages, _redirect_text)
@@ -2235,7 +2353,7 @@ def run_conversation(
         # Check for interrupt request (e.g., user sent new message)
         if agent._interrupt_requested:
             interrupted = True
-            _turn_exit_reason = "interrupted_by_user"
+            _turn_exit_reason = _interrupt_exit_reason(agent)
             if not agent.quiet_mode:
                 agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
             break

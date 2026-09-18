@@ -1661,6 +1661,21 @@ def restore_primary_runtime(agent) -> bool:
     The gateway caches agents across messages (``_agent_cache`` in
     ``gateway/run.py``), so this restoration IS needed there too.
     """
+    # ── /keep prefix: skip primary restore for this turn ──
+    # Set by /keep <prompt> so the user can explicitly stay on the current
+    # model (primary or fallback) without triggering the context-resend that
+    # a restore would cause.  The flag is consumed here and cleared so the
+    # very next turn reverts to normal restore semantics.
+    if getattr(agent, "_keep_on_fallback_this_turn", False):
+        agent._keep_on_fallback_this_turn = False
+        agent._fallback_index = 0  # avoid chain-exhausted stranding on next turn
+        logger.info(
+            "keep_on_fallback: skipping primary restore, staying on %s via %s",
+            getattr(agent, "model", "?"),
+            getattr(agent, "provider", "?"),
+        )
+        return False
+
     if not agent._fallback_activated:
         # Reset the chain index even when no fallback was activated this
         # turn.  Without this, a turn where _try_activate_fallback() was

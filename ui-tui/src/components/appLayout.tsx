@@ -28,7 +28,7 @@ import { ActiveWidgetSlot, AmbientDock, AmbientRail, useAmbientRailWidth } from 
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
-import { SubagentPanel } from './subagentPanel.js'
+import { SubagentDotsBar } from './subagentDotsBar.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
 import { FpsOverlay } from './fpsOverlay.js'
@@ -351,12 +351,6 @@ const ComposerPane = memo(function ComposerPane({
         t={ui.theme}
       />
 
-      {ui.bgTasks.size > 0 && (
-        <Text color={ui.theme.color.muted}>
-          {ui.bgTasks.size} background {ui.bgTasks.size === 1 ? 'task' : 'tasks'} running
-        </Text>
-      )}
-
       {status.showStickyPrompt ? (
         <Text color={ui.theme.color.muted} wrap="truncate-end">
           <Text color={ui.theme.color.label}>↳ </Text>
@@ -522,9 +516,9 @@ const StatusRulePane = memo(function StatusRulePane({
   )
 })
 
-// Reactive wrapper so appLayout re-renders when subagents appear/disappear
+// Reactive wrapper so appLayout re-renders when subagents/bgTasks change
 // and when view focus changes — getViewState() is non-reactive on its own.
-function SubagentPanelSlot({
+function SubagentDotsBarSlot({
   onInterrupt,
   onSteerSubmit
 }: {
@@ -532,10 +526,12 @@ function SubagentPanelSlot({
   onSteerSubmit: (id: string, text: string) => void
 }) {
   const turnState = useStore($turnState)
-  if (!turnState.subagents.length) return null
+  const ui = useStore($uiState)
+  const hasAgents = turnState.subagents.length > 0 || ui.bgTasks.size > 0
+  if (!hasAgents) return null
   return (
-    <PerfPane id="subagent-panel">
-      <SubagentPanel onInterrupt={onInterrupt} onSteerSubmit={onSteerSubmit} />
+    <PerfPane id="subagent-dots">
+      <SubagentDotsBar onInterrupt={onInterrupt} onSteerSubmit={onSteerSubmit} />
     </PerfPane>
   )
 }
@@ -596,7 +592,7 @@ export const AppLayout = memo(function AppLayout({
               <ComposerPane actions={actions} composer={composer} status={status} />
             </PerfPane>
 
-            <SubagentPanelSlot
+            <SubagentDotsBarSlot
               onInterrupt={subagentId => {
                 const sid = getUiState().sid
                 if (sid) {

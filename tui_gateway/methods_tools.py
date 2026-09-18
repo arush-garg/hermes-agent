@@ -1189,6 +1189,23 @@ def _(rid, params: dict) -> dict:
     if live_output is not None:
         return _ok(rid, {"output": live_output or "(no output)"})
 
+    # /keep <prompt>: set flag to skip primary restore, then submit text as prompt
+    if _cmd_base == "keep":
+        if not _cmd_arg.strip():
+            return _ok(rid, {
+                "output": (
+                    "Usage: /keep <prompt>\n\n"
+                    "Sends this prompt on the current model without restoring the primary.\n"
+                    "Useful when on a fallback to prevent context explosion on the primary."
+                )
+            })
+        session["_keep_fallback_next_turn"] = True
+        return _ok(rid, {
+            "type": "send",
+            "message": _cmd_arg,
+            "notice": "⚡ Keeping current model for this turn",
+        })
+
     if _cmd_base in _PENDING_INPUT_COMMANDS:
         # Route directly to command.dispatch instead of returning an error
         # that requires the frontend to retry.  Some TUI clients fail the

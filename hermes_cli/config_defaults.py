@@ -99,7 +99,14 @@ DEFAULT_CONFIG = {
         # (/restart, SIGUSR1), prefer restart_after_turn_timeout below so
         # active turns finish *before* stop() begins (#77184).
         "restart_drain_timeout": 0,
-        # Cron-only floor under the stop()/drain wait (seconds). A chat turn
+        # Maximum number of auto-continue cycles after iteration-budget
+        # exhaustion.  When the conversation loop runs out of iterations, it
+        # compacts the context and continues with a fresh iteration budget —
+        # up to this many times.  Each continuation preserves cumulative
+        # usage accounting and the auto-continue counter.  0 disables the
+        # feature entirely (falls back to existing summary fallback).
+        "max_auto_continue": 3,
+        # Cron-only floor under the stop() drain (seconds). A chat turn
         # interrupted by a restart is announced to the user and resumed on
         # their next message; an interrupted cron run is written to jobs.json
         # as a permanent failure that nobody is waiting on, so it must not
@@ -2028,6 +2035,7 @@ DEFAULT_CONFIG = {
         # voice chat instead of being sent to the agent. Case-insensitive,
         # surrounding punctuation ignored. Set [] to disable.
         "stop_phrases": ["stop"],
+        "push_to_talk_only": False,   # If true: no continuous full-duplex listener; only record when push-to-talk key is pressed
     },
 
     # "Hey Hermes" hands-free wake word. Always-on, on-device hotword

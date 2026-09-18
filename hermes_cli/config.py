@@ -2397,6 +2397,27 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                 "Set voice.submit_mode to direct (submit immediately) or draft (edit before sending)",
             ))
 
+    # ── voice.push_to_talk_only: boolean ────────────────────────────────
+    if isinstance(voice_cfg, dict) and "push_to_talk_only" in voice_cfg:
+        ptt_val = voice_cfg.get("push_to_talk_only")
+        if not isinstance(ptt_val, bool):
+            issues.append(ConfigIssue(
+                "error",
+                f"voice.push_to_talk_only must be a boolean, got {type(ptt_val).__name__}",
+                "Set voice.push_to_talk_only to true (push-to-talk only) or false (continuous mode)",
+            ))
+
+    # ── agent.max_auto_continue: non-negative integer ──────────────────────
+    agent_cfg = config.get("agent")
+    if isinstance(agent_cfg, dict) and "max_auto_continue" in agent_cfg:
+        mac_val = agent_cfg.get("max_auto_continue")
+        if not isinstance(mac_val, int) or mac_val < 0:
+            issues.append(ConfigIssue(
+                "error",
+                f"agent.max_auto_continue must be a non-negative integer, got {mac_val!r}",
+                "Set agent.max_auto_continue to 0 (disabled) or a positive integer (max continuation cycles)",
+            ))
+
     # ── custom_providers must be a list, not a dict ──────────────────────
     cp = config.get("custom_providers")
     if cp is not None:

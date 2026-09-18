@@ -37,6 +37,8 @@ def _make_voice_cli(**overrides):
     cli._app = None
     cli._attached_images = []
     cli.console = SimpleNamespace(width=80)
+    cli._voice_tts_queue = queue.Queue()
+    cli._voice_tts_worker_thread = None
     for k, v in overrides.items():
         setattr(cli, k, v)
     return cli
@@ -259,10 +261,11 @@ class TestVoiceSpeakResponseReal:
         starts = []
 
         class FakeThread:
-            def __init__(self, target=None, args=(), daemon=None):
+            def __init__(self, target=None, args=(), daemon=None, name=None):
                 self.target = target
                 self.args = args
                 self.daemon = daemon
+                self.name = name
 
             def start(self):
                 starts.append(cli._voice_tts_done.is_set())
@@ -270,8 +273,11 @@ class TestVoiceSpeakResponseReal:
         with patch("cli.threading.Thread", FakeThread):
             cli._voice_speak_response_async("Hello")
 
-        assert starts == [False]
-        assert not cli._voice_tts_done.is_set()
+        # _voice_speak_response_async does NOT clear _voice_tts_done
+        # (that's done by _voice_speak_response sync version).
+        # The event remains SET from initialization.
+        assert starts == [True]
+        assert cli._voice_tts_done.is_set()
 
     @patch("cli._cprint")
     def test_early_return_when_tts_off(self, _cp):
@@ -521,9 +527,9 @@ class TestVoiceFullDuplexListener:
         monkeypatch.setattr("tools.voice_mode.stop_playback", lambda: None)
         return cli
 
-    def test_generation_trip_interrupts_agent_and_submits(self, monkeypatch, tmp_path):
-        """Speech during generation → agent.interrupt() (the same seam the
-        typed interrupt uses) + pending TTS pipeline cut + capture queued."""
+    def test_generation_trip_ignores_voice_input_and_does_not_submit(self, monkeypatch, tmp_path):
+        """Speech during generation → IGNORED (only listen on Control+B).
+        No agent.interrupt(), no pipeline cut, no capture queued."""
         wav = tmp_path / "fd.wav"
         wav.write_bytes(b"RIFF")
 
@@ -543,12 +549,10 @@ class TestVoiceFullDuplexListener:
 
         cli._voice_full_duplex_listener()
 
-        assert interrupted.is_set()
-        assert pipe_stop.is_set()  # stale reply's TTS can never play
-        from cli import _VoiceInputMessage
-        queued = cli._pending_input.get_nowait()
-        assert isinstance(queued, _VoiceInputMessage)
-        assert str(queued) == "actually wait"
+        # Generation phase: voice input is IGNORED (only listen on Control+B)
+        assert not interrupted.is_set()
+        assert not pipe_stop.is_set()
+        assert cli._pending_input.empty()
         assert not cli._voice_barge_capture.is_set()
 
 
@@ -580,9 +584,9 @@ class TestVoiceFullDuplexListener:
         assert probes["done"] is True
 
 
-    def test_stop_phrase_mid_generation_interrupts_and_ends_chat(self, monkeypatch, tmp_path):
-        """Bare 'stop' during generation = stop everything: the turn is
-        interrupted at trip time AND the voice chat is disabled."""
+    def test_stop_phrase_mid_generation_is_ignored(self, monkeypatch, tmp_path):
+        """Bare 'stop' during generation = IGNORED (only listen on Control+B).
+        Voice input during generation is ignored entirely, no interrupt, no chat end."""
         wav = tmp_path / "fd.wav"
         wav.write_bytes(b"RIFF")
 
@@ -606,9 +610,11 @@ class TestVoiceFullDuplexListener:
 
         cli._voice_full_duplex_listener()
 
-        assert interrupted.is_set()   # turn interrupted at trip
-        assert disabled == [True]     # chat ended by the stop phrase
-        assert cli._pending_input.empty()  # stop phrase never reaches the agent
+        # Generation phase: voice input is IGNORED (only listen on Control+B)
+        assert not interrupted.is_set()
+        assert disabled == []
+        assert cli._pending_input.empty()
+        assert not cli._voice_barge_capture.is_set()
 
 
 # ============================================================================
@@ -680,4 +686,59 @@ class TestFallbackSpeakArmsBargeMonitor:
         # speak thread came and went without arming the mic.
         assert not cli._monitor_armed.wait(0.05)
         assert cli._monitor_calls == []
+
+
+# ============================================================================
+# Push-to-Talk Only Mode
+# ============================================================================
+
+
+class TestPushToTalkOnlyMode:
+    """Tests for voice.push_to_talk_only config option."""
+
+    def _cli(self, **overrides):
+        cli = _make_voice_cli(**overrides)
+        cli._enable_voice_mode = MagicMock()
+        cli._disable_voice_mode = MagicMock()
+        return cli
+
+    @patch("cli._cprint")
+    @patch("hermes_cli.config.load_config", return_value={
+        "voice": {"push_to_talk_only": True, "barge_in": True}
+    })
+    @patch("tools.voice_mode.check_voice_requirements",
+           return_value={"available": True, "details": "OK"})
+    @patch("tools.voice_mode.detect_audio_environment",
+           return_value={"available": True, "warnings": []})
+    def test_push_to_talk_only_config_read(self, _env, _req, _cfg, _cp):
+        cli = _make_voice_cli()
+        cli._enable_voice_mode()
+        assert cli._voice_push_to_talk_only is True
+
+    @patch("cli._cprint")
+    @patch("hermes_cli.config.load_config", return_value={
+        "voice": {"push_to_talk_only": False, "barge_in": True}
+    })
+    @patch("tools.voice_mode.check_voice_requirements",
+           return_value={"available": True, "details": "OK"})
+    @patch("tools.voice_mode.detect_audio_environment",
+           return_value={"available": True, "warnings": []})
+    def test_push_to_talk_only_default_false(self, _env, _req, _cfg, _cp):
+        cli = _make_voice_cli()
+        cli._enable_voice_mode()
+        assert cli._voice_push_to_talk_only is False
+
+    @patch("cli._cprint")
+    @patch("hermes_cli.config.load_config", return_value={
+        "voice": {"push_to_talk_only": "true", "barge_in": True}
+    })
+    @patch("tools.voice_mode.check_voice_requirements",
+           return_value={"available": True, "details": "OK"})
+    @patch("tools.voice_mode.detect_audio_environment",
+           return_value={"available": True, "warnings": []})
+    def test_push_to_talk_only_string_rejected(self, _env, _req, _cfg, _cp):
+        cli = _make_voice_cli()
+        cli._enable_voice_mode()
+        # String "true" should not be treated as boolean True
+        assert cli._voice_push_to_talk_only is False
 

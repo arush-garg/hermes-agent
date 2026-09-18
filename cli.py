@@ -10946,6 +10946,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             warm_prefix[-1] = durable_prefix[-1]
         return warm_prefix, durable_live_view, result
     
+    def _handle_keep_command(self, cmd_original: str) -> None:
+        """Handle /keep <prompt> — send with current model, skipping primary restore.
+
+        Sets ``_keep_on_fallback_this_turn`` on the live agent so that the
+        upcoming ``restore_primary_runtime()`` call in turn_context.py skips
+        restoration and keeps whatever model (primary or fallback) is currently
+        active.  The remaining text is queued into ``_pending_input`` so the
+        normal process_loop picks it up as the next turn.
+        """
+        parts = cmd_original.split(None, 1)
+        remaining = parts[1].strip() if len(parts) > 1 else ""
+        if not remaining:
+            _cprint("  Usage: /keep <prompt>")
+            _cprint("  Sends a prompt using the current model without restoring the primary.")
+            _cprint("  Useful when on a fallback to prevent context explosion on the primary.")
+            return
+        if self.agent is not None:
+            self.agent._keep_on_fallback_this_turn = True
+        if hasattr(self, "_pending_input"):
+            self._pending_input.put(remaining)
+
     def retry_last(self):
         """Retry the last user message by removing the last exchange and re-sending.
         
@@ -13046,6 +13067,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if retry_msg and hasattr(self, '_pending_input'):
                 # Re-queue the message so process_loop sends it to the agent
                 self._pending_input.put(retry_msg)
+        elif canonical == "keep":
+            self._handle_keep_command(cmd_original)
         elif canonical == "prompt":
             self._handle_prompt_compose_command(cmd_original)
         elif canonical == "undo":
@@ -15810,6 +15833,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             return
         self._voice_tts_enqueue(text, transition_word="also")
 
+        # Safety net: arm the full-duplex listener for continuous voice mode
+        # when speaking outside a chat turn (primary arm happens at utterance-submit).
+        if self._voice_mode and self._voice_continuous and not getattr(self, '_voice_push_to_talk_only', False):
+            threading.Thread(
+                target=self._voice_full_duplex_listener, daemon=True
+            ).start()
+
     def _voice_speak_response(self, text: str):
         """Speak the agent's response aloud using TTS (runs in background thread)."""
         if not self._voice_tts:
@@ -16064,9 +16094,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             def _on_trigger(phase: str) -> None:
                 # Latch BEFORE cutting anything: suppresses process_loop's
                 # auto-restart until the capture is submitted.
-                self._voice_barge_capture.set()
-                self._voice_barge_phase = phase
                 if phase == "playback":
+                    self._voice_barge_capture.set()
+                    self._voice_barge_phase = phase
                     logger.debug(
                         "TTS CUT: full-duplex listener tripped during playback"
                     )
@@ -16077,21 +16107,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         _pipe_stop.set()
                     stop_playback()
                 else:
-                    # Generation phase: no audio to cut — interrupt the
-                    # in-flight agent turn (same seam as typed interrupt).
+                    # Generation phase: ignore voice input entirely.
+                    # Only listen when Control+B is pressed (voice mode activation).
+                    # Do NOT set capture event - we don't want to submit.
                     logger.debug(
                         "full-duplex listener tripped during generation — "
-                        "interrupting agent turn"
+                        "ignoring voice input (only listen on Control+B)"
                     )
-                    _pipe_stop = getattr(self, "_voice_tts_stop", None)
-                    if _pipe_stop is not None:
-                        _pipe_stop.set()  # never let the stale reply speak
-                    try:
-                        if self.agent is not None and getattr(self, "_agent_running", False):
-                            _cprint(f"\n{_DIM}🎤 Voice interjection — interrupting…{_RST}")
-                            self.agent.interrupt()
-                    except Exception as e:
-                        logger.debug("voice interjection interrupt failed: %s", e)
+                    return  # Exit early, don't capture or process
 
             wav_path = full_duplex_listen(
                 _should_stop,
@@ -16261,6 +16284,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if voice_config.get("auto_tts", False):
                 with self._voice_lock:
                     self._voice_tts = True
+            # Push-to-talk only mode: no continuous full-duplex listener
+            ptt_val = voice_config.get("push_to_talk_only", False)
+            self._voice_push_to_talk_only = bool(ptt_val) if isinstance(ptt_val, bool) else False
         except Exception:
             pass
 
@@ -16681,6 +16707,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # _invalidate throttle / resize guard — see _paint_now / _invalidate (#41098).
         self._paint_now()
 
+        # macOS notification banner so the user is alerted even when the
+        # terminal window is not in focus.
+        from hermes_cli.callbacks import _send_os_notification
+        _send_os_notification("Hermes needs your input", question)
+
         # Poll for the user's response. The countdown in the hint line updates
         # on each repaint; refresh it once a second so the timer stays visible
         # while we wait. Selection changes (↑/↓) trigger instant repaints via
@@ -16869,6 +16900,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._clarify_deadline = None if timeout <= 0 else _time.monotonic() + timeout
         self._paint_now()
 
+        # macOS notification banner so the user is alerted even when the
+        # terminal window is not in focus.
+        from hermes_cli.callbacks import _send_os_notification
+        _first_q = questions[0]["question"] if questions else "clarifying question"
+        _send_os_notification("Hermes needs your input", _first_q)
+
         _last_countdown_refresh = _time.monotonic()
         while True:
             try:
@@ -16998,6 +17035,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # plays after any still-speaking intermediate text finishes.
             if self._voice_tts:
                 self._voice_tts_enqueue("Awaiting your approval.", transition_word="")
+
+            # macOS notification banner so the user is alerted even when the
+            # terminal window is not in focus.
+            from hermes_cli.callbacks import _send_os_notification
+            _send_os_notification("Hermes needs approval", description or command)
 
             _last_countdown_refresh = _time.monotonic()
             while True:
@@ -17562,7 +17604,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # starts. It spans generation (speech interrupts the turn) and
             # playback (speech cuts TTS), and disarms itself when the turn
             # is fully done. See _voice_full_duplex_listener.
-            if self._voice_mode and self._voice_continuous:
+            # Skip if push_to_talk_only mode is enabled — in that mode the mic
+            # only activates on explicit push-to-talk key press.
+            if self._voice_mode and self._voice_continuous and not getattr(self, '_voice_push_to_talk_only', False):
                 self._voice_last_tts_text = ""
                 threading.Thread(
                     target=self._voice_full_duplex_listener, daemon=True
@@ -20155,6 +20199,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             """
             if not cli_ref._voice_mode:
                 return
+
+            push_to_talk_only = getattr(cli_ref, '_voice_push_to_talk_only', False)
+
             # Always allow STOPPING a recording (even when agent is running)
             if cli_ref._voice_recording:
                 # Manual stop via push-to-talk key: stop continuous mode
@@ -20204,8 +20251,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 except Exception:
                     pass
 
-                with cli_ref._voice_lock:
-                    cli_ref._voice_continuous = True
+                # In push_to_talk_only mode, do NOT enable continuous mode.
+                # The recording is a single shot; _voice_continuous stays False.
+                if not push_to_talk_only:
+                    with cli_ref._voice_lock:
+                        cli_ref._voice_continuous = True
 
                 # Dispatch to a daemon thread so play_beep(sd.wait),
                 # AudioRecorder.start(lock acquire), and config I/O

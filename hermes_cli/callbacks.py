@@ -6,13 +6,66 @@ as its first argument and uses its state (queues, app reference) to coordinate
 with the TUI.
 """
 
+import json as _json
+import platform as _platform
 import queue
+import subprocess as _subprocess
 import time as _time
 
 from hermes_cli.banner import cprint, _DIM, _RST
 from hermes_cli.config import save_env_value_secure
 from hermes_cli.secret_prompt import masked_secret_prompt
 from hermes_constants import display_hermes_home
+
+
+def _send_os_notification(title: str, body: str) -> None:
+    """Fire a macOS notification banner. No-op on non-Darwin.
+
+    Prefers ``terminal-notifier`` (dedicated bundle ID, reliable permission
+    handling) and falls back to ``osascript`` with a sound name.
+
+    Reads ``desktop_notifications.enabled`` from CLI_CONFIG (default True)
+    so the user can opt out via config.yaml without code changes.
+    Silently swallows all errors — never blocks or crashes the TUI.
+    """
+    if _platform.system() != "Darwin":
+        return
+    try:
+        from cli import CLI_CONFIG
+        if not CLI_CONFIG.get("desktop_notifications", {}).get("enabled", True):
+            return
+    except Exception:
+        pass
+    body_s = body[:200]
+    title_s = title[:100]
+    try:
+        _subprocess.run(
+            ["terminal-notifier", "-title", title_s, "-message", body_s, "-sound", "Funk"],
+            stdout=_subprocess.DEVNULL,
+            stderr=_subprocess.DEVNULL,
+            timeout=5,
+        )
+        return
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    try:
+        # Fallback: osascript via stdin (avoids emoji parse errors with -e).
+        script = (
+            f"display notification {_json.dumps(body_s)} "
+            f"with title {_json.dumps(title_s)} "
+            f'sound name "Funk"'
+        ).encode("utf-8")
+        _subprocess.run(
+            ["osascript", "-"],
+            input=script,
+            stdout=_subprocess.DEVNULL,
+            stderr=_subprocess.DEVNULL,
+            timeout=3,
+        )
+    except Exception:
+        pass
 
 
 def clarify_callback(cli, question, choices, multi_select=False):
@@ -47,6 +100,8 @@ def clarify_callback(cli, question, choices, multi_select=False):
 
     if hasattr(cli, "_app") and cli._app:
         cli._app.invalidate()
+
+    _send_os_notification("Hermes needs your input ❓", question)
 
     while True:
         try:
@@ -229,6 +284,11 @@ def approval_callback(cli, command: str, description: str) -> str:
 
         if hasattr(cli, "_app") and cli._app:
             cli._app.invalidate()
+
+        _send_os_notification(
+            "Hermes needs approval ⚠️",
+            description or command,
+        )
 
         while True:
             try:
