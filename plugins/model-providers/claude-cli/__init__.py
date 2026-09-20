@@ -41,6 +41,11 @@ claude_cli = ClaudeCLIProfile(
     env_vars=("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_TOKEN"),
     base_url="claude-cli://local",  # internal scheme; selects ClaudeCLIClient
     auth_type="external_process",
+    # How the runtime ladder launches the subprocess. The binary resolves from
+    # HERMES_CLAUDE_CLI_COMMAND first, then the static default, so the same
+    # provider works whether `claude` is on PATH or the operator pinned a build.
+    process_command="claude",
+    process_command_env_vars=("HERMES_CLAUDE_CLI_COMMAND",),
     display_name="Claude Code (CLI / subscription)",
     description="Runs Claude via the local `claude` binary so usage draws from your Pro/Max plan",
 )

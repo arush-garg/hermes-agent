@@ -2,6 +2,7 @@
 
 import json
 import logging
+import urllib.parse
 import urllib.request
 
 from hermes_cli.urllib_security import open_credentialed_url
@@ -15,11 +16,7 @@ class AnthropicProfile(ProviderProfile):
     """Native Anthropic — uses x-api-key header, not Bearer."""
 
     def fetch_models(
-        self,
-        *,
-        api_key: str | None = None,
-        base_url: str | None = None,
-        timeout: float = 8.0,
+        self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0
     ) -> list[str] | None:
         """List models for the active credential.
 
@@ -38,34 +35,43 @@ class AnthropicProfile(ProviderProfile):
         except Exception:
             is_oauth = api_key.startswith(("sk-ant-oat", "cc-", "eyJ"))
         try:
-            req = urllib.request.Request("https://api.anthropic.com/v1/models")
-            if is_oauth:
-                req.add_header("Authorization", f"Bearer {api_key}")
-                req.add_header("anthropic-beta", "oauth-2025-04-20")
-            else:
-                req.add_header("x-api-key", api_key)
-            req.add_header("anthropic-version", "2023-06-01")
-            req.add_header("Accept", "application/json")
-            with open_credentialed_url(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
-            return [
-                m["id"]
-                for m in data.get("data", [])
-                if isinstance(m, dict) and "id" in m
-            ]
+            endpoint = f"{(base_url or self.base_url).rstrip('/')}/v1/models"
+
+            def _page(after_id: str | None) -> dict:
+                query = urllib.parse.urlencode({"after_id": after_id}) if after_id else ""
+                req = urllib.request.Request(f"{endpoint}?{query}" if query else endpoint)
+                if is_oauth:
+                    req.add_header("Authorization", f"Bearer {api_key}")
+                    req.add_header("anthropic-beta", "oauth-2025-04-20")
+                else:
+                    req.add_header("x-api-key", api_key)
+                req.add_header("anthropic-version", "2023-06-01")
+                req.add_header("Accept", "application/json")
+                with open_credentialed_url(req, timeout=timeout) as resp:
+                    payload = json.loads(resp.read().decode())
+                return payload if isinstance(payload, dict) else {}
+
+            models: list[str] = []
+            seen_cursors: set[str] = set()
+            cursor: str | None = None
+            for _ in range(100):
+                data = _page(cursor)
+                models.extend(m["id"] for m in data.get("data", []) if isinstance(m, dict) and "id" in m)
+                next_cursor = str(data.get("last_id") or "").strip() if data.get("has_more") else ""
+                if not next_cursor or next_cursor in seen_cursors:
+                    break
+                seen_cursors.add(next_cursor)
+                cursor = next_cursor
+            return list(dict.fromkeys(models))
         except Exception as exc:
             logger.debug("fetch_models(anthropic): %s", exc)
             return None
 
 
 anthropic = AnthropicProfile(
-    name="anthropic",
-    aliases=("claude", "claude-oauth", "claude-code"),
-    api_mode="anthropic_messages",
+    name="anthropic", aliases=("claude", "claude-oauth", "claude-code"), api_mode="anthropic_messages",
     env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
-    base_url="https://api.anthropic.com",
-    auth_type="api_key",
-    default_aux_model="claude-haiku-4-5-20251001",
+    base_url="https://api.anthropic.com", auth_type="api_key", default_aux_model="claude-haiku-4-5-20251001",
 )
 
 register_provider(anthropic)

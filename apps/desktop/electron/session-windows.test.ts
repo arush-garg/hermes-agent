@@ -68,6 +68,12 @@ test('buildSessionWindowUrl avoids a double slash when the dev server has a trai
   assert.equal(url, 'http://localhost:5173/?win=secondary#/abc123')
 })
 
+test('buildSessionWindowUrl carries the owning profile in the query before the hash (#82768)', () => {
+  const url = buildSessionWindowUrl('abc123', { devServer: 'http://localhost:5173', profile: 'work', watch: true })
+
+  assert.equal(url, 'http://localhost:5173/?win=secondary&watch=1&profile=work#/abc123')
+})
+
 test('buildSessionWindowUrl encodes the session id in the hash route', () => {
   const url = buildSessionWindowUrl('a b/c', { devServer: 'http://localhost:5173' })
 
@@ -100,6 +106,22 @@ test('buildInstanceWindowUrl marks a packaged full peer', () => {
   const url = buildInstanceWindowUrl({ rendererIndexPath: '/opt/app/index.html' })
 
   assert.match(url, /^file:\/\/.*index\.html\?peer=1$/)
+})
+
+test('full peers carry their boot owner but only explicit profile windows pin future chats', () => {
+  for (const source of [{ devServer: 'http://localhost:5173/' }, { rendererIndexPath: '/opt/app/index.html' }]) {
+    for (const connectionId of [null, 'remote&work']) {
+      for (const profileWindow of [false, true]) {
+        const url = new URL(buildInstanceWindowUrl({ ...source, connectionId, profile: 'work', profileWindow }))
+        assert.equal(url.searchParams.get('peer'), '1')
+        assert.equal(url.searchParams.get('profile'), 'work')
+        assert.equal(url.searchParams.get('connectionId'), connectionId ?? '')
+        assert.equal(url.searchParams.get('profileWindow'), profileWindow ? '1' : null)
+        assert.equal(url.searchParams.has('win'), false)
+        assert.equal(url.hash, '')
+      }
+    }
+  }
 })
 
 test('instanceWindowBounds cascades a new window off its source bounds', () => {

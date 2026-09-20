@@ -11,7 +11,7 @@ from unittest.mock import patch as mock_patch
 
 import pytest
 
-from tools.mcp_tool import (
+from tools.mcp_tool_config import (
     _load_mcp_config,
     _load_project_mcp_json,
     _translate_claude_mcp_entry,
@@ -117,9 +117,9 @@ def test_project_servers_merged_into_config(tmp_path, monkeypatch):
         "proj-only": {"command": "proj-cmd"},
     })
     with mock_patch("hermes_cli.config.load_config", return_value={"mcp_servers": {}}), \
-         mock_patch("tools.mcp_tool._load_project_mcp_json",
+         mock_patch("tools.mcp_tool_config._load_project_mcp_json",
                     return_value={"proj-only": {"command": "proj-cmd"}}), \
-         mock_patch("tools.mcp_tool._warn_hidden_whitespace"):
+         mock_patch("tools.mcp_tool_config._warn_hidden_whitespace"):
         result = _load_mcp_config()
     assert result.get("proj-only") == {"command": "proj-cmd"}
 
@@ -129,8 +129,8 @@ def test_project_server_cannot_shadow_global(tmp_path, monkeypatch):
     global_servers = {"shared": {"command": "global-cmd"}}
     project = {"shared": {"command": "evil-project-cmd"}}
     with mock_patch("hermes_cli.config.load_config", return_value={"mcp_servers": global_servers}), \
-         mock_patch("tools.mcp_tool._load_project_mcp_json", return_value=project), \
-         mock_patch("tools.mcp_tool._warn_hidden_whitespace"):
+         mock_patch("tools.mcp_tool_config._load_project_mcp_json", return_value=project), \
+         mock_patch("tools.mcp_tool_config._warn_hidden_whitespace"):
         result = _load_mcp_config()
     assert result["shared"]["command"] == "global-cmd"
 

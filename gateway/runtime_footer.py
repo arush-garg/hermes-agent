@@ -72,44 +72,32 @@ def _home_relative_cwd(cwd: str) -> str:
 
 
 def _model_short(model: Optional[str]) -> str:
-    """Drop ``vendor/`` prefix for readability (``openai/gpt-5.4`` → ``gpt-5.4``)."""
-    if not model:
-        return ""
-    return model.rsplit("/", 1)[-1]
+    """Drop ``vendor/`` prefix (``openai/gpt-5.4`` → ``gpt-5.4``)."""
+    return model.rsplit("/", 1)[-1] if model else ""
 
 
-def resolve_footer_config(
-    user_config: dict[str, Any] | None,
-    platform_key: str | None = None,
-) -> dict[str, Any]:
-    """Resolve effective runtime-footer config for *platform_key*.
+def _env_cwd() -> str:
+    try:
+        from tools.terminal_scope import terminal_env
+    except ImportError:
+        return os.environ.get("TERMINAL_CWD", "")
+    return terminal_env("TERMINAL_CWD", "")
 
-    Merge order (later wins):
-        1. Built-in defaults (enabled=False)
-        2. ``display.runtime_footer``
-        3. ``display.platforms.<platform_key>.runtime_footer``
-    """
+
+def resolve_footer_config(user_config: dict[str, Any] | None, platform_key: str | None = None) -> dict[str, Any]:
+    """Resolve effective footer config: defaults (enabled=False) <
+    ``display.runtime_footer`` < ``display.platforms.<platform_key>.runtime_footer``."""
     resolved = {"enabled": False, "fields": list(_DEFAULT_FIELDS)}
     cfg = (user_config or {}).get("display") or {}
-
-    global_cfg = cfg.get("runtime_footer")
-    if isinstance(global_cfg, dict):
-        if "enabled" in global_cfg:
-            resolved["enabled"] = bool(global_cfg.get("enabled"))
-        if isinstance(global_cfg.get("fields"), list) and global_cfg["fields"]:
-            resolved["fields"] = [str(f) for f in global_cfg["fields"]]
-
-    if platform_key:
-        platforms = cfg.get("platforms") or {}
-        plat_cfg = platforms.get(platform_key)
-        if isinstance(plat_cfg, dict):
-            plat_footer = plat_cfg.get("runtime_footer")
-            if isinstance(plat_footer, dict):
-                if "enabled" in plat_footer:
-                    resolved["enabled"] = bool(plat_footer.get("enabled"))
-                if isinstance(plat_footer.get("fields"), list) and plat_footer["fields"]:
-                    resolved["fields"] = [str(f) for f in plat_footer["fields"]]
-
+    plat_cfg = (cfg.get("platforms") or {}).get(platform_key) if platform_key else None
+    sections = [cfg.get("runtime_footer"), plat_cfg.get("runtime_footer") if isinstance(plat_cfg, dict) else None]
+    for section in sections:
+        if not isinstance(section, dict):
+            continue
+        if "enabled" in section:
+            resolved["enabled"] = bool(section.get("enabled"))
+        if isinstance(section.get("fields"), list) and section["fields"]:
+            resolved["fields"] = [str(f) for f in section["fields"]]
     return resolved
 
 
@@ -189,7 +177,7 @@ def format_runtime_footer(
             if turn_seconds is not None and turn_seconds >= 0:
                 parts.append(_format_latency(turn_seconds))
         elif field == "cwd":
-            rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
+            rel = _home_relative_cwd(cwd or _env_cwd())
             if rel:
                 parts.append(rel)
         elif field == "tokens_turn":
@@ -238,8 +226,6 @@ def format_runtime_footer(
                 parts.append(f"effort(req):{reasoning_effort}")
         # Unknown field names are silently ignored.
 
-    if not parts:
-        return ""
     return _SEP.join(parts)
 
 
