@@ -678,6 +678,60 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "", existing_
     from hermes_cli.config import save_env_value
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
 
+    def _maybe_offer_profile_propagation(new_key: str) -> None:
+        """After a key save, offer to mirror it into sibling profiles (fork feature).
+
+        Profiles have isolated ``.env`` stores by design — but a rotated
+        provider key is one credential for the whole machine. Without this
+        step every sibling profile that shares the provider keeps running on
+        the dead key until the user re-runs the wizard N times. Opt-in and
+        explicit (default No): a profile may deliberately hold a DIFFERENT
+        key, and only the user knows whether that is intentional.
+        """
+        if not key_env or not new_key:
+            return
+        try:
+            from hermes_cli.credential_lifecycle import (
+                propagate_provider_env_credential_to_profiles,
+            )
+        except Exception:
+            return
+        try:
+            dry = propagate_provider_env_credential_to_profiles(
+                key_env, new_key, apply=False
+            )
+        except Exception:
+            return
+        targets = dry.get("updated") or []
+        if not targets:
+            return
+        try:
+            print(
+                f"  {len(targets)} other profile(s) use {key_env} with a "
+                f"stale value: {', '.join(targets)}"
+            )
+            answer = input(
+                f"  Propagate the new key to all {len(targets)} profile(s)? [y/N]: "
+            ).strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        if answer not in {"y", "yes"}:
+            return
+        try:
+            result = propagate_provider_env_credential_to_profiles(
+                key_env, new_key, apply=True
+            )
+        except Exception:
+            print("  Propagation failed — other profiles keep the old key.")
+            return
+        done = result.get("updated") or []
+        failed = result.get("skipped") or []
+        if done:
+            print(f"  Key propagated to: {', '.join(done)}")
+        if failed:
+            print(f"  Could not update: {', '.join(failed)}")
+
     def _prompt_new_key(*, allow_lmstudio_default: bool) -> str:
         lmstudio_default = provider_id == "lmstudio" and allow_lmstudio_default
         if lmstudio_default:
@@ -701,6 +755,7 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "", existing_
             return "", True
         save_env_value(key_env, new_key)
         _say("API key saved.", "")
+        _maybe_offer_profile_propagation(new_key)
         return new_key, False
 
     # Already configured — offer K / R / C
@@ -722,6 +777,7 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "", existing_
             return existing_key, False
         save_env_value(key_env, new_key)
         _say("  API key updated.", "")
+        _maybe_offer_profile_propagation(new_key)
         return new_key, False
     if choice.startswith("c") and not pool_backed:
         save_env_value(key_env, "")

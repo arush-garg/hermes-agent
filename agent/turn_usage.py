@@ -17,7 +17,10 @@ from typing import Any, Dict, List
 
 from agent.image_token_cost import calibrate_from_usage
 from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
-from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.usage_pricing import (
+    estimate_usage_cost, normalize_usage, usage_reports_cache_metrics,
+    usage_reports_full_prompt_metrics,
+)
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -102,6 +105,19 @@ def record_response_usage(
     # Aggregator-only usage kept for pricing: advisor tokens are priced at each advisor's
     # OWN model rate and added as dollars below.
     aggregator_usage = canonical_usage
+    # An all-zero usage object can be synthesized when the upstream provider
+    # omitted usage. Count only a positive provider prompt as a real report.
+    if aggregator_usage.prompt_tokens > 0:
+        agent.session_usage_report_calls = getattr(agent, "session_usage_report_calls", 0) + 1
+        agent.session_last_prompt_tokens = aggregator_usage.prompt_tokens
+        route = dict(provider=agent.provider, api_mode=agent.api_mode,
+                     model=agent.model, base_url=agent.base_url)
+        if usage_reports_full_prompt_metrics(response.usage, **route):
+            agent.session_context_usage_report_calls = (
+                getattr(agent, "session_context_usage_report_calls", 0) + 1)
+        if usage_reports_cache_metrics(response.usage, **route):
+            agent.session_cache_usage_report_calls = (
+                getattr(agent, "session_cache_usage_report_calls", 0) + 1)
     _moa_client, canonical_usage, _moa_ref_cost = _fold_moa_usage(agent, canonical_usage)
     prompt_tokens = canonical_usage.prompt_tokens
     completion_tokens = canonical_usage.output_tokens

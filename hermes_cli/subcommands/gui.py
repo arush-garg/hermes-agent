@@ -38,6 +38,10 @@ def build_gui_parser(subparsers, *, cmd_gui: Callable) -> None:
         "--local", action="store_true",
         help="Show the local-models UI in the desktop app (models pane, quickstart, picker rows)")
     gui_parser.add_argument(
+        "--stealth", action="store_true",
+        help="Launch the protected floating HUD and hide the primary desktop window",
+    )
+    gui_parser.add_argument(
         "--force-build", action="store_true",
         help="Force a full rebuild even if the content stamp matches")
     gui_parser.add_argument(

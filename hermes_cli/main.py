@@ -3072,6 +3072,12 @@ def _try_fast_serve_launch() -> bool:
     return True
 
 
+def _wants_stealth_early(argv: "list[str] | None" = None) -> bool:
+    """Return whether a stealth-mode flag is present in the invocation."""
+    argv = argv or sys.argv[1:]
+    return "--stealth" in argv or "-stealth" in argv
+
+
 def _try_fast_chat_launch() -> bool:
     """Fast path for unambiguous interactive chat launches (all hosts).
 
@@ -3095,6 +3101,8 @@ def _try_fast_chat_launch() -> bool:
         return False
     # TUI launches keep full dispatch outside Termux (own startup path).
     if _wants_tui_early(argv):
+        return False
+    if _wants_stealth_early(argv):
         return False
     if _first_positional_argv() not in {None, "chat"}:
         return False
@@ -3595,6 +3603,14 @@ def main():
 
     if getattr(args, "oneshot", None):
         _run_oneshot_from_args(args)
+
+    # `hermes --stealth` is the short form of `hermes desktop --stealth`.
+    # Route it before the no-subcommand chat fallback. cmd_gui uses getattr for
+    # desktop-only options, so the top-level namespace remains intentionally
+    # small and retains global flags such as --profile and --yolo.
+    if args.command is None and getattr(args, "stealth", False):
+        cmd_gui(args)
+        return
 
     # No subcommand (optionally with top-level --resume / --continue) → chat.
     if args.command is None:

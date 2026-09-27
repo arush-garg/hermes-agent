@@ -1744,6 +1744,8 @@ def cmd_gui(args: argparse.Namespace):
         launch_command.extend(config_electron_flags)
     if getattr(args, "local", False):
         launch_command.append("--local")
+    if getattr(args, "stealth", False):
+        launch_command.append("--stealth")
     if not source_mode:
         desktop_launch_notice(f"→ Launching packaged Hermes Desktop: {' '.join(launch_command)}")
     pass_fds: tuple[int, ...] = ()

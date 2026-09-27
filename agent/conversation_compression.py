@@ -3729,7 +3729,7 @@ def _announce_compression_start(
     return _CompactionLifecycle(agent, bool(status))
 
 
-def compress_context(
+def _compress_context_impl(
     agent: Any, messages: list, system_message: str, *, approx_tokens: Optional[int] = None,
     task_id: str = "default", focus_topic: Optional[str] = None, force: bool = False,
     bypass_cooldown: bool = False, defer_context_engine_notification: bool = False,
@@ -3882,6 +3882,23 @@ def compress_context(
         _warn_summary_or_aux_fallback(agent)
         _fold_todo_snapshot(agent, compressed)
         compressed_user_turn_outcome = _ensure_compressed_has_user_turn(messages, compressed)
+        # A user can send more input while the summary LLM is working. Carry that
+        # input across this sanctioned cache boundary before the durable commit.
+        drain = getattr(agent, "_drain_compression_queue", None)
+        queued = drain() if callable(drain) else []
+        if queued:
+            from agent.message_metadata import append_message
+            content = "\n\n".join(str(item) for item in queued if str(item).strip())
+            if content:
+                if compressed and isinstance(compressed[-1], dict) and compressed[-1].get("role") == "user":
+                    tail = compressed[-1]
+                    old = tail.get("content")
+                    if isinstance(old, list):
+                        tail["content"] = [*old, {"type": "text", "text": content}]
+                    else:
+                        tail["content"] = f"{old or ''}\n\n{content}".strip()
+                else:
+                    append_message(compressed, {"role": "user", "content": content})
         new_system_prompt = _rebuild_system_prompt_at_boundary(agent, system_message)
         commit = _commit_compaction(
             agent, messages, compressed, in_place=in_place, lease=lease, new_system_prompt=new_system_prompt,
@@ -3922,6 +3939,27 @@ def compress_context(
         finally:
             if _commit_fence_entered:
                 commit_fence.finish_commit()
+
+
+def compress_context(
+    agent: Any, messages: list, system_message: str, *, approx_tokens: Optional[int] = None,
+    task_id: str = "default", focus_topic: Optional[str] = None, force: bool = False,
+    bypass_cooldown: bool = False, defer_context_engine_notification: bool = False,
+    commit_fence: Optional[CompressionCommitFence] = None,
+) -> Tuple[list, str]:
+    """Run one compression and retire any input queued during a failed attempt."""
+    try:
+        return _compress_context_impl(
+            agent, messages, system_message, approx_tokens=approx_tokens,
+            task_id=task_id, focus_topic=focus_topic, force=force,
+            bypass_cooldown=bypass_cooldown,
+            defer_context_engine_notification=defer_context_engine_notification,
+            commit_fence=commit_fence,
+        )
+    finally:
+        drain = getattr(agent, "_drain_compression_queue", None)
+        if callable(drain):
+            drain()
 
 
 def _codex_compaction_cooldown_remaining(agent: Any) -> float:

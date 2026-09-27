@@ -521,6 +521,11 @@ const DEV_SERVER = process.env.HERMES_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged || Boolean(process.env.HERMES_DESKTOP_IS_PACKAGED)
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
+// `hermes --stealth` forwards this switch from the CLI. It intentionally
+// reuses the established interactive HUD renderer rather than creating a
+// second agent surface with a separate session and streaming protocol.
+const STEALTH_MODE = process.argv.includes('--stealth')
+let stealthHudClosed = false
 const IS_WSL = isWslEnvironment()
 // Truthful macOS kernel major (Tahoe = 25). Product version lies (16 vs 26) per
 // build SDK, so gate Tahoe workarounds on Darwin instead.
@@ -14258,6 +14263,13 @@ function spawnHudWindow(sessionId, profile) {
   applyHudElectronOverlay(win, process.platform)
   win.setHiddenInMissionControl?.(true)
 
+  // Electron maps this to OS-specific capture exclusion where supported. It is
+  // defense-in-depth, not a claim that every recorder or remote desktop client
+  // can be made unable to see the HUD.
+  if (STEALTH_MODE) {
+    win.setContentProtection(true)
+  }
+
   // Linux intentionally starts on ONE virtual desktop. During a renderer
   // grab, hermes:hud:workspace-transfer temporarily makes the X11 window
   // sticky; releasing it assigns the HUD to KDE's then-current desktop.
@@ -14308,6 +14320,11 @@ function spawnHudWindow(sessionId, profile) {
     hudSnapShortcut.dispose()
     restoreMainWindowFromHud()
     broadcastHudState(false)
+
+    if (STEALTH_MODE && !stealthHudClosed) {
+      stealthHudClosed = true
+      app.quit()
+    }
   })
 
   attachRendererConsoleCapture(win, 'hud', rememberLog)
@@ -14694,6 +14711,13 @@ function createWindow() {
   }
 
   const revealController = wireWindowReveal(createdMainWindow, {
+    // In stealth mode the primary window is a hidden backend/bootstrap host;
+    // the HUD is the only user-facing surface.
+    show: () => {
+      if (!STEALTH_MODE) {
+        createdMainWindow.show()
+      }
+    },
     onRevealed: () => {
       // Persist geometry as soon as the window is visible so a crash before the
       // first clean resize/move/close still captures the restored bounds (#56726).
@@ -18211,6 +18235,14 @@ app.whenReady().then(() => {
   // captured by the original transaction before removing the journal entry.
   void resumeManagedSshRecoveries()
   createWindow()
+
+  if (STEALTH_MODE) {
+    // The hidden primary window owns backend bootstrap; the HUD reuses the
+    // normal chat renderer and becomes the only visible surface. Closing this
+    // one-window mode exits instead of revealing a surprise full desktop app.
+    openHudWindow(null, primaryProfile)
+    hudRestoreMainWindow = false
+  }
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)

@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from tests.run_agent.test_streaming import _make_stream_chunk
+from tests.agent.test_streaming import _make_stream_chunk
 
 
 def _make_agent():

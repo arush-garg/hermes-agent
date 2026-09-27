@@ -192,6 +192,8 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
               help="Launch the modern TUI instead of the classic REPL")
     inherited(parser, "--cli", action="store_true", default=False,
               help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)")
+    inherited(parser, "--stealth", action="store_true", default=False,
+              help="Launch in stealth mode (overlay window only, no main window)")
     inherited(parser, "--dev", dest="tui_dev", action="store_true", default=False,
               help="With --tui: run TypeScript sources via tsx (skip dist build)")
 

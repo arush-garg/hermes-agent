@@ -32,6 +32,11 @@ def test_local_flag_defaults_off():
     assert args.local is False
 
 
+def test_stealth_flag_parses_and_defaults_off():
+    assert _parser().parse_args(["desktop", "--stealth"]).stealth is True
+    assert _parser().parse_args(["desktop"]).stealth is False
+
+
 def test_local_flag_composes_with_build_flags():
     args = _parser().parse_args(["desktop", "--local", "--force-build"])
 

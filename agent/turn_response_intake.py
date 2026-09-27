@@ -86,6 +86,7 @@ def _fire_post_api_request_hook(
                     response, assistant_message, finish_reason=finish_reason
                 ),
                 usage=agent._usage_summary_for_api_request_hook(response),
+                rate_limit_state=agent._rate_limit_state_for_hook(),
                 assistant_message=assistant_message,
                 assistant_content_chars=len(assistant_message.content or ""),
                 assistant_tool_call_count=len(getattr(assistant_message, "tool_calls", None) or []),
@@ -134,6 +135,8 @@ def normalize_model_response(
     # Agent-as-provider projection: splice the provider-agent's own tool work in as
     # call/result rows before this turn's assistant message; no-op for ordinary providers.
     splice_provider_projection(agent, response, messages)
+    # A recovered transient failure cannot describe a later terminal failure.
+    agent._last_api_error_context = None
 
     _fire_post_api_request_hook(
         agent, response, assistant_message, finish_reason, api_messages=api_messages,

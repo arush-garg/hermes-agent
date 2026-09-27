@@ -26,6 +26,12 @@ from typing import List, Dict, Any, Optional, Callable
 from datetime import datetime
 from pathlib import Path
 
+# Ensure project root is on sys.path — critical when imported lazily from
+# gateway handlers or daemon threads that may not have it set.
+_PROJECT_ROOT = str(Path(__file__).resolve().parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 from hermes_constants import get_hermes_home
 
 
@@ -286,6 +292,7 @@ class AIAgent(
         fallback_model: Dict[str, Any] = None, credential_pool=None,
         checkpoints_enabled: bool = False, checkpoint_max_snapshots: int = 20,
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
+        checkpoint_interval: int = 10,
         pass_session_id: bool = False, requested_provider: str = None,
         capabilities: Dict[str, bool] | None = None, cwd: str | None = None,
     ):
@@ -407,11 +414,14 @@ class AIAgent(
             "session_total_tokens", "session_input_tokens", "session_output_tokens", "session_prompt_tokens",
             "session_completion_tokens", "session_cache_read_tokens", "session_cache_write_tokens",
             "session_reasoning_tokens", "session_api_calls",
+            "session_usage_report_calls", "session_cache_usage_report_calls",
+            "session_context_usage_report_calls",
         ):
             setattr(self, counter, 0)
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
+        self.session_last_prompt_tokens = 0
 
         # Session boundary: the usage anchor describes the OLD transcript; fall back to full estimation.
         self._usage_anchor = None
@@ -444,6 +454,84 @@ class AIAgent(
                 engine.bind_session_state(getattr(self, "_session_db", None), target_session_id)
             except Exception as exc:
                 logger.debug("context engine bind_session_state during reset: %s", exc)
+
+    # ── Fork customizations: /yolo steering + compression queue (#fork) ──────
+
+    def steer_yolo(self, session_key: str, enable: bool) -> bool:
+        """Queue a /yolo toggle to fire after the next tool call.
+
+        Same timing contract as steer(): the action executes at the next
+        tool-batch boundary rather than immediately, so it never interrupts
+        a running tool. Thread-safe.
+        """
+        _lock = getattr(self, "_pending_steer_lock", None)
+        if _lock is None:
+            self._pending_yolo_action = (session_key, enable)
+        else:
+            with _lock:
+                self._pending_yolo_action = (session_key, enable)
+        return True
+
+    def _drain_pending_yolo_action(self) -> Optional[tuple]:
+        """Return pending (session_key, enable) yolo action and clear it."""
+        _lock = getattr(self, "_pending_steer_lock", None)
+        if _lock is None:
+            action = getattr(self, "_pending_yolo_action", None)
+            self._pending_yolo_action = None
+            return action
+        with _lock:
+            action = self._pending_yolo_action
+            self._pending_yolo_action = None
+        return action
+
+    def _apply_pending_yolo_action(self) -> None:
+        """Execute any queued yolo toggle. Called at tool-batch boundaries."""
+        from agent.agent_runtime_helpers import apply_pending_yolo_action
+        apply_pending_yolo_action(self)
+
+    def queue_message_during_compression(self, text: str) -> bool:
+        """Queue a user message received while compression is in flight.
+
+        The message is stored and injected as a new user turn into the
+        compressed transcript after compression successfully completes.
+        Thread-safe: uses _pending_compression_lock.
+        """
+        if not text or not text.strip():
+            return False
+        cleaned = text.strip()
+        _lock = getattr(self, "_pending_compression_lock", None)
+        if _lock is None:
+            # Fallback for test stubs that don't run full __init__
+            self._pending_compression_queue.append(cleaned)
+            return True
+        with _lock:
+            self._pending_compression_queue.append(cleaned)
+        return True
+
+    def _drain_compression_queue(self) -> list:
+        """Drain and return all messages queued during compression (oldest first)."""
+        _lock = getattr(self, "_pending_compression_lock", None)
+        if _lock is None:
+            queued = getattr(self, "_pending_compression_queue", [])
+            self._pending_compression_queue = []
+            return queued
+        with _lock:
+            queued = list(self._pending_compression_queue)
+            self._pending_compression_queue.clear()
+        return queued
+
+    def _rate_limit_state_for_hook(self) -> Optional[Dict[str, Any]]:
+        """Return the current rate-limit snapshot in JSON-safe dict form."""
+        state = getattr(self, "_rate_limit_state", None)
+        if state is None:
+            return None
+        value = self._hook_jsonable(state)
+        return value if isinstance(value, dict) else None
+
+    def _try_turn_restart(self, api_error: Exception, messages: list) -> bool:
+        """Forwarder — see ``agent.agent_runtime_helpers.try_turn_restart``."""
+        from agent.agent_runtime_helpers import try_turn_restart
+        return try_turn_restart(self, api_error, messages)
 
     @staticmethod
     def _effective_lmstudio_context_length(config_context_length: Optional[int], runtime_context_length: Any) -> Optional[int]:
@@ -961,6 +1049,13 @@ class AIAgent(
         self._session_messages = []
         self._db_flush_scan_prefix = None
         self._streamed_assistant_text_parts = []
+        # 5.5 Unregister from monitor tool agent registry and cancel any
+        # active periodic monitors for this session (fork feature).
+        try:
+            from tools.monitor_tool import unregister_agent
+            unregister_agent(getattr(self, "session_id", ""))
+        except Exception:
+            pass
         _quietly(self._trim_process_memory)
         _quietly(self._finalize_owned_session_row)
 

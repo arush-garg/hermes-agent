@@ -21,10 +21,8 @@ class MockCompressor:
         self.delay = delay
         self.should_succeed = should_succeed
         self._compressed_messages = compressed_messages or [
-            {"role": "user", "content": "old message 1"},
-            {"role": "assistant", "content": "old response 1"},
-            {"role": "user", "content": "old message 2"},
-            {"role": "assistant", "content": "old response 2"},
+            {"role": "user", "content": "Summary of earlier request"},
+            {"role": "assistant", "content": "Summary of earlier response"},
         ]
         self.compression_count = 0
         self.context_length = 128000
@@ -161,8 +159,8 @@ def test_compression_queue_injected_after_successful_compression():
     assert any("queued message 2" in m["content"] for m in user_messages)
     
     # Should be in order
-    queued_idx = [i for i, m in enumerate(compressed_messages) if "queued message" in m.get("content", "")]
-    assert queued_idx[0] < queued_idx[1]
+    joined = "\n".join(str(m.get("content", "")) for m in user_messages)
+    assert joined.index("queued message 1") < joined.index("queued message 2")
 
 
 def test_compression_queue_not_injected_on_failed_compression():
@@ -240,10 +238,8 @@ def test_compression_queue_preserves_alternation():
     # Compressed transcript ends with assistant
     compressor = MockCompressor(
         compressed_messages=[
-            {"role": "user", "content": "old 1"},
-            {"role": "assistant", "content": "old 2"},
-            {"role": "user", "content": "old 3"},
-            {"role": "assistant", "content": "old 4"},  # ends with assistant
+            {"role": "user", "content": "Summary of old 1 and old 3"},
+            {"role": "assistant", "content": "Summary of old 2 and old 4"},
         ]
     )
     agent = MockAgent(compressor=compressor)

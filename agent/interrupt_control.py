@@ -239,6 +239,9 @@ class InterruptControlMixin:
             # hard_cancel, so a soft clear dropped a live user message with no trace.
             with _ic_lock(self, "_pending_steer_lock"):
                 self._pending_steer = None
+                # A hard interrupt supersedes any pending /yolo-steer too (fork
+                # feature): neither will have a tool-call boundary to fire at.
+                self._pending_yolo_action = None
         return True
 
     def steer(self, text: str) -> bool:

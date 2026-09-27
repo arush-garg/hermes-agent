@@ -163,8 +163,25 @@ class ApiRequestHooksMixin:
         api_start_time: float, api_kwargs: Optional[Dict[str, Any]], error_type: str,
         error_message: str, status_code: Optional[int] = None, retry_count: Optional[int] = None,
         max_retries: Optional[int] = None, retryable: Optional[bool] = None,
-        reason: Optional[str] = None,
+        reason: Optional[str] = None, error_context: Optional[Dict[str, Any]] = None,
     ) -> None:
+        # Fork feature: expose a JSON-safe rate-limit snapshot + remember the last
+        # API error context so a failed turn's terminal result can carry it.
+        rate_limit: Dict[str, Any] = {}
+        if isinstance(error_context, dict):
+            reset_at = error_context.get("reset_at")
+            if reset_at is not None:
+                rate_limit["reset_at"] = self._hook_jsonable(reset_at)
+        rate_limit_state = self._rate_limit_state_for_hook()
+        if rate_limit_state is not None:
+            rate_limit["state"] = rate_limit_state
+        self._last_api_error_context = {
+            "error_type": error_type,
+            "status_code": status_code,
+            "retry_count": retry_count,
+            "max_retries": max_retries,
+            "rate_limit": rate_limit or None,
+        }
         # Lazy module import (not from-import) so tests can replace lifecycle dispatch at this call site.
         with suppress(Exception):
             from hermes_cli import lifecycle as _lifecycle
@@ -192,5 +209,6 @@ class ApiRequestHooksMixin:
                 retryable=retryable,
                 reason=reason,
                 error={"type": error_type, "message": error_message},
+                rate_limit=rate_limit or None,
                 request=self._api_request_payload_for_hook(api_kwargs),
             )

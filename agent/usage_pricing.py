@@ -361,7 +361,8 @@ def usage_reports_cache_metrics(
         return False
 
     for details_name in ("input_tokens_details", "prompt_tokens_details"):
-        details = _usage_get(response_usage, details_name, None)
+        details = (response_usage.get(details_name) if isinstance(response_usage, dict)
+                   else getattr(response_usage, details_name, None))
         if details is not None and _usage_field_reported(details, "cached_tokens"):
             return True
 

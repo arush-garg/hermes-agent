@@ -331,14 +331,15 @@ class CLIVoiceMixin:
                     time.sleep(0.2)
                 if self._voice_tts:
                     self._voice_speak_response(
-                        f"{transition} {speech}" if played and transition else speech)
+                        f"{transition} {speech}" if played and transition else speech,
+                        _queue_item=True)
                     played = True
             finally:
                 self._voice_tts_queue.task_done()
                 if not self._voice_tts_queue.empty():
                     self._voice_tts_done.clear()
 
-    def _voice_speak_response(self, text: str):
+    def _voice_speak_response(self, text: str, *, _queue_item: bool = False):
         """Speak the agent's response aloud using TTS (runs in background thread)."""
         from cli import _DIM, _RST, _cprint, logger
         if not self._voice_tts:
@@ -391,7 +392,8 @@ class CLIVoiceMixin:
             logger.warning("Voice TTS playback failed: %s", e)
             _cprint(f"{_DIM}TTS playback failed: {e}{_RST}")
         finally:
-            self._voice_tts_done.set()
+            if not _queue_item:
+                self._voice_tts_done.set()
 
     def _voice_full_duplex_listener(self) -> None:
         """Full-duplex agent-turn listener: mic live for the WHOLE turn.

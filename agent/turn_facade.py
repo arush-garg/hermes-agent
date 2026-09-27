@@ -149,6 +149,10 @@ class TurnFacadeMixin:
                     if lease is not None:
                         lease.stop_refresher()
             terminal = result if isinstance(result, dict) else {}
+            # Fork feature: surface the last API error context on a failed turn.
+            if terminal.get("failed") is True and getattr(self, "_last_api_error_context", None):
+                for key, value in self._last_api_error_context.items():
+                    terminal.setdefault(key, value)
             relay_outcome = (
                 "cancelled" if terminal.get("interrupted") is True
                 else "failed" if terminal.get("failed") is True

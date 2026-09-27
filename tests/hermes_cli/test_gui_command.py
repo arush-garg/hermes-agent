@@ -62,6 +62,7 @@ def _ns(**kw):
         ignore_existing=False,
         hermes_root=None,
         cwd=None,
+        stealth=False,
         setup_tcc_identity=False,
         identity=None,
     )
@@ -185,6 +186,31 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     else:
         assert launched == [str(packaged_exe)]
     assert mock_run.call_args_list[1].kwargs["cwd"] == desktop_dir
+
+
+def test_gui_forwards_stealth_to_packaged_electron(tmp_path, monkeypatch):
+    """The desktop launcher passes the parser flag to Electron unchanged."""
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    monkeypatch.setattr(main_desktop, "_desktop_exe_integrity_error", lambda _: None)
+
+    with patch("hermes_cli.main_install_repair._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main_web_build._run_npm_install_deterministic", return_value=subprocess.CompletedProcess([], 0)), \
+         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main_desktop._write_desktop_build_stamp"), \
+         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main_desktop._register_linux_desktop_entry"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=_pack_into_staging(root)) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(stealth=True))
+
+    assert exc.value.code == 0
+    launched = mock_run.call_args_list[1].args[0]
+    assert launched[0] == str(packaged_exe)
+    assert launched[-1] == "--stealth"
 
 
 def test_gui_install_env_prepends_managed_node_on_bare_path(tmp_path, monkeypatch):

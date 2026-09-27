@@ -1,9 +1,13 @@
 """Display and heartbeat phase of the request-local streaming monitor."""
 
 import time
+import logging
 from types import SimpleNamespace
 
 from agent.model_metadata import is_local_endpoint
+from utils import env_float
+
+logger = logging.getLogger(__name__)
 
 
 class StreamingWaitMonitor:
@@ -50,31 +54,56 @@ class StreamingWaitMonitor:
             self.agent._touch_activity(f"waiting for stream response ({waiting_secs}s, no chunks yet)")
 
     def _monitor_loop(self) -> None:
-        _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
+        call_start = time.time()
+        absolute_timeout = env_float("HERMES_STREAM_MAX_SECONDS", 900.0)
+        absolute_cap_fired = False
+        logger.info("stream watchdog armed: stale=%.0fs abs=%.0fs model=%s",
+                    self._stream_stale_timeout, absolute_timeout,
+                    self.api_kwargs.get("model", "unknown"))
         self._mon = SimpleNamespace(
             last_heartbeat=time.time(), last_load_poll=0.0,
             load_notice_shown=False, load_notice_misses=0, wait_notice_started_ts=None,
         )
-        _is_local_base = bool(self.agent.base_url) and is_local_endpoint(self.agent.base_url)
-        while not self._call_done.is_set():
-            self._call_done.wait(timeout=0.3)
-            _hb_now = time.time()
-            if _is_local_base and self._poll_local_load_notice(_hb_now):
-                continue
-            # Reasoning callbacks do not clear the classic CLI spinner. The empty
-            # protocol payload resets status without adding synthetic reasoning.
-            if (self._mon.wait_notice_started_ts is not None
-                    and self.last_chunk_time["t"] > self._mon.wait_notice_started_ts):
-                self.agent._emit_wait_notice("")
-                self._mon.wait_notice_started_ts = None
-            if _hb_now - self._mon.last_heartbeat >= _HEARTBEAT_INTERVAL:
-                self._mon.last_heartbeat = _hb_now
-                self._heartbeat(int(_hb_now - self.last_chunk_time["t"]))
-            _stale_elapsed = time.time() - self.last_chunk_time["t"]
-            if _stale_elapsed > self._stream_stale_timeout:
-                self._mon.wait_notice_started_ts = None  # Reconnect status has its own owner.
-                self._kill_stale_stream(_stale_elapsed)
-            if self.agent._interrupt_requested:
-                self._abort_for_interrupt(_stale_elapsed)
-                return
+        try:
+            while not self._call_done.is_set():
+                self._call_done.wait(timeout=0.3)
+                now = time.time()
+                if not absolute_cap_fired and now - call_start > absolute_timeout:
+                    absolute_cap_fired = True
+                    elapsed = now - call_start
+                    logger.error("stream abs-cap hit after %.0fs (cap %.0fs) — model=%s. "
+                                 "Force-closing request-local transport for retry/fallback.",
+                                 elapsed, absolute_timeout, self.api_kwargs.get("model", "unknown"))
+                    self.agent._buffer_status(
+                        f"⚠️ Provider call exceeded {int(elapsed)}s hard cap "
+                        f"(model: {self.api_kwargs.get('model', 'unknown')}). Aborting.")
+                    try:
+                        self._cancel_current_stream_attempt("stream_abs_cap")
+                        self.clients.close_once("stream_abs_cap")
+                    except Exception:
+                        logger.debug("stream absolute-cap abort failed", exc_info=True)
+                    continue
+                self._monitor_iteration(now)
+        except Exception:
+            logger.error("stream watchdog monitor loop aborted abnormally", exc_info=True)
+            raise
 
+    def _monitor_iteration(self, now: float) -> None:
+        if self.agent.base_url and is_local_endpoint(self.agent.base_url):
+            if self._poll_local_load_notice(now):
+                return
+        # Reasoning callbacks do not clear the classic CLI spinner. The empty
+        # protocol payload resets status without adding synthetic reasoning.
+        if (self._mon.wait_notice_started_ts is not None
+                and self.last_chunk_time["t"] > self._mon.wait_notice_started_ts):
+            self.agent._emit_wait_notice("")
+            self._mon.wait_notice_started_ts = None
+        if now - self._mon.last_heartbeat >= 30.0:
+            self._mon.last_heartbeat = now
+            self._heartbeat(int(now - self.last_chunk_time["t"]))
+        stale_elapsed = time.time() - self.last_chunk_time["t"]
+        if stale_elapsed > self._stream_stale_timeout:
+            self._mon.wait_notice_started_ts = None  # Reconnect status has its own owner.
+            self._kill_stale_stream(stale_elapsed)
+        if self.agent._interrupt_requested:
+            self._abort_for_interrupt(stale_elapsed)
