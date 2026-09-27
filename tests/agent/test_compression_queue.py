@@ -294,3 +294,21 @@ def test_compression_queue_empty_messages_ignored():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-xvs"])
+
+
+def test_compress_context_forwards_every_keyword_the_implementation_accepts(monkeypatch):
+    """The queue-draining wrapper must not narrow the compression API: ``_compress_context`` passes
+    ``verbatim_tail`` on every call, so a dropped keyword broke all compaction with a TypeError."""
+    import inspect
+    from types import SimpleNamespace
+
+    from agent import conversation_compression as cc
+
+    kwargs = {
+        name: object() for name, param in inspect.signature(cc._compress_context_impl).parameters.items()
+        if param.kind is inspect.Parameter.KEYWORD_ONLY
+    }
+    seen = {}
+    monkeypatch.setattr(cc, "_compress_context_impl", lambda *args, **kw: seen.update(kw) or ([], ""))
+    cc.compress_context(SimpleNamespace(), [], "system", **kwargs)
+    assert seen == kwargs

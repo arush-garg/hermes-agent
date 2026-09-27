@@ -4281,7 +4281,7 @@ def compress_context(
     agent: Any, messages: list, system_message: str, *, approx_tokens: Optional[int] = None,
     task_id: str = "default", focus_topic: Optional[str] = None, force: bool = False,
     bypass_cooldown: bool = False, defer_context_engine_notification: bool = False,
-    commit_fence: Optional[CompressionCommitFence] = None,
+    commit_fence: Optional[CompressionCommitFence] = None, verbatim_tail: Optional[list] = None,
 ) -> Tuple[list, str]:
     """Run one compression and retire any input queued during a failed attempt."""
     try:
@@ -4290,7 +4290,7 @@ def compress_context(
             task_id=task_id, focus_topic=focus_topic, force=force,
             bypass_cooldown=bypass_cooldown,
             defer_context_engine_notification=defer_context_engine_notification,
-            commit_fence=commit_fence,
+            commit_fence=commit_fence, verbatim_tail=verbatim_tail,
         )
     finally:
         drain = getattr(agent, "_drain_compression_queue", None)
