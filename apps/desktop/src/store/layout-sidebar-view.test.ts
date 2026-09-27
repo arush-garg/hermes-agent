@@ -91,6 +91,7 @@ describe('the sidebar as it ships', () => {
     expect($sidebarProjectDataWanted.get()).toBe(false)
   })
 
+
   it('offers no reset until something actually moves off the defaults', () => {
     expect($sidebarViewCustomized.get()).toBe(false)
 

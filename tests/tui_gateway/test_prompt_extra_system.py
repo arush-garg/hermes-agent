@@ -13,10 +13,11 @@ from tui_gateway import methods_prompt, server
 class _InlineThread:
     """Run a prompt.submit dispatch closure synchronously in tests."""
 
-    def __init__(self, target=None, daemon=None, args=(), kwargs=None):
+    def __init__(self, target=None, daemon=None, args=(), kwargs=None, name=None):
         self._target = target
         self._args = args
         self._kwargs = kwargs or {}
+        self.name = name
 
     def start(self):
         if self._target is not None:
@@ -91,7 +92,7 @@ def test_prompt_submit_forwards_extra_system_to_turn_runner(monkeypatch):
         monkeypatch.setattr(server, "_persist_branch_seed", lambda *_: None)
         monkeypatch.setattr(server, "_start_agent_build", lambda *_: None)
         monkeypatch.setattr(server, "_wait_agent_for_prompt", lambda *_: None)
-        monkeypatch.setattr(server, "_start_inflight_turn", lambda *_: None)
+        monkeypatch.setattr(server, "_start_inflight_turn", lambda *_, **__: None)
         monkeypatch.setattr(server.threading, "Thread", _InlineThread)
         monkeypatch.setattr(
             server,

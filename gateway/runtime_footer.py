@@ -23,9 +23,11 @@ Available fields:
     cache_hit         — provider-reported prompt cache hit ratio
                         (``cache(turn):87%``)
     reasoning_effort  — active model's request intent (``effort(req):max``)
+    served_model      — routing-proxy-reported deployment (``alias → served``);
+                        skipped when the served model equals the requested one
 
-``latency``, ``tokens_turn``, and ``reasoning_effort`` are opt-in: they are NOT
-in the default field set, so a footer whose ``fields`` are unset renders
+``latency``, ``tokens_turn``, ``reasoning_effort``, and ``served_model`` are opt-in:
+they are NOT in the default field set, so a footer whose ``fields`` are unset renders
 exactly as before.
 
 Token fields are provider-reported accounting, not local estimates. Cached
@@ -136,6 +138,8 @@ def format_runtime_footer(
     cache_usage_status: Optional[str] = None,
     context_usage_status: Optional[str] = "reported",
     reasoning_effort: Optional[str] = None,
+    requested_model: Optional[str] = None,
+    served_model: Optional[str] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
@@ -149,6 +153,11 @@ def format_runtime_footer(
             m = _model_short(model)
             if m:
                 parts.append(m)
+        elif field == "served_model":
+            requested = requested_model or model
+            alias = _model_short(requested)
+            if served_model and served_model not in (alias, requested):
+                parts.append(f"{alias} → {served_model}")
         elif field == "context_pct":
             if (
                 context_usage_status == "reported"
@@ -246,6 +255,8 @@ def build_footer_line(
     cache_usage_status: Optional[str] = None,
     context_usage_status: Optional[str] = "reported",
     reasoning_effort: Optional[str] = None,
+    requested_model: Optional[str] = None,
+    served_model: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -274,5 +285,7 @@ def build_footer_line(
         cache_usage_status=cache_usage_status,
         context_usage_status=context_usage_status,
         reasoning_effort=reasoning_effort,
+        requested_model=requested_model,
+        served_model=served_model,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )

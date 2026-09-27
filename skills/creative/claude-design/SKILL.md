@@ -620,9 +620,6 @@ Include:
 - verification status
 - next suggested action, if useful
 
-Example:
->>>>>>> 7e8f50a14176e02b514631b0b04470acaadae32a
-
 Example final response:
 ```text
 Created: /path/to/Prototype.html

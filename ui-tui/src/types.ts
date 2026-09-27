@@ -1,8 +1,9 @@
-import type { ProjectInfo, SessionLiveInfo, SubagentStatus } from '@hermes/shared/gateway-events'
+import type { ProjectInfo, SessionLiveInfo, SubagentStatus, ToolLabel } from '@hermes/shared/gateway-events'
 
 export interface ActiveTool {
   context?: string
   id: string
+  labels?: ToolLabel[]
   name: string
   verboseArgs?: string
   startedAt?: number
@@ -184,7 +185,7 @@ export interface McpServerStatus {
 
 /** The gateway's `session.info` / resume `info` block — generated from `tui_gateway/contracts`. */
 export type SessionInfo = SessionLiveInfo
-export type { ProjectInfo }
+export type { ProjectInfo, SubagentStatus }
 
 export interface SudoReq {
   requestId: string
