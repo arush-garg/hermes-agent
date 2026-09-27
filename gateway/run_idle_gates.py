@@ -1,4 +1,4 @@
-"""Idle gates for the gateway's per-profile pollers (heartbeat restore, handoff watcher, loop wakeup).
+"""Idle gates for the gateway's per-profile pollers (heartbeat/wait restore, handoff watcher, loop wakeup).
 
 Entering ``_profile_runtime_scope`` costs a config.yaml load, a ``.env`` parse, secret hydration and a
 terminal-policy build; on a multiplex gateway the pollers paid that per profile per tick with nothing
@@ -45,6 +45,12 @@ def profile_has_active_heartbeat(profile_home: Path) -> bool:
     from hermes_cli.heartbeat import store_has_active_heartbeat
 
     return _gate(profile_home, store_has_active_heartbeat)
+
+
+def profile_has_pending_wait(profile_home: Path) -> bool:
+    from hermes_cli.waits import store_has_pending_wait
+
+    return _gate(profile_home, store_has_pending_wait)
 
 
 def profile_has_active_loop(profile_home: Path) -> bool:

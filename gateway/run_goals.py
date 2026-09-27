@@ -98,6 +98,13 @@ class GatewayGoalsMixin:
             return lambda sid: HeartbeatManager(session_id=sid)
         return await self._manager_for_event(event, "heartbeat", _load)
 
+    async def _get_wait_manager_for_event(self, event: "MessageEvent"):
+        """Return ``(WaitManager, session_entry)`` for this event, or ``(None, None)``."""
+        def _load():
+            from hermes_cli.waits import WaitManager
+            return lambda sid: WaitManager(session_id=sid)
+        return await self._manager_for_event(event, "wait", _load)
+
     @staticmethod
     def _synthetic_prompt_event(source: Any, text: str, *, internal: bool = False) -> MessageEvent:
         """Build the TEXT event used to inject a goal/heartbeat/loop prompt into a session.
@@ -149,20 +156,26 @@ class GatewayGoalsMixin:
         ):
             return  # keep missed intervals due until user work has drained
         from hermes_cli.heartbeat import HeartbeatManager
+        from hermes_cli.waits import WaitManager
 
-        mgr = HeartbeatManager(session_id=session_id)
-        if not mgr.has_heartbeat():
+        heartbeat, waits = HeartbeatManager(session_id=session_id), WaitManager(session_id=session_id)
+        if not (heartbeat.has_heartbeat() or waits.is_active()):
             watch.pop(quick_key, None)
             return
-        prompt = mgr.due_prompt()
+        # One injection per idle poll; a due /wait (the user's own deferred message) goes first.
+        mgr, prompt = waits, waits.due_prompt()
+        if not prompt:
+            mgr, prompt = heartbeat, heartbeat.due_prompt()
         if not prompt:
             return
         event = self._synthetic_prompt_event(source, prompt)
         event.metadata["gateway_session_key"] = quick_key
         event._heartbeat_execution_started = False
-        # Provenance read by display_kind_for_event / the turn's quiet surfaces; the event stays
-        # non-internal so authorization and the emergency stop still apply.
+        # Owner lineage + refund accounting (gateway/run_heartbeat_acceptance.py) for both kinds; the event
+        # stays non-internal so authorization and the emergency stop still apply. Only a heartbeat tick gets
+        # the quiet surfaces (response_filters.is_scheduled_heartbeat_event).
         event._heartbeat_session_id = session_id
+        event._scheduled_user_message = mgr is waits
         # A pinned route skips topic recovery: no await between the idle
         # check and adapter claim. FIFO alone never wakes an idle session.
         try:

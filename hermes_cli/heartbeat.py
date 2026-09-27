@@ -25,8 +25,9 @@ HEARTBEAT_PROMPT_TEMPLATE = (
     "right now, reply briefly that nothing has changed and stop — do not invent work."
 )
 
-_INTERVAL_RE = re.compile(
-    r"^\s*(?:every\s+)?(\d+(?:\.\d+)?)\s*(s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?|d|days?)\s*$", re.IGNORECASE)
+_DURATION_RE = re.compile(
+    r"^\s*(\d+(?:\.\d+)?)\s*(s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?|d|days?)\s*$", re.IGNORECASE)
+_EVERY_PREFIX_RE = re.compile(r"^\s*every\s+", re.IGNORECASE)
 
 _UNIT_SECONDS = {
     **dict.fromkeys(("s", "sec", "secs", "second", "seconds"), 1),
@@ -42,15 +43,23 @@ _STATE_FIELDS = {
 }
 
 
+def parse_duration(text: str) -> Optional[int]:
+    """Parse ``30s`` / ``10m`` / ``2h`` / ``90 minutes`` / ``1.5d`` into whole seconds; None when not a duration.
+
+    The shared grammar behind ``/heartbeat every <interval>`` and ``/wait <duration>``; no floor applied.
+    """
+    m = _DURATION_RE.match(text) if text else None
+    return int(float(m.group(1)) * _UNIT_SECONDS[m.group(2).lower()]) if m else None
+
+
 def parse_interval(text: str) -> Optional[int]:
     """Parse ``10m`` / ``every 2h`` / ``every 90 minutes`` into seconds.
 
     None when not an interval; below ``MIN_INTERVAL_SECONDS`` returns -1 so callers can tell "too small" apart.
     """
-    m = _INTERVAL_RE.match(text) if text else None
-    if not m:
+    seconds = parse_duration(_EVERY_PREFIX_RE.sub("", text, count=1)) if text else None
+    if seconds is None:
         return None
-    seconds = int(float(m.group(1)) * _UNIT_SECONDS[m.group(2).lower()])
     return -1 if seconds < MIN_INTERVAL_SECONDS else seconds
 
 
@@ -267,8 +276,9 @@ def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bo
 
 
 __all__ = [
-    "HeartbeatState", "HeartbeatManager", "parse_interval", "format_interval", "load_heartbeat", "save_heartbeat",
-    "migrate_heartbeat_to_session", "HEARTBEAT_PROMPT_TEMPLATE", "MIN_INTERVAL_SECONDS", "POLL_SECONDS",
+    "HeartbeatState", "HeartbeatManager", "parse_duration", "parse_interval", "format_interval", "load_heartbeat",
+    "save_heartbeat", "migrate_heartbeat_to_session", "HEARTBEAT_PROMPT_TEMPLATE", "MIN_INTERVAL_SECONDS",
+    "POLL_SECONDS",
 ]
 
 

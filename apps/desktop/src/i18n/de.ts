@@ -4200,6 +4200,7 @@ export const deOverrides = {
       '/steer': 'Nach dem nächsten Tool-Aufruf eine Nachricht einfügen, ohne zu unterbrechen',
       '/goal': 'Ein dauerhaftes Ziel festlegen, an dem Hermes über mehrere Turns arbeitet, bis es erreicht ist',
       '/heartbeat': 'Einen wiederkehrenden Prompt festlegen, der bei Leerlauf in diese Session zurückkehrt',
+      '/wait': 'Nach einer Verzögerung eine Nachricht an diese Session senden (einmalig)',
       '/refine': 'Diese Unterhaltung jetzt prüfen und Erkenntnisse in Gedächtnis/Skills speichern',
       '/review': 'Einen unabhängigen Subagent starten, der die gerade besprochene Arbeit prüft (PR, Code, Doku)',
       '/loop': 'Einen Prompt in dieser Session in regelmäßigen Abständen erneut ausführen',

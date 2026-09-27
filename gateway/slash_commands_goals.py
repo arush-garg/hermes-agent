@@ -1,4 +1,4 @@
-"""Autonomy-loop gateway commands: /goal, /subgoal, /heartbeat, /loop, /refine, /review.
+"""Autonomy-loop gateway commands: /goal, /subgoal, /heartbeat, /wait, /loop, /refine, /review.
 Bound onto ``GatewayRunner`` through ``GatewaySlashCommandsMixin``."""
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ def _mgr_call(prefix: str, fn, *args, errors=(RuntimeError, ValueError)):
 
 
 class GatewayGoalCommandsMixin:
-    """Autonomy-loop gateway commands: /goal, /subgoal, /heartbeat, /loop, /refine, /review."""
+    """Autonomy-loop gateway commands: /goal, /subgoal, /heartbeat, /wait, /loop, /refine, /review."""
 
     async def _handle_goal_command(self, event: MessageEvent) -> str:
         from hermes_cli.goal_command import dispatch_goal_command
@@ -155,6 +155,20 @@ class GatewayGoalCommandsMixin:
             "Fires as a normal turn whenever this session is idle and the interval has "
             "elapsed. Lives while the gateway runs — use `hermes cron` for durable schedules."
         )
+
+    async def _handle_wait_command(self, event: MessageEvent) -> str:
+        """Handle /wait (same grammar as the CLI via ``run_wait_command``): a one-shot message sent to this
+        session after a delay. Rides the heartbeat poller, which injects a due wait through the adapter FIFO
+        as an ordinary user turn once the session is idle."""
+        from hermes_cli.waits import run_wait_command
+        mgr, _session_entry = await self._get_wait_manager_for_event(event)
+        if mgr is None:
+            return "Waits unavailable (no session)."
+        reply, armed = run_wait_command(mgr, event.get_command_args() or "")
+        quick_key = self._session_key_for_source(event.source) if event.source else None
+        if armed and quick_key and event.source is not None:
+            self._register_heartbeat_watch(quick_key, event.source, mgr.session_id)
+        return reply
 
     def _idle_cached_agent_or_error(self, event: MessageEvent, verb: str):
         """``(session_key, cached_agent, None)`` for /refine and /review, or ``(_, _, error_text)``:
