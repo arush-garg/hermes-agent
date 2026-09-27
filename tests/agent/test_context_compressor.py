@@ -352,6 +352,13 @@ class TestPreflightDeferral:
         assert compressor.should_defer_preflight_to_real_usage(100_000) is True
         assert compressor.should_defer_preflight_to_real_usage(80_000) is False
 
+    def test_preflight_answers_after_a_fitting_real_reading(self, compressor):
+        """A real reading under threshold then a rough estimate over it reaches the fitting-baseline
+        branch; the baseline must exist from construction or every such preflight raises."""
+        compressor.threshold_tokens = 85_000
+        compressor.update_from_response({"prompt_tokens": 50_000})
+        assert compressor.should_defer_preflight_to_real_usage(100_000) in (True, False)
+
     def test_never_defers_when_real_usage_cannot_arrive_or_is_already_over(self, compressor):
         """Only provider evidence ends deferral, not the magnitude of a rough estimate."""
         compressor.context_length = 100_000

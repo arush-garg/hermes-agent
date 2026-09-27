@@ -2240,6 +2240,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def _reset_real_usage_pairing(self) -> None:
         """Forget the real-usage state read by real_usage_pending()."""
         self.last_real_prompt_tokens = self.last_compression_rough_tokens = 0
+        # Read by should_defer_preflight_to_real_usage (falls back to last_compression_rough_tokens while 0).
+        self.last_rough_tokens_when_real_prompt_fit = 0
         self.awaiting_real_usage_after_compression = self._provider_omits_usage = False
 
     def _reset_session_compaction_state(self) -> None:
