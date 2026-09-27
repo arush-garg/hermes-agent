@@ -149,7 +149,7 @@ def test_compression_queue_injected_after_successful_compression():
     agent.queue_message_during_compression("queued message 2")
     
     # Wait for compression to complete
-    comp_thread.join(timeout=2.0)
+    comp_thread.join(timeout=30.0)  # cold first compression (imports, aux probes) takes >2s
     
     compressed_messages, new_system_prompt = result_container["result"]
     
@@ -189,7 +189,7 @@ def test_compression_queue_not_injected_on_failed_compression():
     agent.queue_message_during_compression("queued message 1")
     agent.queue_message_during_compression("queued message 2")
     
-    comp_thread.join(timeout=2.0)
+    comp_thread.join(timeout=30.0)  # cold first compression (imports, aux probes) takes >2s
     
     compressed_messages, new_system_prompt = result_container["result"]
     
@@ -266,7 +266,7 @@ def test_compression_queue_preserves_alternation():
     agent.queue_message_during_compression("queued 2")
     agent.queue_message_during_compression("queued 3")
     
-    comp_thread.join(timeout=2.0)
+    comp_thread.join(timeout=30.0)  # cold first compression (imports, aux probes) takes >2s
     
     compressed_messages, _ = result_container["result"]
     
