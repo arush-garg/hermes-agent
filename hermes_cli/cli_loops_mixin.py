@@ -477,6 +477,28 @@ class CLILoopsMixin:
             return lambda sid: HeartbeatManager(session_id=sid)
         return self._session_bound_manager("_heartbeat_manager", "heartbeat manager", load)
 
+    def _get_wait_manager(self):
+        """WaitManager bound to the current session_id (see ``_session_bound_manager``)."""
+        def load():
+            from hermes_cli.waits import WaitManager
+            return lambda sid: WaitManager(session_id=sid)
+        return self._session_bound_manager("_wait_manager", "wait manager", load)
+
+    def _handle_wait_command(self, cmd: str) -> None:
+        """Dispatch /wait: ``/wait 2h <message>`` sends <message> as a normal user turn once the delay has
+        elapsed and the session is idle; ``/wait list`` / ``/wait cancel [<id>|all]`` manage pending ones."""
+        from cli import _cprint
+        from hermes_cli.cli_commands_mixin import _command_arg, _dim_line
+        from hermes_cli.waits import run_wait_command
+        mgr = self._get_wait_manager()
+        if mgr is None:
+            return _cprint(_dim_line("Waits unavailable (no active session)."))
+        reply, armed = run_wait_command(mgr, _command_arg(cmd))
+        if armed:
+            self._start_heartbeat_watchdog()
+        for line in reply.splitlines():
+            _cprint(f"  {line}")
+
     def _get_loop_manager(self):
         """LoopManager bound to the current session_id (see ``_session_bound_manager``)."""
         def load():
@@ -485,11 +507,14 @@ class CLILoopsMixin:
         return self._session_bound_manager("_loop_manager", "loop manager", load)
 
     def _start_heartbeat_watchdog(self):
-        """Start the idle-poll daemon that injects a due heartbeat prompt into
-        ``_pending_input`` as a normal user turn when the session is idle. Missed ticks
-        coalesce (the anchor resets on fire, so a busy hour yields ONE heartbeat turn).
-        Idempotent; safe to call on every /heartbeat set."""
-        if getattr(self, "_heartbeat_watchdog_started", False):
+        """Start the idle-poll daemon that injects a due /heartbeat prompt or /wait message into
+        ``_pending_input`` as a normal user turn when the session is idle. Missed heartbeat ticks
+        coalesce (the anchor resets on fire, so a busy hour yields ONE heartbeat turn); due waits
+        go out one per idle poll, earliest first. Idempotent; safe to call on every set.
+
+        Not in a TUI slash worker: nothing drains its ``_pending_input``, so a claim there is lost
+        (the TUI session owner fires due state from the store instead)."""
+        if getattr(self, "_heartbeat_watchdog_started", False) or getattr(self, "_headless_slash_worker", False):
             return
         self._heartbeat_watchdog_started = True
         from hermes_cli.heartbeat import POLL_SECONDS
@@ -499,9 +524,6 @@ class CLILoopsMixin:
                 while not getattr(self, "_should_exit", False):
                     time.sleep(POLL_SECONDS)
                     try:
-                        mgr = self._get_heartbeat_manager()
-                        if mgr is None or not mgr.is_active():
-                            continue
                         busy = (
                             self._agent_running
                             or getattr(self, "_voice_recording", False)
@@ -509,9 +531,11 @@ class CLILoopsMixin:
                             or not self._pending_input.empty())
                         if busy:
                             continue
-                        prompt = mgr.due_prompt()
-                        if prompt:
-                            self._pending_input.put(prompt)
+                        for mgr in (self._get_wait_manager(), self._get_heartbeat_manager()):
+                            prompt = mgr.due_prompt() if mgr is not None and mgr.is_active() else None
+                            if prompt:
+                                self._pending_input.put(prompt)
+                                break
                     except Exception as exc:
                         logging.debug("heartbeat watchdog tick failed: %s", exc)
             finally:

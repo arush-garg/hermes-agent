@@ -1,4 +1,5 @@
-"""Recover heartbeat watches from the gateway's canonical persisted routing index."""
+"""Recover heartbeat watches (armed by /heartbeat or a pending /wait) from the gateway's canonical persisted
+routing index."""
 from __future__ import annotations
 
 import logging
@@ -27,8 +28,9 @@ async def restore_heartbeat_watches(runner) -> None:
     Run all storage work off-loop so a cold profile DB cannot block adapters.
     """
     from gateway.run import _profile_runtime_scope
-    from gateway.run_idle_gates import profile_has_active_heartbeat
+    from gateway.run_idle_gates import profile_has_active_heartbeat, profile_has_pending_wait
     from hermes_cli.heartbeat import HeartbeatManager
+    from hermes_cli.waits import WaitManager
     from hermes_constants import get_hermes_home
 
     store = runner.session_store
@@ -38,9 +40,10 @@ async def restore_heartbeat_watches(runner) -> None:
         # The poller may have been spawned by a named profile's /heartbeat command.
         # Anchor even default origins to the gateway home, not inherited context.
         home = getattr(store, "_routing_home", None) or get_hermes_home()
-        # Cheap gate: with no heartbeat persisted in any served profile there is nothing to
+        # Cheap gate: with no heartbeat or wait persisted in any served profile there is nothing to
         # restore — skip the per-origin profile-scope re-parse over every routed session.
-        if not any(profile_has_active_heartbeat(h) for h in _watched_homes(runner, home)):
+        if not any(profile_has_active_heartbeat(h) or profile_has_pending_wait(h)
+                   for h in _watched_homes(runner, home)):
             return restored
         with _profile_runtime_scope(home):
             # Enter each profile's scope once per scan, not once per routed session: a scope entry
@@ -61,7 +64,8 @@ async def restore_heartbeat_watches(runner) -> None:
                     with runner._profile_scope_for_source(group[0][1]):
                         for entry, source in group:
                             try:
-                                if HeartbeatManager(entry.session_id).is_active():
+                                if (HeartbeatManager(entry.session_id).is_active()
+                                        or WaitManager(entry.session_id).is_active()):
                                     restored.append((entry.session_key, source, entry.session_id))
                             except Exception:
                                 logger.debug("heartbeat restore for %s failed", entry.session_key, exc_info=True)

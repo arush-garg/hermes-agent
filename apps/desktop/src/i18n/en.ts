@@ -3813,6 +3813,7 @@ export const en: Translations = {
       '/steer': 'Inject a message after the next tool call without interrupting',
       '/goal': 'Set a standing goal Hermes works on across turns until achieved',
       '/heartbeat': 'Set a recurring prompt that re-enters this session when idle',
+      '/wait': 'Send a message to this session after a delay (one-shot)',
       '/refine': 'Review this conversation now and save lessons to memory/skills',
       '/review': 'Spawn an independent subagent to review the work just discussed (PR, code, docs)',
       '/loop': 'Re-run a prompt on a recurring interval in this session',

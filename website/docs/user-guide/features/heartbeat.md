@@ -67,3 +67,24 @@ Hermes: [Heartbeat — recurring instruction, fires every 15m]
 ```
 
 When the answer stops changing, `/heartbeat clear` it — or let it keep watch.
+
+## One-shot: `/wait` {#one-shot-wait}
+
+`/wait` is the one-shot sibling: it sends **your message, verbatim**, to the current session once a delay has passed.
+
+```
+/wait 2h continue working on this
+```
+
+Two hours later — or at the first idle moment after that — `continue working on this` arrives as your next user turn, exactly as if you had typed it.
+
+| Command | What it does |
+|---|---|
+| `/wait <duration> <message>` | Schedule a message. Durations use the heartbeat grammar: `30s`, `10m`, `2h`, `90 minutes`, `1.5d` (no 60s floor). |
+| `/wait` or `/wait list` | Show pending waits with their ids and time remaining. |
+| `/wait cancel <id>` / `/wait cancel` | Cancel one wait, or all of them. |
+
+- **Several at once.** Unlike the single heartbeat, a session can hold any number of pending waits; due ones go out one per idle moment, earliest first, and ahead of a due heartbeat tick.
+- **Same delivery rules as heartbeats.** Idle-only, a real user message wins, gateway recovery after restart, follows compression rotations, cleared by a gateway reset, and the gateway refunds a wait whose turn never reached the agent runner — unless you cancelled it meanwhile.
+- **A normal turn.** Unlike a heartbeat tick, a wait is your own message: the gateway shows typing and progress as usual and persists it as a regular user message.
+- **Messages, not commands.** `/wait 1h /compress` is rejected — use `/loop` for recurring slash commands or `hermes cron` for durable schedules.

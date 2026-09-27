@@ -3275,7 +3275,7 @@ def _parent_deliberately_ended(session_db: Any, session_id: str) -> bool:
 
 
 def _carry_session_state_to_child(agent: Any, old_session_id: str, old_title: Any) -> None:
-    """Migrate /goal, /heartbeat, /loop state and the title from the parent to the child.
+    """Migrate /goal, /heartbeat, /wait, /loop state and the title from the parent to the child.
     Each lookup is a flat per-session read with no parent walk, so state would silently die at the boundary. The title
     is carried unchanged (renumbering per rotation made one session look like many); its provenance is read BEFORE the
     transfer clears the ancestor's row, then restored so an inherited auto-title stays upgradeable.
@@ -3289,6 +3289,9 @@ def _carry_session_state_to_child(agent: Any, old_session_id: str, old_title: An
     with _swallow('Could not migrate heartbeat on compression: %s'):
         from hermes_cli.heartbeat import migrate_heartbeat_to_session
         migrate_heartbeat_to_session(old_session_id, agent.session_id)
+    with _swallow('Could not migrate waits on compression: %s'):
+        from hermes_cli.waits import migrate_waits_to_session
+        migrate_waits_to_session(old_session_id, agent.session_id)
     with _swallow('Could not migrate loop on compression: %s'):
         from hermes_cli.loops import migrate_loop_to_session
         migrate_loop_to_session(old_session_id, agent.session_id, reason="compression")

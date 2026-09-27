@@ -260,6 +260,36 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
             mgr.abandon_fire()
 
 
+def _maybe_fire_tui_wait_tick(sid: str, session: dict) -> None:
+    """Send a due /wait message for an idle TUI/Desktop/dashboard session — the heartbeat tick's shape (claim the
+    idle session first, re-enter as a plain user turn, refund a claim whose turn never started), except the
+    message goes out verbatim: it is the user's own deferred message, not an instruction template."""
+    try:
+        from hermes_cli.waits import WaitManager
+    except Exception:
+        return
+    if not (sid_key := session.get("session_key") or ""):
+        return
+    mgr = WaitManager(session_id=sid_key)
+    if not mgr.is_due() or _notif_gateway_owns_heartbeat(session, sid_key):
+        return  # not due, or the gateway poller owns the routed conversation — stays due there
+    if not _notif_claim_turn(session):
+        return  # busy — stays due for the next idle poll
+    if not (prompt := mgr.due_prompt()):
+        _notif_release_turn(session)
+        return
+    started = False
+    try:
+        _emit("status.update", sid, {"kind": "wait", "text": "⏳ /wait elapsed — sending…"})
+        started = bool(_run_prompt_submit(f"__wait__{int(time.time() * 1000)}", sid, session, prompt))
+    except Exception as exc:
+        _notif_log_failure("wait dispatch failed", exc)
+    if not started:
+        _notif_release_turn(session)
+        with contextlib.suppress(Exception):
+            mgr.abandon_fire()
+
+
 def _loop_route_is_gateway_chat(state) -> bool:
     """A /loop set from a messaging chat carries the gateway's ``route`` (platform + chat_id); its wakeup scanner
     (``gateway/run_goals.py::_loop_wakeup_fire_one``) fires those and skips route-less CLI/TUI loops. Mirror it here
@@ -711,11 +741,12 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
         if now - last_bot_poll >= _BOT_DELIVERY_POLL_SECONDS:  # bot DM → live-owner delivery latency ≤ 5 s
             last_bot_poll = now
             _poll_bot_live_delivery_guarded(sid, session, now)
-        # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
+        # /loop, /wait and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:
             last_loop_poll = now
-            for what, fire in (("loop wakeup", _maybe_fire_tui_loop_tick), ("heartbeat", _maybe_fire_tui_heartbeat_tick)):
+            for what, fire in (("loop wakeup", _maybe_fire_tui_loop_tick), ("wait", _maybe_fire_tui_wait_tick),
+                               ("heartbeat", _maybe_fire_tui_heartbeat_tick)):
                 try:
                     fire(sid, session)
                 except Exception as tick_exc:

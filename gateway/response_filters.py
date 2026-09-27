@@ -101,14 +101,24 @@ def is_intentional_silence_agent_result(agent_result: dict | None, response: Any
     return isinstance(agent_result, dict) and not agent_result.get("failed") and is_intentional_silence_response(response)
 
 
+def is_scheduled_heartbeat_event(event: Any) -> bool:
+    """A heartbeat tick injected by the gateway poller: quiet surfaces, machinery user row.
+
+    The poller stamps ``_heartbeat_session_id`` (owner lineage + refund accounting) on every event
+    it injects, never inferred from inbound text. A due /wait rides that same accounting but is the
+    user's own deferred message (``_scheduled_user_message``), so it runs and persists like a typed one.
+    """
+    return bool(getattr(event, "_heartbeat_session_id", None)) and not getattr(
+        event, "_scheduled_user_message", False)
+
+
 def display_kind_for_event(event: Any) -> str | None:
     """The persisted user-row kind for a gateway turn: only self-injected events are machinery.
 
-    A scheduled heartbeat prompt is self-injected too (``_heartbeat_session_id`` is stamped only
-    by the gateway poller, never inferred from inbound text), but it deliberately stays
-    non-internal so authorization and the emergency stop still apply to it.
+    A scheduled heartbeat prompt is self-injected too, but it deliberately stays non-internal so
+    authorization and the emergency stop still apply to it.
     """
-    if getattr(event, "internal", False) or getattr(event, "_heartbeat_session_id", None):
+    if getattr(event, "internal", False) or is_scheduled_heartbeat_event(event):
         return INTERNAL_NOTIFICATION_DISPLAY_KIND
     return None
 

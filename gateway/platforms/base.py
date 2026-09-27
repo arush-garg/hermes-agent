@@ -422,6 +422,7 @@ from gateway.platforms.base_exec_approval import (
     EA_HEADER_TEXT, EA_REASON_LABEL_TEXT, approval_timeout_seconds, format_approval_deadline_line)
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.warning_notifications import diagnostic_wake_muted
+from gateway.response_filters import is_scheduled_heartbeat_event
 from gateway.session import SessionSource, build_session_key
 from gateway.session_transcript import TranscriptReadError
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
@@ -4362,7 +4363,7 @@ class BasePlatformAdapter(ABC):
         """Spawn the typing-refresh task, or None when ``typing_indicator=False``.
         ``stop_event`` is passed only when the (possibly overridden) ``_keep_typing`` accepts it."""
         # A scheduled heartbeat is proactive work: no typing indicator until it has something to say.
-        if not getattr(self.config, "typing_indicator", True) or getattr(event, "_heartbeat_session_id", None):
+        if not getattr(self.config, "typing_indicator", True) or is_scheduled_heartbeat_event(event):
             return None
         kwargs: Dict[str, Any] = {"metadata": metadata}
         if self._accepts_kwarg(self._keep_typing, "stop_event", var_kw=False, unknown=True):
