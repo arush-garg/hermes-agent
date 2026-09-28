@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
@@ -294,6 +295,9 @@ def _maybe_apply_codex_app_server_runtime(*, provider: str, api_mode: str, model
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _NO_ANTHROPIC_CREDENTIALS_MSG = ("No Anthropic credentials found. Run 'hermes auth add anthropic' to sign in, "
                                  "or set ANTHROPIC_TOKEN / ANTHROPIC_API_KEY.")
+# AuthError.code for a credential benched for one model only: the provider is connected, and the
+# model becomes usable again when the cooldown (AuthError.retry_after seconds) lifts.
+MODEL_RATE_LIMITED = "model_rate_limited"
 
 
 def _runtime(provider: str, api_mode: str, base_url: Any, api_key: Any, **extra: Any) -> Dict[str, Any]:
@@ -348,15 +352,47 @@ def _anthropic_cfg_base_url(model_cfg: Dict[str, Any]) -> str:
     return cfg_base_url if _anthropic_base_url_override_ok(cfg_base_url) else ""
 
 
+def _anthropic_model_cooldown_remaining(model: str) -> Optional[float]:
+    """Seconds until a pooled Anthropic credential is usable for *model* again, or None if unknown."""
+    try:
+        until = load_pool("anthropic").next_available_at(model=model)
+    except Exception:
+        logger.debug("Failed to read Anthropic model cooldown", exc_info=True)
+        return None
+    return max(0.0, until - time.time()) if until is not None else None
+
+
+def anthropic_benched_token(model: str) -> str:
+    """The connected Anthropic credential that is only cooling down for *model*, or "" when none is:
+    the ungated env/OAuth token, else the pool row whose cooldown for *model* lifts first (a pooled
+    API key never reaches ``resolve_anthropic_token``, and a model-less pool read honours every
+    per-model cooldown). Call only after the model-gated resolution came back empty."""
+    from agent.anthropic_credentials import resolve_anthropic_token
+    from agent.credential_pool import STATUS_DEAD, model_cooldown_until
+    token = resolve_anthropic_token()
+    if token:
+        return token
+    try:
+        entries = load_pool("anthropic").entries()
+    except Exception:
+        logger.debug("Failed to read Anthropic credential_pool", exc_info=True)
+        return ""
+    benched = [(until, entry) for entry in entries if entry.last_status != STATUS_DEAD
+               for until in (model_cooldown_until(entry, model),) if until is not None]
+    return _pool_entry_api_key(min(benched, key=lambda pair: pair[0])[1]) if benched else ""
+
+
 def _anthropic_token_or_raise(*, model: str | None = None) -> str:
     from agent.anthropic_credentials import resolve_anthropic_token
     token = resolve_anthropic_token(model=model)
     if not token:
         # A key the pool benched for *this* model is not a missing credential; telling the
         # user to re-authenticate would send them chasing a cooldown that lifts on its own.
-        if model and resolve_anthropic_token():
+        if model and anthropic_benched_token(model):
             raise AuthError(f"Anthropic credentials are rate-limited for {model}; "
-                            "other Claude models remain available (see `hermes auth list`).")
+                            "other Claude models remain available (see `hermes auth list`).",
+                            provider="anthropic", code=MODEL_RATE_LIMITED, retryable=True,
+                            retry_after=_anthropic_model_cooldown_remaining(model))
         raise AuthError(_NO_ANTHROPIC_CREDENTIALS_MSG)
     return token
 

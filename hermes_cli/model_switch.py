@@ -1196,6 +1196,7 @@ class _Switch:
     validation_headers: dict = field(default_factory=dict)
     suppress_ollama_headers: bool = False
     validation: dict = field(default_factory=dict)
+    rate_limit_warning: str = ""
 
     def fail(self, message: str, **fields) -> ModelSwitchResult:
         return ModelSwitchResult(success=False, is_global=self.is_global, error_message=message, **fields)
@@ -1211,11 +1212,28 @@ class _Switch:
     def resolve_runtime(self, **kwargs) -> None:
         """Fill api_key / base_url / api_mode / validation_headers from ``resolve_runtime_provider``
         for ``new_model``; headers keep their current value when the resolver returns none."""
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        rt = resolve_runtime_provider(target_model=self.new_model, **kwargs)
+        from hermes_cli.auth_constants import AuthError
+        from hermes_cli.runtime_provider import MODEL_RATE_LIMITED, anthropic_benched_token, resolve_runtime_provider
+        try:
+            rt = resolve_runtime_provider(target_model=self.new_model, **kwargs)
+        except AuthError as e:
+            if e.code != MODEL_RATE_LIMITED:
+                raise
+            # A per-model cooldown is not a missing credential: the switch stands (a prompt can be
+            # queued past the reset with /wait) on the benched credential, usable once it lifts.
+            rt = resolve_runtime_provider(target_model=self.new_model, **{
+                **kwargs, "explicit_api_key": kwargs.get("explicit_api_key") or anthropic_benched_token(self.new_model)})
+            self.rate_limit_warning = _rate_limit_warning(self.new_model, e.retry_after)
         self.api_key, self.base_url = rt.get("api_key", ""), rt.get("base_url", "")
         self.api_mode = rt.get("api_mode", "")
         self.validation_headers = rt.get("extra_headers") or self.validation_headers
+
+
+def _rate_limit_warning(model: str, retry_after: Optional[float]) -> str:
+    from hermes_cli.heartbeat import format_interval
+    reset = f" for ~{format_interval(max(1, -(-int(retry_after) // 60)) * 60)}" if retry_after else ""
+    return (f"{model} is rate-limited{reset}; requests will fail until it resets. "
+            "Use /wait <duration> <message> to queue a prompt for after the reset.")
 
 
 def _route_explicit_provider(st: _Switch) -> Optional[ModelSwitchResult]:
@@ -1751,7 +1769,8 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
         is_codex_backend=st.target_provider.strip().lower() == "openai-codex")
     model_info = get_model_info(st.target_provider, st.new_model, allow_network=True)
 
-    warnings = [w for w in (st.validation.get("message"), _check_hermes_model_warning(st.new_model)) if w]
+    warnings = [w for w in (st.rate_limit_warning, st.validation.get("message"),
+                            _check_hermes_model_warning(st.new_model)) if w]
 
     # Carry the switched provider's request_overrides (custom_providers ``extra_body`` such as
     # chat_template_kwargs) so the gateway applies them like the default-provider path does.
