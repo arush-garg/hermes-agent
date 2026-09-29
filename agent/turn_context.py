@@ -661,6 +661,22 @@ def _stage_turn_user_message(
 
 def _hydrate_from_history(agent: Any, conversation_history: Optional[List[Any]]) -> None:
     """Hydrate process-local state from persisted history on the first resumed turn."""
+    if getattr(agent, "_user_turn_count", 0) == 0:
+        try:
+            from agent.structured_compaction_checkpoint import StructuredCompactionCheckpoint
+
+            raw = (
+                agent.session_db.get_checkpoint(agent.session_id)
+                if getattr(agent, "session_db", None) is not None and getattr(agent, "session_id", None)
+                else None
+            )
+            # Reference metadata only: never append checkpoint prose as a user message.
+            agent._structured_compaction_checkpoint = StructuredCompactionCheckpoint.from_json(raw)
+        except Exception:
+            logger.exception(
+                "Failed to restore structured compaction checkpoint (session=%s)",
+                getattr(agent, "session_id", None) or "none",
+            )
     if not conversation_history:
         return
     if not agent._todo_store.has_items():

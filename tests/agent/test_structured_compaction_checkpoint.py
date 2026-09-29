@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from agent.structured_compaction_checkpoint import StructuredCompactionCheckpoint
 
@@ -33,6 +34,30 @@ def test_checkpoint_serialization():
     assert StructuredCompactionCheckpoint.from_json(None) is None
     assert StructuredCompactionCheckpoint.from_json("") is None
 
+
+def test_hydrate_restores_checkpoint_as_reference_metadata_only():
+    from agent.turn_context import _hydrate_from_history
+
+    checkpoint = StructuredCompactionCheckpoint(
+        unresolved_tasks=["inspect blocker"],
+        authorized_side_effects=["submit only after review"],
+    )
+
+    class DB:
+        def get_checkpoint(self, session_id):
+            assert session_id == "session-1"
+            return checkpoint.to_json()
+
+    agent = SimpleNamespace(
+        _user_turn_count=0,
+        session_id="session-1",
+        session_db=DB(),
+    )
+    history = []
+    _hydrate_from_history(agent, history)
+
+    assert agent._structured_compaction_checkpoint == checkpoint
+    assert history == []
 
 def test_checkpoint_merge():
     """Test merging checkpoints."""

@@ -4246,6 +4246,24 @@ def _compress_context_impl(
             return messages, commit.refused_prompt
         compressed = commit.compressed
         split_status = commit.split_status
+        if commit.session_commit_succeeded:
+            try:
+                from agent.structured_compaction_checkpoint import (
+                    StructuredCompactionCheckpoint,
+                    build_checkpoint_from_messages,
+                )
+
+                checkpoint = getattr(agent, "_structured_compaction_checkpoint", None)
+                if not isinstance(checkpoint, StructuredCompactionCheckpoint):
+                    checkpoint = build_checkpoint_from_messages(messages_before_compression or messages)
+                agent._structured_compaction_checkpoint = checkpoint
+                if getattr(agent, "session_db", None) is not None and getattr(agent, "session_id", None):
+                    agent.session_db.update_checkpoint(agent.session_id, checkpoint.to_json())
+            except Exception:
+                logger.exception(
+                    "Failed to persist structured compaction checkpoint (session=%s)",
+                    getattr(agent, "session_id", None) or "none",
+                )
         _compressed_est = _finish_compaction_boundary(
             agent, compressed, new_system_prompt=new_system_prompt, old_session_id=commit.old_session_id,
             in_place=in_place, compacted_in_place=commit.compacted_in_place,
