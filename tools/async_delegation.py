@@ -36,6 +36,10 @@ _executor_max_workers: int = 0
 _records_lock = threading.Lock()
 # delegation_id -> record dict; kept for the run plus a short completed tail.
 _records: Dict[str, Dict[str, Any]] = {}
+# In-process completion subscribers.  Subscribers are deliberately separate from the
+# completion queue: queue delivery remains the normal async notification path, while a
+# caller that already has a delegation id can resume directly on the terminal event.
+_subscribers: Dict[str, Dict[str, Callable[[Dict[str, Any]], None]]] = {}
 
 _DEFAULT_MAX_ASYNC_CHILDREN = 3
 # Completed records retained (in memory and in the ledger) for status queries.
@@ -833,6 +837,48 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
         if delegation_id in _records:
             _records[delegation_id]["status"] = status
         _prune_completed_locked()
+    _notify_subscribers(delegation_id)
+
+
+def subscribe_delegation(delegation_id: str, callback: Callable[[Dict[str, Any]], None]) -> Callable[[], None]:
+    """Subscribe to one delegation's terminal event without polling."""
+    if not delegation_id or not callable(callback):
+        raise ValueError("delegation_id and callable callback are required")
+    token = uuid.uuid4().hex
+    event = None
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is not None and record.get("status") not in _ACTIVE_STATES:
+            event = {"type": "async_delegation", "delegation_id": delegation_id,
+                     "status": record.get("status"), "completed_at": record.get("completed_at")}
+        else:
+            _subscribers.setdefault(delegation_id, {})[token] = callback
+    if event is not None:
+        callback(event)
+
+    def unsubscribe() -> None:
+        with _records_lock:
+            callbacks = _subscribers.get(delegation_id)
+            if callbacks:
+                callbacks.pop(token, None)
+                if not callbacks:
+                    _subscribers.pop(delegation_id, None)
+    return unsubscribe
+
+
+def _notify_subscribers(delegation_id: str) -> None:
+    with _records_lock:
+        record = _records.get(delegation_id)
+        callbacks = list((_subscribers.pop(delegation_id, {}) or {}).values())
+        event = {"type": "async_delegation", "delegation_id": delegation_id,
+                 "status": record.get("status") if record else "unknown",
+                 "completed_at": record.get("completed_at") if record else None}
+    for callback in callbacks:
+        try:
+            callback(event)
+        except Exception:
+            logger.exception("Delegation completion subscriber failed: %s", delegation_id)
+
 
 
 def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], status: str) -> None:
