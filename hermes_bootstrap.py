@@ -525,7 +525,8 @@ from hermes_cli._parser import command_argv
 
 # Repair needs only stdlib. Do not activate the damaged tree to reach it.
 _pm_repair = command_argv(sys.argv[1:])[:2] == ["pm", "repair"]
-if not _pm_repair:
+_test_isolation = bool(os.environ.get("HERMES_TEST_ISOLATION", "").strip())
+if not _pm_repair and not _test_isolation:
     from hermes_cli.venv_sync import prepare_launch, relaunch_command
 
     try:
@@ -550,11 +551,12 @@ if not _pm_repair:
               "running with the previous dependencies — run `hermes update` to finish it",
               file=sys.stderr)
     recover_if_needed(_root)
-    try:
-        activate_dependencies(_root)
-    except (RuntimeError, OSError) as exc:
-        if command_argv(sys.argv[1:])[:1] != ["pm"]:
-            print(f"hermes: {exc}; run `hermes pm repair`", file=sys.stderr)
-            raise SystemExit(1) from None
+    if not _test_isolation:
+        try:
+            activate_dependencies(_root)
+        except (RuntimeError, OSError) as exc:
+            if command_argv(sys.argv[1:])[:1] != ["pm"]:
+                print(f"hermes: {exc}; run `hermes pm repair`", file=sys.stderr)
+                raise SystemExit(1) from None
 install_happy_eyeballs_socket_connect()
 export_scratch_tmp_env()

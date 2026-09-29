@@ -565,6 +565,8 @@ def _resolve_hermes_bin_dir() -> str | None:
     ``hermes`` exits 127. Order: ``which``; absolute ``sys.argv[0]`` naming a real
     hermes executable; ``sys.executable``'s dir if it holds the shim."""
     global _HERMES_BIN_DIR
+    if os.environ.get("HERMES_TEST_ISOLATION", "").strip():
+        return None
     if _HERMES_BIN_DIR is not _SENTINEL:
         return _HERMES_BIN_DIR  # type: ignore[return-value]
     which = shutil.which("hermes")
