@@ -74,6 +74,15 @@ def perform_api_call(
     """Issue the request (see ``_should_stream`` for the streaming decision)."""
     response = None
 
+    # One-shot post-outage resume pin (connectivity pause): the resumed call being
+    # issued consumes the pin. A transport failure on this call re-enters the pause
+    # path via handle_api_error; a provider-side failure falls through to normal
+    # fallback in settle_unrecovered_error. Also cleared at turn start so a cached
+    # gateway agent never leaks it across turns.
+    from agent.turn_api_error import _connectivity_resume_pinned
+    if _connectivity_resume_pinned(agent):
+        agent._connectivity_resume_keep = False
+
     def _verdict(action: str) -> ApiCallVerdict:
         return ApiCallVerdict(
             action=action, response=response, thinking_spinner=thinking_spinner,
@@ -260,9 +269,20 @@ def nous_rate_limit_guard(
                         reset=anon_auth.friendly_wait(_nous_remaining))
                 else:
                     _nous_msg = f"Your Nous account has hit its rate limit; it resets in {reset}."
-                agent._buffer_vprint(f"⏳ {_nous_msg} Trying fallback...")
-                agent._buffer_diagnostic_status(f"⏳ {_nous_msg}")
-                if agent._try_activate_fallback():
+                # Resume pin (connectivity pause): the pin is still set here — the resumed
+                # call hasn't been issued yet — so a Nous rate limit must not bounce a
+                # massive post-outage context at a different provider either. Record it
+                # via the /keep flag (unified pin) and take the no-fallback path below.
+                from agent.turn_api_error import _connectivity_resume_pinned
+                _resume_pinned = _connectivity_resume_pinned(agent)
+                if _resume_pinned:
+                    agent._keep_on_fallback_this_turn = True
+                    agent._buffer_vprint(f"⏳ {_nous_msg}")
+                    agent._buffer_diagnostic_status(f"⏳ {_nous_msg}")
+                else:
+                    agent._buffer_vprint(f"⏳ {_nous_msg} Trying fallback...")
+                    agent._buffer_diagnostic_status(f"⏳ {_nous_msg}")
+                if not _resume_pinned and agent._try_activate_fallback():
                     active_system_prompt = _arm_fallback_restart(
                         agent, api_messages, active_system_prompt, _retry)
                     retry_count = 0

@@ -1469,6 +1469,88 @@ def _apply_agent_section(agent, _agent_cfg):
         agent._auto_recovery_cycles = max(int(_agent_section.get("auto_recovery_cycles", 5)), 0)
     except (TypeError, ValueError):
         agent._auto_recovery_cycles = 5
+    # Wi-Fi / local-connectivity pause (agent.connectivity_pause in config.yaml): validated
+    # settings dict the turn loop reads via agent/turn_api_error.py. Malformed values fall
+    # back to DEFAULT_CONFIG so one bad knob can't break the turn loop.
+    agent._connectivity_pause = resolve_connectivity_pause_settings(
+        _cfg_dict(_agent_section, "connectivity_pause"))
+
+
+def _cp_number(raw: Any, default: float) -> float:
+    """``float(raw)`` when a positive number, else ``default`` (bools rejected: YAML
+    ``true`` must not become a timeout)."""
+    if isinstance(raw, bool):
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _cp_flag(raw: Any, default: bool) -> bool:
+    """Boolean coercion that fails closed to ``default``: recognized spellings map
+    to a bool, anything else (garbage strings, containers) keeps the default rather
+    than silently flipping the feature off."""
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return default
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    if isinstance(raw, str):
+        text = raw.strip().lower()
+        if text in ("1", "true", "yes", "on"):
+            return True
+        if text in ("0", "false", "no", "off", ""):
+            return False
+    return default
+
+
+def resolve_connectivity_pause_settings(section: Dict[str, Any]) -> Dict[str, Any]:
+    """Validated ``agent.connectivity_pause`` settings (see DEFAULT_CONFIG).
+
+    Pure function of the config section so tests can drive it through the real
+    loader: ``resolve_connectivity_pause_settings(load_config()["agent"]["connectivity_pause"])``.
+    """
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    defaults = DEFAULT_CONFIG["agent"]["connectivity_pause"]
+    raw_hosts = section.get("probe_hosts", defaults["probe_hosts"])
+    if not isinstance(raw_hosts, list):
+        raw_hosts = []
+    probe_hosts = [h for h in (str(h).strip() for h in raw_hosts) if h] or list(defaults["probe_hosts"])
+    max_pause_raw = section.get("max_pause_s", defaults["max_pause_s"])
+    if isinstance(max_pause_raw, bool):
+        max_pause_s = float(defaults["max_pause_s"])
+    else:
+        try:
+            max_pause_s = float(max_pause_raw)
+        except (TypeError, ValueError):
+            max_pause_s = float(defaults["max_pause_s"])
+        if max_pause_s < 0:
+            max_pause_s = float(defaults["max_pause_s"])
+    return {
+        "enabled": _cp_flag(section.get("enabled", defaults["enabled"]),
+                            defaults["enabled"]),
+        "consecutive_failures": max(int(_cp_number(
+            section.get("consecutive_failures", defaults["consecutive_failures"]),
+            defaults["consecutive_failures"])), 1),
+        "probe_interval_s": _cp_number(
+            section.get("probe_interval_s", defaults["probe_interval_s"]),
+            defaults["probe_interval_s"]),
+        "probe_timeout_s": _cp_number(
+            section.get("probe_timeout_s", defaults["probe_timeout_s"]),
+            defaults["probe_timeout_s"]),
+        "probe_hosts": probe_hosts,
+        # 0 = wait indefinitely until interrupted (validated non-negative above).
+        "max_pause_s": max_pause_s,
+        "cache_warm_window_s": _cp_number(
+            section.get("cache_warm_window_s", defaults["cache_warm_window_s"]),
+            defaults["cache_warm_window_s"]),
+        "resume_keep_provider": _cp_flag(
+            section.get("resume_keep_provider", defaults["resume_keep_provider"]),
+            defaults["resume_keep_provider"]),
+    }
 
 
 def _positive_int(raw: Any, *, reject: tuple = ()) -> Optional[int]:

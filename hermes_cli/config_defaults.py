@@ -124,6 +124,37 @@ DEFAULT_CONFIG = {
         # visible "retrying automatically" countdown instead of ending the turn. Esc/interrupt stops
         # the wait; auth/format/billing/policy errors never enter. 0 disables.
         "auto_recovery_cycles": 5,
+        # Wi-Fi / local-connectivity pause. When model calls fail at the transport layer
+        # (DNS/TCP/connect/reset/timeout) and probes confirm the local link is down
+        # (provider host unreachable AND neutral internet endpoints unreachable), park the
+        # turn with a visible "waiting for connectivity" status instead of burning retries
+        # and fallbacks, then resume on the SAME provider when the link returns. A
+        # provider outage (provider down, internet up) keeps the normal fallback path.
+        "connectivity_pause": {
+            # Master switch. False restores the pre-feature behavior exactly.
+            "enabled": True,
+            # Consecutive transport failures before the pause path engages (debounce so
+            # one flaky packet doesn't park the turn).
+            "consecutive_failures": 2,
+            # Seconds between connectivity probes while paused.
+            "probe_interval_s": 10,
+            # Per-probe socket timeout in seconds.
+            "probe_timeout_s": 3,
+            # Neutral "host:port" endpoints proving the internet works.
+            "probe_hosts": ["1.1.1.1:443", "8.8.8.8:53"],
+            # Max seconds to stay paused before falling back to the normal recovery
+            # ladder. 0 = wait indefinitely until interrupted.
+            "max_pause_s": 1800,
+            # Prompt-cache warmth window in seconds. Resume skips the compaction check
+            # when the outage was shorter than this (cache still warm); longer outages
+            # re-run the pre-API preflight so an oversized cold-cache context compacts
+            # before the expensive re-read.
+            "cache_warm_window_s": 1800,
+            # Pin the provider for the resume cycle (the /keep path): a post-outage
+            # failure never bounces a massive context at a different provider. When
+            # false, resume behaves like a normal retry cycle.
+            "resume_keep_provider": True,
+        },
         # Seconds the Codex/Responses stream may keep reading after its terminal frame so the relay
         # finalizer can run. Relays that never close the SSE socket after response.completed would
         # otherwise wedge the turn until the idle watchdog discards the already-billed response

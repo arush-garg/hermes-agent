@@ -1657,6 +1657,9 @@ def _run_conversation_turn(
     agent._ephemeral_reasoning_off = False
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
+    # One-shot post-outage resume pin (connectivity pause) must never leak across turns
+    # on a cached gateway agent: a turn that ended mid-resume re-pins on its next pause.
+    agent._connectivity_resume_keep = False
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,

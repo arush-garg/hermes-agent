@@ -4,6 +4,7 @@ Dependency-free so it imports without a cycle."""
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 
 @dataclass
@@ -46,6 +47,15 @@ class TurnRetryState:
     auth_failover_attempted: bool = False
     # Post-exhaustion auto-recovery cycles spent on this API call (agent.auto_recovery_cycles caps it).
     auto_recovery_cycles_used: int = 0
+    # Connectivity-loss pause (agent/turn_connectivity_pause.py): consecutive
+    # transport-classified failures on this attempt. The turn_api_error hook owns
+    # the counting lifecycle via note_transport_failure()/reset_transport_failures().
+    consecutive_transport_failures: int = 0
+    # Monotonic timestamp when the current connectivity pause began (None outside
+    # a pause); used to size the outage for the resume compaction check.
+    pause_started_at: Optional[float] = None
+    # How many connectivity pauses this attempt has entered.
+    connectivity_pauses: int = 0
 
     # Restart signals (read by the outer loop after the attempt)
     restart_with_compressed_messages: bool = False

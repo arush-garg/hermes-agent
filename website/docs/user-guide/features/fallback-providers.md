@@ -153,8 +153,47 @@ The per-turn retry is **reset-aware**: when the primary's credentials report a r
 When a switch arms that cooldown, the fallback notice includes its approximate remaining duration, for example: `Primary retry eligible in ~60 s; recovery is not guaranteed.` Non-rate-limit switches and switches from an already-active cross-provider fallback do not announce a new primary cooldown.
 :::
 
-### Examples
+### Connectivity Pause (Wi-Fi Outages)
 
+Connection drops are *not* provider failures: when your Wi-Fi dies, switching to a
+fallback provider just fails the same way, and each attempt burns retries against a
+dead link. Hermes detects this case separately. When model calls fail at the
+transport layer (DNS, TCP connect/reset, timeouts) several times in a row, it probes
+the provider's host *and* neutral internet endpoints to tell the two apart:
+
+- **Provider reachable** → normal retry; nothing changes.
+- **Provider down, internet up** → provider outage: the usual fallback path above.
+- **Both unreachable** → your link is down: the turn **pauses** with a visible
+  "waiting for connectivity" status instead of burning retries/fallbacks, and
+  **resumes on the same provider** when the link returns. Probes run every
+  `probe_interval_s` seconds; Esc (or `/stop`) aborts the wait.
+
+Two resume behaviors protect your context and your bill:
+
+- **Cache-warmth check.** Prompt caches usually stay warm ~30 minutes. If the
+  outage was shorter than `cache_warm_window_s` (default 1800 s), Hermes resumes
+  directly on the warm cache. Longer outages re-run the pre-call compaction check
+  first, so a huge context doesn't re-read at full price on a cold cache.
+- **Provider pinning (the `/keep` path).** The resume cycle never activates
+  fallback: a post-outage failure retries or ends the turn on the *same*
+  provider rather than bouncing a massive context at a different one. If the
+  resumed call fails with a provider-side error (not a transport failure),
+  normal fallback is allowed again — the pin never traps you on a dead provider.
+
+```yaml
+agent:
+  connectivity_pause:
+    enabled: true               # false restores the pre-feature behavior
+    consecutive_failures: 2     # transport failures before pausing (debounce)
+    probe_interval_s: 10        # seconds between probes while paused
+    probe_timeout_s: 3          # per-probe socket timeout
+    probe_hosts: ["1.1.1.1:443", "8.8.8.8:53"]  # neutral "host:port" endpoints
+    max_pause_s: 1800           # 0 = wait indefinitely until interrupted
+    cache_warm_window_s: 1800   # outage longer than this triggers the compaction check
+    resume_keep_provider: true  # pin the provider for the resume cycle
+```
+
+### Examples
 **OpenRouter as fallback for Anthropic native:**
 ```yaml
 model:

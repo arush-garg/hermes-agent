@@ -49,6 +49,73 @@ class ApiErrorVerdict:
     result: Optional[Dict[str, Any]] = None
 
 
+# ``agent.connectivity_probe.classify_transport_failure`` kinds that count as local-link
+# failures for the pause debounce. Everything else (HTTP responses, auth/billing/policy,
+# deterministic TLS cert failures) keeps the normal retry/failover path.
+_CONNECTIVITY_LOSS_KINDS = frozenset({"dns", "tcp", "timeout"})
+
+
+def _connectivity_resume_pinned(agent: Any) -> bool:
+    """One-shot post-outage resume pin (``agent._connectivity_resume_keep``).
+
+    ``is True``, not truthiness: Mock agents and ``__getattr__`` test fakes answer
+    any attribute with a truthy object, which must never read as a set pin. The
+    pause module only ever assigns the literal ``True``/``False``.
+    """
+    return getattr(agent, "_connectivity_resume_keep", False) is True
+
+
+def _connectivity_pause_settings(agent: Any) -> Dict[str, Any]:
+    """Validated ``agent.connectivity_pause`` settings, materialized by agent_init."""
+    settings = getattr(agent, "_connectivity_pause", None)
+    return settings if isinstance(settings, dict) else {}
+
+
+def _connectivity_pause_detour(
+    agent: Any, api_error: Any, _retry: Any,
+    messages: Any = None, conversation_history: Any = None, api_call_count: int = 0,
+):
+    """Run the connectivity-pause detour; ``None`` when it declines.
+
+    Called from ``handle_api_error`` after classification + error reporting, before
+    credential rotation / fallback. Transport-level failures (dns/tcp/timeout)
+    feed the debounce counter via the pause module's helpers; anything else resets
+    the streak and declines, keeping the normal path.
+
+    The pause module also answers ``"continue"`` when it declines *without* pausing
+    (debounced / transient blip / provider outage / probe failure). Those are
+    normalized to ``None`` here via ``retry_state.connectivity_pauses``, which only
+    advances when the blocking wait actually engaged — so a returned ``PauseVerdict``
+    always means a pause happened (resumed, interrupted, or redirected). Fails open:
+    a disabled feature or an unimportable sibling behaves as if the detour weren't there.
+    """
+    if not _connectivity_pause_settings(agent).get("enabled", True):
+        return None
+    try:
+        from agent import connectivity_probe as _probe
+        from agent import turn_connectivity_pause as _pause
+    except ImportError:
+        return None
+    kind = _probe.classify_transport_failure(api_error)
+    if kind in _CONNECTIVITY_LOSS_KINDS:
+        _pause.note_transport_failure(_retry, kind)
+    else:
+        _pause.reset_transport_failures(_retry)
+        return None
+    pauses_before = int(getattr(_retry, "connectivity_pauses", 0) or 0)
+    verdict = _pause.enter_connectivity_pause(
+        agent, api_error, _retry, messages=messages,
+        conversation_history=conversation_history, api_call_count=api_call_count,
+    )
+    if verdict is None or getattr(verdict, "action", None) == "fallthrough":
+        return None
+    if verdict.action == "continue" and int(getattr(_retry, "connectivity_pauses", 0) or 0) <= pauses_before:
+        # Declined without engaging the wait: normal recovery path, counters untouched.
+        # (Provider outages land here — the fallback ladder below still handles them.)
+        return None
+    return verdict
+
+
 def handle_api_error(
     agent: Any, *, api_error: Any, _retry: Any, thinking_spinner: Any, messages: Any,
     api_messages: Any, api_kwargs: Any, system_message: Any, active_system_prompt: Any,
@@ -128,6 +195,43 @@ def handle_api_error(
         retry_count=retry_count, max_retries=max_retries, retryable=classified.retryable,
         reason=classified.reason.value, error_context=error_context,
     )
+
+    # Connectivity-pause detour: runs after classification + error reporting, BEFORE
+    # credential rotation / fallback. A confirmed local outage parks the turn until
+    # connectivity returns instead of burning retries and fallbacks on a dead link.
+    # The detour returns None when it declines (non-transport, debounced, transient
+    # blip, or provider outage); a PauseVerdict means the wait actually engaged.
+    _cp_verdict = _connectivity_pause_detour(
+        agent, api_error, _retry, messages=messages,
+        conversation_history=conversation_history, api_call_count=api_call_count,
+    )
+    if _cp_verdict is not None:
+        if _cp_verdict.action == "return":
+            # Interrupted during the pause: end the turn with the abort result.
+            return _verdict("return", _cp_verdict.result)
+        if _cp_verdict.restart_with_rebuilt_messages:
+            # Long outage (past cache_warm_window_s): same restart shape as
+            # _arm_fallback_restart — the pre-API preflight re-runs against the current
+            # provider's context window (compaction check) — minus the provider-switch
+            # system-message sync, because the provider didn't change. (The pause module
+            # arms these on _retry too; mirroring the verdict flags keeps the hook
+            # correct against any verdict source.)
+            _retry.primary_recovery_attempted = False
+            _retry.restart_with_rebuilt_messages = True
+            retry_count = 0
+            compression_attempts = 0
+            return _verdict("break")
+        if _cp_verdict.restart_with_redirected_messages:
+            # Steering redirect arrived during the pause: preserve it exactly like the
+            # interrupt path below, then leave the retry loop for the redirect rebuild.
+            _retry.restart_with_redirected_messages = True
+            return _verdict("break")
+        if _cp_verdict.action == "continue":
+            # Warm-cache resume: the outage consumed wall-clock, not attempts — fresh
+            # retry cycle, then the normal path below (settle_unrecovered_error sees
+            # agent._connectivity_resume_keep and suppresses fallback for the resume).
+            retry_count = 0
+        # Any other action: defensive decline to the normal path.
 
     _recovered, recovered_with_pool = recover_after_classification(
         agent, api_error, classified, _retry, status_code=status_code, error_context=error_context,
@@ -267,6 +371,13 @@ def settle_unrecovered_error(
         _arm_fallback_restart, _is_copilot_provider, _is_stale_copilot_credential_error
     )
 
+    # Post-outage resume pin (the /keep path): agent/turn_connectivity_pause.py sets
+    # ``agent._connectivity_resume_keep`` on resume; while set, this turn stays on the
+    # current provider — a post-outage failure must never bounce a massive context at
+    # a different provider. One-shot: consumed when the resumed call is issued
+    # (agent/turn_api_call.py::perform_api_call) and cleared at turn start.
+    _resume_pinned = _connectivity_resume_pinned(agent)
+
     def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> UnrecoveredErrorVerdict:
         return UnrecoveredErrorVerdict(
             action=action, active_system_prompt=active_system_prompt, retry_count=retry_count,
@@ -333,12 +444,17 @@ def settle_unrecovered_error(
         _unclassified_local = is_local_validation_error and classified.reason == FailoverReason.unknown
         if classified.should_fallback or _unclassified_local or shrink_spent or reasoning_spent:
             # Announce the fallback only when a chain exists, else "trying fallback..." lies
-            # before a silent abort.
-            if agent._has_pending_fallback():
+            # before a silent abort. Skipped under the resume pin: no fallback is attempted.
+            if agent._has_pending_fallback() and not _resume_pinned:
                 _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
                 agent._buffer_diagnostic_status(f"⚠️ {_label} — trying fallback...")
             reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
-            if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
+            if _resume_pinned:
+                # Resume pin (unified with /keep): record it via the /keep flag so the pin
+                # survives the turn boundary — restore_primary_runtime consumes it. The
+                # within-turn guard itself stays one-shot.
+                agent._keep_on_fallback_this_turn = True
+            elif agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
                 # Direct ``return _verdict("break")`` is load-bearing: the restart handler
                 # re-runs the pre-API preflight against the fallback's context window.
                 active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
@@ -367,10 +483,15 @@ def settle_unrecovered_error(
             agent._fallback_index = 0
             agent._fallback_activated = False
             return _verdict("continue")
-        if agent._has_pending_fallback():
+        if agent._has_pending_fallback() and not _resume_pinned:
             agent._buffer_diagnostic_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
         reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
-        if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
+        if _resume_pinned:
+            # Resume pin (unified with /keep): record it via the /keep flag so the pin
+            # survives the turn boundary — restore_primary_runtime consumes it. The
+            # within-turn guard itself stays one-shot.
+            agent._keep_on_fallback_this_turn = True
+        elif agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
             # Direct ``return _verdict("break")`` is load-bearing: the restart handler
             # re-runs the pre-API preflight against the fallback's context window.
             active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
