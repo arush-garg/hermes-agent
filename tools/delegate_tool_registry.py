@@ -52,6 +52,7 @@ def _register_subagent(record: Dict[str, Any]) -> None:
     if not sid:
         return
     record.setdefault("accepting_steer", True)
+    record.setdefault("steer_status", None)
     with _active_subagents_lock:
         _active_subagents[sid] = record
 
@@ -87,7 +88,36 @@ def _close_subagent_steering(subagent_id: str, agent: Any) -> Optional[str]:
         except Exception as exc:
             logger.debug("final steer drain for %s failed: %s", subagent_id, exc)
             return None
-        return pending if isinstance(pending, str) and pending.strip() else None
+        if isinstance(pending, str) and pending.strip():
+            record["steer_status"] = "missed"
+            record["steer_missed_at"] = time.time()
+            return pending
+        return None
+
+def mark_subagent_steer_delivered(agent: Any, text: str) -> None:
+    """Record that queued steer text crossed a real child tool-batch boundary."""
+    with _active_subagents_lock:
+        for record in _active_subagents.values():
+            if record.get("agent") is agent and record.get("steer_status") == "queued":
+                record["steer_status"] = "delivered"
+                record["steer_delivered_at"] = time.time()
+                if record.get("steer_text") == text.strip():
+                    record.pop("steer_text", None)
+                return
+
+
+def acknowledge_subagent_steer(subagent_id: str, *, agent: Any = None) -> bool:
+    """Mark delivered steering acknowledged by the child/runtime."""
+    with _active_subagents_lock:
+        record = _active_subagents.get(subagent_id)
+        if not record or (agent is not None and record.get("agent") is not agent):
+            return False
+        if record.get("steer_status") != "delivered":
+            return False
+        record["steer_status"] = "acknowledged"
+        record["steer_acknowledged_at"] = time.time()
+        return True
+
 
 def interrupt_subagent(subagent_id: str) -> bool:
     """Request that one running subagent stop at its next iteration boundary
@@ -151,7 +181,12 @@ def steer_subagent(
         if agent is None:
             return False
         try:
-            return bool(agent.steer(text))
+            queued = bool(agent.steer(text))
+            if queued:
+                record["steer_status"] = "queued"
+                record["steer_queued_at"] = time.time()
+                record["steer_text"] = text.strip()
+            return queued
         except Exception as exc:
             logger.debug("steer_subagent(%s) failed: %s", subagent_id, exc)
             return False

@@ -11,9 +11,12 @@ the subagent.steer gateway RPC that fronts the helper.
 import threading
 from unittest.mock import MagicMock
 
-from tools.delegate_tool import (
+from tools.delegate_tool_registry import (
+    _active_subagents,
     _register_subagent,
     _unregister_subagent,
+    acknowledge_subagent_steer,
+    mark_subagent_steer_delivered,
     steer_subagent,
 )
 
@@ -63,6 +66,21 @@ def test_steer_reaches_the_live_child():
     finally:
         _unregister_subagent("sid-steer-1")
 
+
+def test_steer_lifecycle_distinguishes_queued_delivered_and_acknowledged():
+    agent = _StubAgent()
+    _with_registered("sid-steer-lifecycle", agent)
+    try:
+        assert steer_subagent("sid-steer-lifecycle", "new constraint") is True
+        assert _active_subagents["sid-steer-lifecycle"]["steer_status"] == "queued"
+
+        mark_subagent_steer_delivered(agent, "new constraint")
+        assert _active_subagents["sid-steer-lifecycle"]["steer_status"] == "delivered"
+
+        assert acknowledge_subagent_steer("sid-steer-lifecycle", agent=agent) is True
+        assert _active_subagents["sid-steer-lifecycle"]["steer_status"] == "acknowledged"
+    finally:
+        _unregister_subagent("sid-steer-lifecycle", agent=agent)
 
 def test_unknown_subagent_is_false_not_an_error():
     assert steer_subagent("sid-not-registered", "hello") is False

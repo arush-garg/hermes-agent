@@ -3571,6 +3571,12 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         _requeue_pending_steer(agent, steer_text)
         return
     messages.append(steer_user_row(steer_text))
+    try:
+        from tools.delegate_tool_registry import mark_subagent_steer_delivered
+
+        mark_subagent_steer_delivered(agent, steer_text)
+    except Exception:
+        _ra().logger.debug("Could not record steer delivery lifecycle", exc_info=True)
     _ra().logger.info(
         "Delivered /steer to agent after tool batch (%d chars) as new user message: %s", len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),
