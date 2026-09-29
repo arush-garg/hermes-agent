@@ -1051,6 +1051,11 @@ class SessionSchemaMixin:
         if current_version < 25:
             # v25: de-duplicate system prompt snapshots (old column stays a read fallback).
             self._dedupe_legacy_system_prompts(cursor)
+        if current_version < 31:
+            # v31: machine-readable compaction checkpoint kept separate from prose summaries.
+            columns = {row[1] for row in cursor.execute("PRAGMA table_info(sessions)")}
+            if "checkpoint" not in columns:
+                cursor.execute("ALTER TABLE sessions ADD COLUMN checkpoint TEXT")
         fts_migrations_complete = True
         if current_version < 30 and fts5_available:
             # v29: cron sessions leave the trigram substring index (they stay in the word index);

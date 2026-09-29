@@ -38,6 +38,42 @@ def _clean_state():
         process_registry.completion_queue.get_nowait()
 
 
+def test_completion_subscriber_receives_terminal_event_without_polling():
+    received = []
+    ready = threading.Event()
+
+    handle = ad.dispatch_async_delegation(
+        goal="subscriber", context="", toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: {"status": "completed", "summary": "done"},
+        max_async_children=1,
+    )
+    unsubscribe = ad.subscribe_delegation(
+        handle["delegation_id"], lambda event: (received.append(event), ready.set())
+    )
+
+    assert ready.wait(5.0)
+    assert len(received) == 1
+    assert received[0]["type"] == "async_delegation"
+    assert received[0]["delegation_id"] == handle["delegation_id"]
+    assert received[0]["status"] == "completed"
+    assert received[0]["completed_at"] is not None
+    unsubscribe()
+    unsubscribe()
+
+
+def test_late_completion_subscriber_is_notified_immediately():
+    handle = ad.dispatch_async_delegation(
+        goal="late subscriber", context="", toolsets=None, role="leaf", model="m",
+        session_key="", runner=lambda: {"status": "completed", "summary": "done"},
+        max_async_children=1,
+    )
+    assert _drain_for(handle["delegation_id"], timeout=5.0) is not None
+
+    received = []
+    ad.subscribe_delegation(handle["delegation_id"], received.append)
+    assert received
+    assert received[0]["status"] == "completed"
+
 def _drain_one(timeout=5.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

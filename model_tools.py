@@ -920,6 +920,7 @@ def handle_function_call(
         if underlying is None:
             return _emit(result, duration_ms=_elapsed_ms(start))
         from tools.connectors import CONNECTOR_BATCH_SENTINEL, dispatch_connector_batch
+        from tools import tool_search as ts
         if underlying[0] == CONNECTOR_BATCH_SENTINEL:
             return _emit(dispatch_connector_batch(
                 underlying[1]["calls"], ids, user_task=user_task,

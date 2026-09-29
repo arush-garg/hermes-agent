@@ -848,7 +848,7 @@ def subscribe_delegation(delegation_id: str, callback: Callable[[Dict[str, Any]]
     event = None
     with _records_lock:
         record = _records.get(delegation_id)
-        if record is not None and record.get("status") not in _ACTIVE_STATES:
+        if record is not None and record.get("status") not in _LIVE_STATES:
             event = {"type": "async_delegation", "delegation_id": delegation_id,
                      "status": record.get("status"), "completed_at": record.get("completed_at")}
         else:
