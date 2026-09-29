@@ -190,6 +190,31 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
   )
 }
 
+// ── YOLO indicator ─────────────────────────────────────────────────────
+//
+// Mirrors the classic CLI banner (`_banner_left_lines` in hermes_cli/banner.py):
+// "⚠ YOLO mode — all approval prompts bypassed" under the model line whenever
+// the session runs with approval bypass. `info.yolo` is the same OR the
+// backend reports (approvals.mode=off, --yolo/HERMES_YOLO_MODE, the per-session
+// /yolo toggle), so the banner also flips live when yolo is toggled mid-session.
+function YoloLine({ t, yolo }: { t: Theme; yolo?: boolean }) {
+  if (!yolo) {
+    return null
+  }
+
+  // wrap (not truncate-end): the hero column in the wide layout is only as
+  // wide as the caduceus art, so the full classic line wraps to two rows
+  // instead of losing "bypassed" to an ellipsis.
+  return (
+    <Text wrap="wrap">
+      <Text bold color={t.color.error}>
+        ⚠ YOLO mode
+      </Text>
+      <Text color={t.color.muted}> — all approval prompts bypassed</Text>
+    </Text>
+  )
+}
+
 // ── Skeleton ─────────────────────────────────────────────────────────
 //
 // Lazy sections render shimmer rows shaped like the real content (label
@@ -365,6 +390,8 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         <Text color={t.color.muted}> · Nous Research</Text>
       </Text>
 
+      <YoloLine t={t} yolo={info.yolo} />
+
       <Text color={t.color.muted} wrap="truncate-end">
         {info.cwd || process.cwd()}
       </Text>
@@ -396,6 +423,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             {(info.model ?? '').split('/').pop()}
             <Text color={t.color.muted}> · Nous Research</Text>
           </Text>
+          <YoloLine t={t} yolo={info.yolo} />
           <Text color={t.color.muted} wrap="truncate-end">
             {info.cwd || process.cwd()}
           </Text>
