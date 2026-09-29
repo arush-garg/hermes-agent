@@ -1719,3 +1719,18 @@ class SessionSessionsMixin:
             logger.warning("state.db auto-archive failed: %s", exc)
             result["error"] = str(exc)
         return result
+
+def update_checkpoint(self, session_id: str, checkpoint_json: Optional[str]) -> None:
+    """Set the structured compaction checkpoint for a session."""
+    self._write_sql(
+        "UPDATE sessions SET checkpoint = ? WHERE id = ?",
+        (checkpoint_json, session_id),
+    )
+
+def get_checkpoint(self, session_id: str) -> Optional[str]:
+    """Get the structured compaction checkpoint for a session."""
+    row = self._read_one(
+        "SELECT checkpoint FROM sessions WHERE id = ?",
+        (session_id,),
+    )
+    return row["checkpoint"] if row else None
