@@ -29,6 +29,7 @@ from tools.connectors.search import (
     connections_in_scope, connector_entries_by_group, connectors_unavailable, remote_schemas_for)
 
 logger = logging.getLogger("tools.tool_search")
+LOCAL_BATCH_SENTINEL = "__tool_search_local_batch__"
 # Bound the work one bridge call requests. Search is capped at the gateway's
 # own limit: the connector search route answers 7 use_cases per request and
 # returns HTTP 502 for 8 or more (measured 2026-09-09), and one local call
@@ -311,8 +312,8 @@ def bridge_tool_schemas(deferred_count: int, listing: Optional[str] = None,
             TOOL_CALL_NAME,
             "Invoke deferred tools. Takes `calls`, an array of {name, arguments} "
             "— one entry per invocation; a single call is an array of one. "
-            "Local tools require one entry per tool_call. Only connectors__ names "
-            "may be batched together; mixed and multi-local batches are rejected. "
+            "Local deferred tools may be batched safely; connector-only batches are also supported, "
+            "but local and connector names may not be mixed. "
             "Connector entries execute individually with results in input order. "
             f"Argument shapes match each tool's schema (see `{TOOL_DESCRIBE_NAME}`). "
             "Policy, hooks, and approvals run as for directly-listed tools.",
@@ -560,10 +561,19 @@ def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[s
     if err:
         return None, {}, err
 
-    if len(entries) > 1 and any(not is_connector_name(e["name"]) for e in entries):
-        return None, {}, local_batch_error(entries)
+    if len(entries) > 1 and any(is_connector_name(e["name"]) for e in entries):
+        if not all(is_connector_name(e["name"]) for e in entries):
+            return None, {}, local_batch_error(entries)
+        return CONNECTOR_BATCH_SENTINEL, {"calls": entries}, None
     if is_connector_name(entries[0]["name"]):
         return CONNECTOR_BATCH_SENTINEL, {"calls": entries}, None
+
+    if len(entries) > 1:
+        defer_tools = load_config_readonly().effective_defer_tools
+        for entry in entries:
+            if not is_deferrable_tool_name(entry["name"], defer_tools):
+                return None, {}, not_deferrable_error(entry["name"])
+        return LOCAL_BATCH_SENTINEL, {"calls": entries}, None
 
     name = entries[0]["name"]
     raw_args = entries[0]["arguments"]
@@ -580,7 +590,7 @@ __all__ = [
     "bridge_tool_schemas", "assemble_tool_defs", "is_bridge_tool", "dispatch_tool_search",
     "dispatch_tool_describe", "resolve_underlying_call", "scoped_deferrable_names",
     "validate_deferred_call_args", "normalize_tool_call_entries",
-    "CONNECTOR_BATCH_SENTINEL", "is_connector_name"]
+    "CONNECTOR_BATCH_SENTINEL", "LOCAL_BATCH_SENTINEL", "is_connector_name"]
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

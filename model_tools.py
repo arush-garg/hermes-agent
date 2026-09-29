@@ -8,6 +8,7 @@ hooks/middleware) plus registry pass-throughs.
 
 import os
 import json
+from concurrent.futures import ThreadPoolExecutor
 import re
 import asyncio
 from contextlib import contextmanager
@@ -736,6 +737,17 @@ def _dispatch_bridge_tool(function_name: str, function_args: Dict[str, Any],
         if not ts.connections_in_scope(current_defs):
             return tool_error("Connectors are not available in this session."), None
         return None, (underlying_name, underlying_args)
+    if underlying_name == ts.LOCAL_BATCH_SENTINEL:
+        calls = underlying_args["calls"]
+        scoped = ts.scoped_deferrable_names(current_defs)
+        for call in calls:
+            if call["name"] not in scoped:
+                return tool_error(f"'{call['name']}' is not available in this session. "
+                                  "Use tool_search to find tools you can call."), None
+            probe_err = ts.validate_deferred_call_args(call["name"], call["arguments"])
+            if probe_err is not None:
+                return probe_err, None
+        return None, (underlying_name, underlying_args)
     # Defense in depth: resolve_underlying_call only checks the global
     # registry; also require membership in the session-scoped catalog.
     if underlying_name not in ts.scoped_deferrable_names(current_defs):
@@ -914,6 +926,19 @@ def handle_function_call(
                 enabled_tools=enabled_tools, middleware_trace=trace,
                 enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
             ), duration_ms=_elapsed_ms(start))
+        if underlying[0] == ts.LOCAL_BATCH_SENTINEL:
+            calls = underlying[1]["calls"]
+            def run(call):
+                return handle_function_call(
+                    call["name"], call["arguments"], **asdict(ids), user_task=user_task,
+                    enabled_tools=enabled_tools, tool_request_middleware_trace=list(trace),
+                    enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets)
+            with ThreadPoolExecutor(max_workers=len(calls), thread_name_prefix="deferred-tool") as pool:
+                results = list(pool.map(run, calls))
+            return _emit({"results": [
+                {"index": i, "name": call["name"], "result": result}
+                for i, (call, result) in enumerate(zip(calls, results))
+            ]}, duration_ms=_elapsed_ms(start))
         return handle_function_call(
             *underlying, **asdict(ids), user_task=user_task, enabled_tools=enabled_tools,
             skip_pre_tool_call_hook=skip_pre_tool_call_hook, skip_tool_request_middleware=skip_tool_request_middleware,

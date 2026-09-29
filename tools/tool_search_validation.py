@@ -205,8 +205,9 @@ def local_batch_error(entries: List[Dict[str, Any]]) -> str:
     remaining = (f" then issue the remaining {len(entries) - 1} call(s) as separate tool_call invocations"
                  if len(entries) > 1 else "")
     return (
-        f"tool_call takes exactly one entry for local tools; you sent {len(entries)}. "
-        f"Retry with only: {retry}{remaining}. Only connectors__ names may be batched together."
+        f"tool_call cannot mix local and connector entries; you sent {len(entries)}. "
+        f"Retry with only: {retry}{remaining}. Local deferred tools may be batched together; "
+        "only connectors__ names may be mixed in a connector batch."
     )
 
 
