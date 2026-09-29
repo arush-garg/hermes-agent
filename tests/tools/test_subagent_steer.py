@@ -167,6 +167,7 @@ def test_status_snapshot_never_leaks_owner_or_lifecycle_metadata():
         assert "owner_transport" not in snapshot
         assert "owner_session_record" not in snapshot
         assert "accepting_steer" not in snapshot
+        assert "steer_text" not in snapshot
         assert "private-owner" not in repr(snapshot)
         assert all(value is not owner_transport for value in snapshot.values())
         assert all(value is not owner_session_record for value in snapshot.values())

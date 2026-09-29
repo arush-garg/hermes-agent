@@ -137,6 +137,11 @@ def test_steer_reaches_owned_child():
             _handle_control_action("steer", "sid-ctl-steer-1", "focus on X", parent)
         )
         assert out["status"] == "queued"
+        assert out["lifecycle"] == {
+            "queued": True,
+            "delivered": False,
+            "missed": False,
+        }
         assert child.steered == ["focus on X"]
     finally:
         _unregister_subagent("sid-ctl-steer-1")

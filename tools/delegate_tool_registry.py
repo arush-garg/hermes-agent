@@ -203,7 +203,10 @@ def _capture_gateway_steer_authority(owner_session_id: Optional[str]) -> tuple[A
         return None, None
 
 # Registry record fields never exposed to the TUI/RPC snapshot.
-_PRIVATE_RECORD_KEYS = frozenset({"agent", "owner_session_id", "owner_transport", "owner_session_record", "accepting_steer"})
+_PRIVATE_RECORD_KEYS = frozenset({
+    "agent", "owner_session_id", "owner_transport", "owner_session_record",
+    "accepting_steer", "steer_text",
+})
 
 def list_active_subagents() -> List[Dict[str, Any]]:
     """Copy of the running subagent tree ({subagent_id, parent_id, depth, goal, model,
@@ -322,7 +325,14 @@ def _handle_control_action(action: str, subagent_id: Optional[str], message: Opt
     status, note, failure = outcome
     ok = interrupt_subagent(sid) if action == "stop" else steer_subagent(sid, message.strip())
     if ok:
-        return json.dumps({"action": action, "subagent_id": sid, "status": status, "note": note}, ensure_ascii=False)
+        payload: Dict[str, Any] = {"action": action, "subagent_id": sid, "status": status, "note": note}
+        if action == "steer":
+            payload["lifecycle"] = {
+                "queued": True,
+                "delivered": False,
+                "missed": False,
+            }
+        return json.dumps(payload, ensure_ascii=False)
     return tool_error(failure.format(sid=sid))
 
 # action -> (success status, success note, failure error template)
