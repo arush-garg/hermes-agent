@@ -1822,8 +1822,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           sys(`error: ${describeRpcError(new Error(message))}`)
           setStatus('ready')
         }
-        return
 
+        return
       case 'agent.event': {
         const payload = ev.payload as { context?: unknown; event_type?: string } | undefined
         const event_type = payload?.event_type

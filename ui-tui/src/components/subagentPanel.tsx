@@ -65,6 +65,7 @@ export const SubagentPanel = memo(function SubagentPanel({ onInterrupt, onSteerS
     if (!hasRunning) {
       return
     }
+
     const id = setInterval(() => setSpinnerIdx(i => (i + 1) % SPINNER_FRAMES.length), 500)
 
     return () => clearInterval(id)

@@ -49,7 +49,7 @@ export function handleSubagentPanelKeyDown(
     return { type: 'navigate', cursor: 0 }
   }
 
-  if ((key.end || (ch === 'G')) && subagentCount > 0) {
+  if ((key.end || ch === 'G') && subagentCount > 0) {
     return { type: 'navigate', cursor: subagentCount - 1 }
   }
 

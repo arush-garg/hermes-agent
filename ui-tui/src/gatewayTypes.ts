@@ -22,9 +22,7 @@ type LegacyGatewayEvent =
   | { payload: { context?: SubagentEventPayload; event_type: string }; session_id?: string; type: 'agent.event' }
 
 /** Distributive form of shared events plus legacy client notifications. */
-export type AnyGatewayEvent =
-  | { [K in GatewayEventName]: GatewayEvent<K> }[GatewayEventName]
-  | LegacyGatewayEvent
+export type AnyGatewayEvent = { [K in GatewayEventName]: GatewayEvent<K> }[GatewayEventName] | LegacyGatewayEvent
 
 export interface GatewayCompletionItem {
   display: string
@@ -571,4 +569,3 @@ export interface SpawnTreeLoadResponse {
   started_at?: null | number
   subagents?: unknown[]
 }
-
