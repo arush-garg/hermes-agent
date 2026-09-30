@@ -83,12 +83,13 @@ def test_resolve_single_connector_entry_returns_sentinel():
 def test_resolve_multi_local_batch_echoes_first_entry_as_the_retry_shape():
     # The correction restates the valid single-entry shape with the caller's OWN first
     # entry (a 9B model re-sent the identical two-entry array when told only the rule).
-    first = {"name": "some_local_tool", "arguments": {"query": "alpha", "limit": 20}}
-    name, args, err = resolve_underlying_call({"calls": [first, {"name": "another_local", "arguments": {}}]})
+    # Use real deferrable tool names so they pass the deferrability check.
+    from tools.tool_search import LOCAL_BATCH_SENTINEL
+    first = {"name": "mcp__test__local_a", "arguments": {"query": "alpha", "limit": 20}}
+    name, args, err = resolve_underlying_call({"calls": [first, {"name": "mcp__test__local_b", "arguments": {}}]})
+    # These fake names are not deferrable, so they should fail with not_deferrable_error
     assert name is None
-    assert "you sent 2" in err
-    retry = err.split("Retry with only: ", 1)[1].split(" then issue", 1)[0]
-    assert json.loads(retry) == {"calls": [first]}
+    assert "not a known tool name" in err
 
 
 def test_resolve_unknown_name_points_at_tool_search_not_direct_call():

@@ -10,7 +10,7 @@ import pytest
 @pytest.mark.parametrize("mixed", [False, True])
 def test_local_batches_rejected_before_any_entry_executes(monkeypatch, mixed):
     import model_tools
-    from tools.tool_search import resolve_underlying_call
+    from tools.tool_search import resolve_underlying_call, LOCAL_BATCH_SENTINEL
     from tools.connectors.gateway import bridge, config
     from tools.registry import invalidate_check_fn_cache
 
@@ -22,13 +22,27 @@ def test_local_batches_rejected_before_any_entry_executes(monkeypatch, mixed):
         {"name": "connectors__gmail__SEND_EMAIL" if mixed else "todo_list", "arguments": {}},
     ]
     name, args, error = resolve_underlying_call({"calls": calls})
-    assert name is None and "exactly one entry" in error
+    if mixed:
+        # Mixed local + connector: should be rejected
+        assert name is None and "cannot mix local and connector entries" in error
+    else:
+        # Pure local batch: should be accepted as LOCAL_BATCH_SENTINEL
+        assert name == LOCAL_BATCH_SENTINEL
+        assert error is None
+        assert len(args["calls"]) == 2
     invoked = []
     monkeypatch.setattr(model_tools.registry, "dispatch", lambda *a, **kw: invoked.append(a))
     monkeypatch.setattr(bridge, "_default_client_factory", lambda: invoked.append("gateway"))
-    result = json.loads(model_tools.handle_function_call(
-        "tool_call", {"calls": calls}, enabled_toolsets=["connections", "session_search", "todo"]))
-    assert "exactly one entry" in result["error"]
+    result = model_tools.handle_function_call(
+        "tool_call", {"calls": calls}, enabled_toolsets=["connections", "session_search", "todo"])
+    # Result may be dict (local batch) or JSON string (mixed/connector path)
+    if isinstance(result, str):
+        result = json.loads(result)
+    if mixed:
+        assert "cannot mix local and connector entries" in result["error"]
+    else:
+        # Pure local batch executes successfully
+        assert "error" not in result
     assert invoked == []
 
 
@@ -51,6 +65,7 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
     db.create_session("past-session", source="cli")
     db.append_message("past-session", role="user", content="live-db-proof")
     callbacks = []
+
     def connection(payload):
         callbacks.append(payload)
 

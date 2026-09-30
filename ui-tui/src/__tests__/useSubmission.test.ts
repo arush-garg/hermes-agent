@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ComposerToken } from '../app/interfaces.js'
-import { prepareSubmission, shouldInterpolateSubmission } from '../app/useSubmission.js'
+import { prepareSubmission, shouldInterpolateSubmission, shouldQueueDuringCompaction } from '../app/useSubmission.js'
+
+describe('compaction submission routing', () => {
+  it('queues input while auto/preflight compaction is rewriting history', () => {
+    expect(shouldQueueDuringCompaction({ compacting: true })).toBe(true)
+    expect(shouldQueueDuringCompaction({ compacting: false })).toBe(false)
+  })
+})
 
 describe('prepareSubmission', () => {
   it('keeps the collapsed paste for display and expands the model payload', () => {

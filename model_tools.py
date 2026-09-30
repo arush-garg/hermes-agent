@@ -936,10 +936,27 @@ def handle_function_call(
                     enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets)
             with ThreadPoolExecutor(max_workers=len(calls), thread_name_prefix="deferred-tool") as pool:
                 results = list(pool.map(run, calls))
-            return _emit({"results": [
-                {"index": i, "name": call["name"], "result": result}
-                for i, (call, result) in enumerate(zip(calls, results))
-            ]}, duration_ms=_elapsed_ms(start))
+            # Parse each result (they are JSON strings from handle_function_call)
+            parsed_results = []
+            for i, (call, result) in enumerate(zip(calls, results)):
+                try:
+                    parsed = json.loads(result) if isinstance(result, str) else result
+                except (ValueError, TypeError):
+                    parsed = {"error": {"code": "PARSE_ERROR", "message": f"Failed to parse result: {result}"}}
+                # Extract error status
+                has_error = isinstance(parsed, dict) and "error" in parsed
+                parsed_results.append({
+                    "index": i,
+                    "name": call["name"],
+                    "result": parsed
+                })
+            error_count = sum(1 for r in parsed_results if isinstance(r.get("result"), dict) and "error" in r["result"])
+            return _emit({
+                "results": parsed_results,
+                "success_count": len(parsed_results) - error_count,
+                "error_count": error_count,
+                "total_count": len(parsed_results),
+            }, duration_ms=_elapsed_ms(start))
         return handle_function_call(
             *underlying, **asdict(ids), user_task=user_task, enabled_tools=enabled_tools,
             skip_pre_tool_call_hook=skip_pre_tool_call_hook, skip_tool_request_middleware=skip_tool_request_middleware,

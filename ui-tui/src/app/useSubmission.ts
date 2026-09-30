@@ -61,6 +61,11 @@ export const prepareSlashSubmission = (display: string, tokens: ComposerToken[])
 
 export const shouldInterpolateSubmission = (display: string) => hasInterpolation(display)
 
+/** Auto/preflight compaction can run while the agent is otherwise idle, so it
+ * does not necessarily raise the ordinary `busy` latch. Input still has to be
+ * queued until the history rewrite completes. */
+export const shouldQueueDuringCompaction = (state: Pick<ReturnType<typeof getUiState>, 'compacting'>) => state.compacting
+
 export function useSubmission(opts: UseSubmissionOptions) {
   const { appendMessage, composerActions, composerRefs, composerState, gw, setLastUserMsg, slashRef, submitRef, sys } =
     opts
@@ -295,6 +300,20 @@ export function useSubmission(opts: UseSubmissionOptions) {
       }
 
       const live = getUiState()
+
+      // Auto/preflight compaction can run while the turn is otherwise idle. It
+      // emits a dedicated compacting lifecycle status, but does not set the
+      // normal `busy` latch. Treat that interval exactly like an active turn so
+      // Enter stores the prompt in the client queue instead of submitting into
+      // the history lock. The queue drains when the `compacted` edge clears the
+      // flag below.
+      if (shouldQueueDuringCompaction(live)) {
+        composerActions.pushHistory(toHistory)
+        composerActions.enqueue(full)
+        composerActions.clearIn()
+
+        return
+      }
 
       if (!live.sid) {
         composerActions.pushHistory(toHistory)

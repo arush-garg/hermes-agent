@@ -1,4 +1,8 @@
+import asyncio
+import contextvars
 import os
+import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from cli import HermesCLI
@@ -77,6 +81,68 @@ class TestCliResumeCommand:
         assert cli_obj.session_id == "current_session"
 
 
+    def test_bare_resume_opens_picker_on_tty(self):
+        cli_obj = _make_cli()
+        sessions = [{"id": "sess_002", "title": "Coding"}]
+        cli_obj._list_recent_sessions = MagicMock(return_value=sessions)
+        tty = SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: True),
+                              stdout=SimpleNamespace(isatty=lambda: True))
+        with (
+            patch("hermes_cli.cli_commands_mixin.sys", tty),
+            patch("hermes_cli.curses_ui.curses_session_picker", return_value=None) as picker,
+        ):
+            cli_obj._handle_resume_command("/resume")
+        picker.assert_called_once()
+        assert picker.call_args.kwargs["sessions"] == sessions
+        assert cli_obj.session_id == "current_session"
+
+    def test_bare_resume_detaches_prompt_toolkit_before_picker(self):
+        cli_obj = _make_cli()
+        sessions = [{"id": "current_session", "title": "Current"}]
+        cli_obj._list_recent_sessions = MagicMock(return_value=sessions)
+        cli_obj._resolve_resume_target = MagicMock(return_value=("current_session", sessions[0]))
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever)
+        thread.start()
+        setattr(cli_obj, "_app", SimpleNamespace(is_running=True, loop=loop, context=contextvars.copy_context()))
+        tty = SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: True),
+                              stdout=SimpleNamespace(isatty=lambda: True))
+        calls = []
+
+        async def fake_run_in_terminal(picker, *, in_executor):
+            calls.append(("suspended", in_executor))
+            return picker()
+
+        def fake_picker(**kwargs):
+            calls.append(("picker", threading.current_thread() is thread))
+            return sessions[0]
+
+        try:
+            with (
+                patch("hermes_cli.cli_commands_mixin.sys", tty),
+                patch("prompt_toolkit.application.run_in_terminal", fake_run_in_terminal),
+                patch("hermes_cli.curses_ui.curses_session_picker", side_effect=fake_picker),
+                patch("cli._cprint"),
+            ):
+                cli_obj._handle_resume_command("/resume")
+            assert calls == [("suspended", True), ("picker", True)]
+            assert cli_obj.session_id == "current_session"
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+    def test_bare_resume_numbered_fallback_arms_selection(self):
+        cli_obj = _make_cli()
+        sessions = [{"id": "sess_002", "title": "Coding"}]
+        cli_obj._list_recent_sessions = MagicMock(return_value=sessions)
+        cli_obj._show_recent_sessions = MagicMock(return_value=True)
+        tty = SimpleNamespace(stdin=SimpleNamespace(isatty=lambda: False),
+                              stdout=SimpleNamespace(isatty=lambda: False))
+        with patch("hermes_cli.cli_commands_mixin.sys", tty):
+            cli_obj._handle_resume_command("/resume")
+        assert cli_obj._pending_resume_sessions == sessions
+        cli_obj._show_recent_sessions.assert_called_once_with(reason="resume", limit=20)
 
 
 class TestCliResumeRestoresCwd:
@@ -171,9 +237,9 @@ class TestPendingResumeNumberedSelection:
             {"id": "sess_001", "title": "Research"},
         ]
         cli_obj._pending_resume_sessions = sessions
-        # _handle_resume_command("/resume 2") re-resolves the index via
-        # _list_recent_sessions, so it must return the same list.
-        cli_obj._list_recent_sessions = MagicMock(return_value=sessions)
+        # The shown list is the selection authority even if recent sessions change
+        # between rendering and selection.
+        cli_obj._list_recent_sessions = MagicMock(return_value=[sessions[0]])
         cli_obj._session_db.get_session.return_value = {"id": "sess_001", "title": "Research"}
         cli_obj._session_db.get_resume_conversations.return_value = [
             {"role": "user", "content": "hello"},

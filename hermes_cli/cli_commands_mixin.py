@@ -14,6 +14,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -1294,15 +1295,43 @@ class CLICommandsMixin:
             # available for scripts and redirected CLI sessions; an interactive TTY gets the picker.
             if not (sys.stdin.isatty() and sys.stdout.isatty()):
                 self._show_recent_sessions(reason="resume", limit=20)
+                self._pending_resume_sessions = sessions
                 return
 
             from hermes_cli.curses_ui import curses_session_picker
 
-            selected_session = curses_session_picker(
-                sessions=sessions,
-                title="Select a session to resume",
-                description="↑↓ navigate  Enter select  / search  ESC cancel",
-            )
+            def pick_session():
+                return curses_session_picker(
+                    sessions=sessions,
+                    title="Select a session to resume",
+                    description="↑↓ navigate  Enter select  / search  ESC cancel",
+                )
+
+            app = getattr(self, "_app", None)
+            if app is not None and app.is_running:
+                # Slash commands run on process_loop while prompt_toolkit owns stdin on
+                # the main loop. Detach its input before curses reads the same terminal.
+                import asyncio
+                from concurrent.futures import Future
+                from prompt_toolkit.application import run_in_terminal
+
+                result = Future()
+
+                def start_picker():
+                    task = asyncio.ensure_future(run_in_terminal(pick_session, in_executor=True))
+
+                    def finish_picker(done):
+                        try:
+                            result.set_result(done.result())
+                        except BaseException as exc:
+                            result.set_exception(exc)
+
+                    task.add_done_callback(finish_picker)
+
+                app.loop.call_soon_threadsafe(start_picker, context=app.context.copy())
+                selected_session = result.result()
+            else:
+                selected_session = pick_session()
 
             if not selected_session:
                 # User cancelled (Esc or q)

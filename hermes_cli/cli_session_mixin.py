@@ -614,7 +614,7 @@ class CLISessionMixin:
             _cprint(f"  Resume index {index} is out of range.")
             _cprint("  Use /resume with no arguments to see available sessions.")
             return True
-        self._handle_resume_command(f"/resume {index}")
+        self._handle_resume_command(f"/resume {pending[index - 1]['id']}")
         return True
 
     def save_conversation(self, cmd: str = "/save"):

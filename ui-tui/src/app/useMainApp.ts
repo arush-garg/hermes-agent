@@ -864,15 +864,17 @@ export function useMainApp(gw: GatewayClient) {
 
   submitLiteralRef.current = submitLiteral
 
-  // Drain one queued message whenever the session settles (busy → false):
-  // agent turn ends, interrupt, shell.exec finishes, error recovered, or the
-  // session first comes up with pre-queued messages. Without this, shell.exec
-  // and error paths never emit message.complete, so anything enqueued while
-  // `!sleep` / a failed turn was running would stay stuck forever.
+  // Drain one queued message whenever the session settles (busy/compacting →
+  // false): agent turn ends, context compaction finishes, interrupt, shell.exec
+  // finishes, error recovered, or the session first comes up with pre-queued
+  // messages. Without this, shell.exec and error paths never emit
+  // message.complete, so anything enqueued while `!sleep` / a failed turn was
+  // running would stay stuck forever.
   useEffect(() => {
     if (
       !ui.sid ||
       ui.busy ||
+      ui.compacting ||
       composerRefs.queueEditRef.current !== null ||
       composerRefs.queueRef.current.length === 0
     ) {
@@ -885,7 +887,7 @@ export function useMainApp(gw: GatewayClient) {
       patchUiState({ busy: true, status: 'running…' })
       sendQueued(next)
     }
-  }, [ui.sid, ui.busy, composerActions, composerRefs, sendQueued])
+  }, [ui.sid, ui.busy, ui.compacting, composerActions, composerRefs, sendQueued])
 
   const { pagerPageSize } = useInputHandlers({
     actions: {
