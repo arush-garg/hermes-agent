@@ -128,6 +128,35 @@ def test_state_db_guard_passes_valid_db(tmp_path, monkeypatch):
     assert step_state_db_guard() == {"ok": True}
 
 
+def test_boot_state_db_guard_bounds_work_but_explicit_update_checks_fully(tmp_path, monkeypatch):
+    import sqlite3
+    from hermes_cli import backup
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    conn = sqlite3.connect(tmp_path / "state.db")
+    conn.execute("CREATE TABLE t (x BLOB)")
+    conn.execute("INSERT INTO t VALUES (zeroblob(131072))")
+    conn.commit()
+    conn.close()
+
+    # Small threshold exercises the real structural-probe path without a huge fixture.
+    monkeypatch.setattr(post_update, "BOOT_INTEGRITY_CHECK_MAX_BYTES", 64 << 10)
+    checks = []
+    real_verify = backup.verify_sqlite_integrity
+
+    def track_verify(*args, **kwargs):
+        result = real_verify(*args, **kwargs)
+        checks.append(result["message"])
+        return result
+
+    monkeypatch.setattr(backup, "verify_sqlite_integrity", track_verify)
+    boot_step = dict(post_update.BOOT_HOME_STEPS)["state_db_guard"]
+    assert boot_step() == {"ok": True}
+    assert "skipped PRAGMA integrity_check" in checks[-1]
+    assert dict(post_update.HOME_STEPS)["state_db_guard"]() == {"ok": True}
+    assert checks[-1] == "integrity check passed"
+
+
 # ── machine-step registry ────────────────────────────────────────────
 
 

@@ -123,7 +123,13 @@ def step_sync_skills() -> dict:
 # state.db integrity guard (#68474 — check-only variant)
 # ---------------------------------------------------------------------------
 
-def step_state_db_guard() -> dict:
+# A synchronous boot check on a large FTS-backed store can spend minutes in
+# SQLite even below backup.py's 2 GiB cap, leaving `hermes --yolo` with no
+# prompt. Full verification remains available on the explicit update path.
+BOOT_INTEGRITY_CHECK_MAX_BYTES = 64 << 20
+
+
+def step_state_db_guard(*, max_bytes: int | None = None) -> dict:
     """Verify the active home's state.db is intact.
 
     Boot bootstrap has no pre-update snapshot to restore from (that pairing
@@ -132,12 +138,15 @@ def step_state_db_guard() -> dict:
     search. Read-only, idempotent.
     """
     from hermes_constants import get_hermes_home
-    from hermes_cli.backup import verify_sqlite_integrity
+    from hermes_cli.backup import DEFAULT_INTEGRITY_CHECK_MAX_BYTES, verify_sqlite_integrity
 
     state_path = get_hermes_home() / "state.db"
     if not state_path.exists():
         return {"ok": True, "skipped": "no-state-db"}
-    result = verify_sqlite_integrity(state_path, check_header=True, run_pragma=True)
+    result = verify_sqlite_integrity(
+        state_path, check_header=True, run_pragma=True,
+        max_bytes=DEFAULT_INTEGRITY_CHECK_MAX_BYTES if max_bytes is None else max_bytes,
+    )
     if result.get("valid"):
         return {"ok": True}
     message = result.get("message", "unknown error")
@@ -147,6 +156,11 @@ def step_state_db_guard() -> dict:
         message,
     )
     return {"ok": False, "error": message}
+
+
+def step_state_db_boot_guard() -> dict:
+    """Bound boot's synchronous check; large stores get header + schema probing."""
+    return step_state_db_guard(max_bytes=BOOT_INTEGRITY_CHECK_MAX_BYTES)
 
 
 def step_adopt_blessed_checkout(project_root: Path | None = None) -> dict:
@@ -289,9 +303,11 @@ HOME_STEPS: tuple = (
 )
 
 # Startup skill syncing belongs to each entry point. Boot bootstrap must
-# not repeat it. The explicit scope CLI includes the skills step.
+# not repeat it. Boot also uses a bounded DB check; explicit post-update
+# verification keeps the full integrity check for databases up to 2 GiB.
 BOOT_HOME_STEPS: tuple = tuple(
-    step for step in HOME_STEPS if step[0] != "sync_skills"
+    (name, step_state_db_boot_guard if name == "state_db_guard" else step)
+    for name, step in HOME_STEPS if name != "sync_skills"
 )
 
 # Only the explicit scope CLI installs runtimes. Boot checks PM at startup.
