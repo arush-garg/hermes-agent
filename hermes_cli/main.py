@@ -342,7 +342,6 @@ from typing import Optional
 
 
 from hermes_cli.subcommands.cron import build_cron_parser
-from hermes_cli.subcommands.sync import build_sync_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
 from hermes_cli.subcommands.model import build_model_parser
@@ -784,7 +783,6 @@ from hermes_cli.main_agent_cmds import (
 )
 from hermes_cli.main_platform_setup import (
     cmd_slack,
-    cmd_sync,
     cmd_whatsapp,
     cmd_whatsapp_cloud,
 )
@@ -3463,7 +3461,6 @@ def _build_cli_parser():
     build_status_parser(subparsers, cmd_status=cmd_status)
     build_pause_parser(subparsers)
     build_cron_parser(subparsers, cmd_cron=cmd_cron)
-    build_sync_parser(subparsers, cmd_sync=cmd_sync)
     build_webhook_parser(subparsers, cmd_webhook=cmd_webhook)
 
     from hermes_cli.subcommands.peer import build_peer_parser
