@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { clearClarifyRequest } from '@/store/clarify'
+import { $nativeNotifyPrefs } from '@/store/native-notifications'
+import { __resetNativeNotifyBaselineForTests } from '@/store/notify-baseline'
+import { resetServerRequestsForTests } from '@/store/server-requests'
 import { setActiveSessionId, setSessions } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
 import { $toursEnabled } from '@/store/tours'
@@ -46,6 +50,63 @@ describe('connection request routing', () => {
 
     expect(handled).toBe(false)
     expect(respond).not.toHaveBeenCalled()
+  })
+})
+
+describe('clarify request notifications', () => {
+  const notify = vi.fn().mockResolvedValue(true)
+  const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+  const originalHidden = Object.getOwnPropertyDescriptor(document, 'hidden')
+  const originalHasFocus = Object.getOwnPropertyDescriptor(document, 'hasFocus')
+  let previousPrefs = $nativeNotifyPrefs.get()
+
+  beforeEach(() => {
+    notify.mockClear()
+    previousPrefs = $nativeNotifyPrefs.get()
+    $nativeNotifyPrefs.set({ ...previousPrefs, enabled: true, kinds: { ...previousPrefs.kinds, input: true } })
+    desktopWindow.hermesDesktop = { notify } as unknown as Window['hermesDesktop']
+    setActiveSessionId('session-clarify')
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false })
+    Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => true })
+    __resetNativeNotifyBaselineForTests()
+  })
+
+  afterEach(() => {
+    delete desktopWindow.hermesDesktop
+    clearClarifyRequest()
+    resetServerRequestsForTests()
+    $nativeNotifyPrefs.set(previousPrefs)
+    setActiveSessionId(null)
+    setSessions([])
+
+    if (originalHidden) {
+      Object.defineProperty(document, 'hidden', originalHidden)
+    } else {
+      Reflect.deleteProperty(document, 'hidden')
+    }
+
+    if (originalHasFocus) {
+      Object.defineProperty(document, 'hasFocus', originalHasFocus)
+    } else {
+      Reflect.deleteProperty(document, 'hasFocus')
+    }
+
+    __resetNativeNotifyBaselineForTests()
+  })
+
+  it('sends the live clarify question through the shared native notification bridge while Desktop is focused', () => {
+    const question = 'Which approach should I use?'
+    const { handled } = deliver('clarify', { question, session_id: 'session-clarify' }, 'session-clarify')
+
+    expect(handled).toBe(true)
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: question,
+        kind: 'input',
+        sessionId: 'session-clarify',
+        title: expect.stringContaining('Input needed')
+      })
+    )
   })
 })
 

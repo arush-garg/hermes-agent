@@ -13,6 +13,7 @@ from __future__ import annotations
 import copy
 import sys
 import threading
+from concurrent.futures import Future
 
 from rich.markup import escape as _escape
 from utils import base_url_host_matches
@@ -214,6 +215,27 @@ def _picker_offers_reasoning(provider_data: dict, model: str) -> bool:
     return not (isinstance(entry, dict) and entry.get("reasoning") is False)
 
 
+def _resolve_picker_model(cli, model: str, provider_data: dict, state: dict, persist_global: bool):
+    return _switch_model_from(
+        cli, model, is_global=persist_global,
+        explicit_provider=provider_data.get("slug"),
+        user_providers=state.get("user_provs"),
+        custom_providers=state.get("custom_provs"))
+
+
+def _resolve_and_commit_picker(cli, result_or_future, persist_global: bool,
+                               custom_providers, reasoning_effort: str) -> None:
+    """Wait for a selected model's validation off the input thread, then apply it."""
+    from cli import _cprint
+    try:
+        result = (result_or_future.result() if isinstance(result_or_future, Future)
+                  else result_or_future)
+        cli._confirm_and_apply_model_switch_result(
+            result, persist_global, custom_providers, reasoning_effort)
+    except Exception as exc:
+        _cprint(f"  ✗ Model selection failed: {exc}")
+
+
 def _apply_reasoning_after_switch(cli, effort: str, *, persist_global: bool) -> None:
     """Apply a ``--reasoning <level>`` that rode along with a model pick. Runs AFTER the swap: the
     agent's ``switch_model`` re-resolves ``reasoning_config`` from config.yaml, so an earlier write
@@ -272,7 +294,8 @@ def _show_model_picker(cli, ctx, force_refresh: bool) -> None:
             raise RuntimeError("inventory context unavailable")
         providers = build_models_payload(
             ctx, probe_custom_providers=force_refresh,
-            probe_current_custom_provider=not force_refresh,
+            probe_current_custom_provider=False,
+            non_blocking_catalogs=not force_refresh,
             capabilities=True,  # the effort step hides itself on reasoning-free routes
         )["providers"]
     except Exception:
@@ -716,13 +739,13 @@ class CLIModelSwitchMixin:
             provider_data = providers[selected]
             # Curated list (same as `hermes model` / gateway pickers); live catalog only when
             # it is empty (user-defined endpoints, per-resource providers such as azure-foundry).
-            # Disk-cached like the gateway pickers: the live probe can walk several api-version
-            # fallbacks with a 6 s timeout each, which must not block the REPL on every select.
+            # The fallback must also be cache-only: on a cold cache the default
+            # cached_provider_model_ids call does a synchronous live fetch.
             model_list = provider_data.get("models", [])
             if not model_list:
                 try:
                     from hermes_cli.models import cached_provider_model_ids
-                    model_list = cached_provider_model_ids(provider_data["slug"]) or model_list
+                    model_list = cached_provider_model_ids(provider_data["slug"], non_blocking=True) or model_list
                 except Exception:
                     pass
             from hermes_cli.models_validate import offered_model_ids
@@ -753,18 +776,26 @@ class CLIModelSwitchMixin:
                 self._close_model_picker()
                 return
             if 0 <= selected < back_idx:
-                result = _switch_model_from(
-                    self, visible_labels[selected], is_global=persist_global,
-                    explicit_provider=provider_data.get("slug"),
-                    user_providers=state.get("user_provs"),
-                    custom_providers=state.get("custom_provs"))
-                if result.success and _picker_offers_reasoning(provider_data, result.new_model):
-                    # Third step: effort for the picked model (skipped for routes the catalog
-                    # marks reasoning-free). Rows come from the canonical level set.
-                    state.update(stage="reasoning", switch_result=result, selected=0, _scroll_offset=0)
+                model = visible_labels[selected]
+                # Credential discovery and live model validation may take many seconds. Start it
+                # after selecting the row, but never block prompt_toolkit's Enter handler before
+                # showing the reasoning step. The pending result is awaited off-thread on commit.
+                future = Future()
+
+                def resolve() -> None:
+                    try:
+                        future.set_result(_resolve_picker_model(
+                            self, model, provider_data, state, persist_global))
+                    except Exception as exc:
+                        future.set_exception(exc)
+
+                threading.Thread(target=resolve, daemon=True).start()
+                if _picker_offers_reasoning(provider_data, model):
+                    state.update(stage="reasoning", switch_result=future, selected_model=model,
+                                 selected=0, _scroll_offset=0)
                     self._invalidate(min_interval=0.0)
                     return
-                self._commit_picker_result(result, persist_global)
+                self._commit_picker_result(future, persist_global)
                 return
             self._close_model_picker()
         if stage == "reasoning":
@@ -785,11 +816,14 @@ class CLIModelSwitchMixin:
         # Capture before close — picker state is cleared on close.
         _picker_custom_provs = state.get("custom_provs")
         self._close_model_picker()
-        # The effort is appended only when picked: stubs/tests pin the historical arity.
-        extra = (reasoning_effort,) if reasoning_effort else ()
+        if isinstance(result, Future) and not result.done():
+            from cli import _cprint
+            _cprint("  Checking model availability...")
+        # Wait for remote validation only on the worker. The classic REPL's input loop must
+        # remain responsive even when a provider's /models endpoint times out.
         _run_confirm_and_apply(
-            self, self._confirm_and_apply_model_switch_result,
-            result, persist_global, _picker_custom_provs, *extra)
+            self, _resolve_and_commit_picker,
+            self, result, persist_global, _picker_custom_provs, reasoning_effort)
 
     def _handle_model_switch(self, cmd_original: str):
         """Handle /model command — switch model.

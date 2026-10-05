@@ -1458,6 +1458,10 @@ export function TextInput({
           cbSubmit.current?.(pending.value)
         }
 
+        // Prevent bubbling to global handlers (e.g., composer submit) when we
+        // handled the submit here — critical for clarify overlay answers.
+        event.stopPropagation()
+
         return
       }
 

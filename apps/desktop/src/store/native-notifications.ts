@@ -34,8 +34,10 @@ export const NATIVE_NOTIFICATION_KINDS: readonly NativeNotificationKind[] = [
   'plugin'
 ]
 
-// Blocking prompts — surface even while focused if they're for another session.
-const ATTENTION_KINDS = new Set<NativeNotificationKind>(['approval', 'input'])
+// Approval buttons and input-needed prompts carry an action the user is waiting
+// to provide. Input requests notify even when their chat is active: the CLI does
+// the same, and an OS banner is useful even while Hermes Desktop has focus.
+const ATTENTION_KINDS = new Set<NativeNotificationKind>(['approval'])
 
 export interface NativeNotificationPrefs {
   enabled: boolean
@@ -146,7 +148,13 @@ function shouldFire(kind: NativeNotificationKind, sessionId?: null | string, glo
     return isBackgrounded()
   }
 
-  // Attention kinds break through for an off-screen session even while focused.
+  // Blocking input requests match the CLI: the app can be focused and the
+  // prompt visible inline, but the user still asked for an OS notification.
+  if (kind === 'input') {
+    return true
+  }
+
+  // Approval actions break through for an off-screen session even while focused.
   if (ATTENTION_KINDS.has(kind)) {
     return isBackgrounded() || (Boolean(sessionId) && sessionId !== $activeSessionId.get())
   }

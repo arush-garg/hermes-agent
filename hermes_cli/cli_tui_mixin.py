@@ -668,7 +668,7 @@ class CLITuiMixin:
         elif state.get("stage") == "reasoning":
             from hermes_cli.cli_model_switch_mixin import _picker_reasoning_rows
             result = state.get("switch_result")
-            picked = getattr(result, "new_model", "") or "model"
+            picked = state.get("selected_model") or getattr(result, "new_model", "") or "model"
             title = f"⚙ Model Picker — Reasoning effort for {picked}"
             rc = self.reasoning_config
             current = ("none" if isinstance(rc, dict) and rc.get("enabled") is False

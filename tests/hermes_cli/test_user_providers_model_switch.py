@@ -669,7 +669,7 @@ def test_cli_picker_provider_select_reads_the_disk_cached_catalog(monkeypatch):
 
     seen = []
     monkeypatch.setattr("hermes_cli.models.cached_provider_model_ids",
-                        lambda slug, *_a, **_k: seen.append(slug) or ["gpt-5.4"])
+                        lambda slug, **kwargs: seen.append((slug, kwargs)) or ["gpt-5.4"])
     monkeypatch.setattr("hermes_cli.models.provider_model_ids",
                         lambda *_a, **_k: pytest.fail("provider select must not run the live probe inline"))
     self_ = SimpleNamespace(
@@ -680,6 +680,6 @@ def test_cli_picker_provider_select_reads_the_disk_cached_catalog(monkeypatch):
     )
     cli_mod.HermesCLI._handle_model_picker_selection.__get__(self_, SimpleNamespace)(persist_global=True)
 
-    assert seen == ["azure-foundry"]
+    assert seen == [("azure-foundry", {"non_blocking": True})]
     assert self_._model_picker_state["stage"] == "model"
     assert self_._model_picker_state["model_list"] == ["gpt-5.4"]

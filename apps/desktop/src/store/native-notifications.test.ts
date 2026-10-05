@@ -119,11 +119,20 @@ describe('dispatchNativeNotification focus gating', () => {
     expect(notify).toHaveBeenCalledTimes(1)
   })
 
-  it('suppresses an attention notification for the active session when focused', () => {
+  it('suppresses an approval notification for the active session when focused', () => {
     setWindowState({ focused: true, hidden: false })
     setActiveSessionId('on-screen')
     dispatchNativeNotification({ kind: 'approval', sessionId: 'on-screen', title: 'approve' })
     expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('fires an input-needed notification for the active session even when focused', () => {
+    setWindowState({ focused: true, hidden: false })
+    setActiveSessionId('on-screen')
+    dispatchNativeNotification({ kind: 'input', sessionId: 'on-screen', title: 'Input needed' })
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'input', title: expect.stringContaining('Input needed') })
+    )
   })
 
   it('fires a global completion notification while away with no active session (pet gen)', () => {
