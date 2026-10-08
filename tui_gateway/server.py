@@ -86,6 +86,7 @@ with contextlib.suppress(Exception):
     prefetch_update_check()
 
 from tui_gateway.render import make_stream_renderer, render_diff, render_message  # noqa: F401
+from hermes_cli.callbacks import _send_os_notification
 
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
@@ -1645,10 +1646,14 @@ def _clarify_timeout_seconds() -> float | None:
 
 def _clarify_block(sid: str, q, c, multi_select=False, questions=None) -> str:
     """Bridge the clarify tool callback onto a ``clarify`` server request. Single question: the response is
-    ``{"answer"}`` ("" = skip). Batch: one request with only the wire fields (tool-side entries carry
+    ``{\"answer\"}`` (\"\" = skip). Batch: one request with only the wire fields (tool-side entries carry
     result-assembly keys too); answers lock one at a time through ``clarify.lock`` and the tool gets
-    ``{"answers", "timed_out"?}`` as JSON — a response with no ``answers`` is a cancel-all."""
+    ``{\"answers\", \"timed_out\"?}`` as JSON — a response with no ``answers`` is a cancel-all."""
     from tui_gateway import server_requests
+    
+    # Send desktop notification for clarify requests (match CLI behavior)
+    _send_os_notification("Hermes needs your input ❓", q if not questions else questions[0]["question"])
+    
     if questions:
         wire = [{"qid": e["qid"], "question": e["question"], "choices": e["choices"], "multi_select": bool(e["multi_select"])}
                 for e in questions]

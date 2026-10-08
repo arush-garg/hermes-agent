@@ -28,8 +28,28 @@ def test_normal_interrupt_keeps_user_provenance():
     assert conversation_loop._interrupt_exit_reason(_InterruptAgent()) == "interrupted_by_user"
 
 
+def test_unrelated_session_marker_is_not_rendered_or_cleared(monkeypatch):
+    marker = {
+        "session_id": "discord-session",
+        "timestamp": 1_000.0,
+        "reason": "failed:auth",
+        "last_action": "private discord result",
+    }
+    cleared = []
+    agent = _Agent(session_id="terminal-session")
+    monkeypatch.setattr(conversation_loop.time, "time", lambda: 1_001.0)
+    monkeypatch.setattr(checkpoint_manager, "list_interrupted_markers", lambda: [marker])
+    monkeypatch.setattr(checkpoint_manager, "clear_interrupted_marker", cleared.append)
+
+    conversation_loop._surface_recent_interruption_warnings(agent)
+
+    assert agent.lines == []
+    assert cleared == []
+
+
 class _Agent:
-    def __init__(self):
+    def __init__(self, session_id="session-new"):
+        self.session_id = session_id
         self.lines = []
 
     def _vprint(self, text, *, force=False):

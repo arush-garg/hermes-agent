@@ -87,6 +87,9 @@ def _surface_recent_interruption_warnings(agent) -> None:
         from tools.checkpoint_manager import clear_interrupted_marker, list_interrupted_markers
         now = time.time()
         recent = [m for m in list_interrupted_markers() if now - m.get("timestamp", 0) < 86400]
+        # Markers are global to the Hermes home. Never render another
+        # conversation's failure (including one on the same transport).
+        recent = [m for m in recent if m.get("session_id") == getattr(agent, "session_id", None)]
         if not recent:
             return
         agent._vprint(
@@ -1853,14 +1856,9 @@ def run_conversation(
             reason = f"failed:{result.get('failure_reason') or response_text[:300]}"
         elif result.get("compression_exhausted"):
             reason = "compression_exhausted"
-        lowered = response_text.lower()
-        if not reason and ("AuthenticationError" in response_text or " 401" in response_text
-                           or ("auth" in lowered and "error" in lowered)):
-            reason = f"auth_error:{response_text[:300]}"
-        elif not reason and ("exit 124" in response_text or ("timeout" in lowered and "124" in response_text)):
-            reason = f"timeout_124:{response_text[:300]}"
-        elif not reason and "context" in lowered and ("exhaust" in lowered or "overflow" in lowered):
-            reason = f"context_exhausted:{response_text[:300]}"
+        # Only actual turn-state failures warrant recovery markers. Searching
+        # final prose for "auth error"/"timeout" falsely flags successful
+        # answers that quote an earlier error or report a resolved problem.
         if reason:
             _record_session_interruption(agent, reason, last_action=result.get("failure_reason", ""))
         elif result.get("completed", True):
