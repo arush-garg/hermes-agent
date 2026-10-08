@@ -64,7 +64,8 @@ export const shouldInterpolateSubmission = (display: string) => hasInterpolation
 /** Auto/preflight compaction can run while the agent is otherwise idle, so it
  * does not necessarily raise the ordinary `busy` latch. Input still has to be
  * queued until the history rewrite completes. */
-export const shouldQueueDuringCompaction = (state: Pick<ReturnType<typeof getUiState>, 'compacting'>) => state.compacting
+export const shouldQueueDuringCompaction = (state: Pick<ReturnType<typeof getUiState>, 'compacting'>) =>
+  state.compacting
 
 export function useSubmission(opts: UseSubmissionOptions) {
   const { appendMessage, composerActions, composerRefs, composerState, gw, setLastUserMsg, slashRef, submitRef, sys } =

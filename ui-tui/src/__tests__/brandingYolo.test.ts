@@ -45,15 +45,12 @@ const baseInfo = (yolo?: boolean): SessionInfo => ({
 async function renderPanel(info: SessionInfo, columns = 100, maxWidth?: number): Promise<string> {
   const streams = makeStreams(columns)
 
-  const instance = renderSync(
-    React.createElement(SessionPanel, { info, maxWidth, sid: 'test', t: DEFAULT_THEME }),
-    {
-      patchConsole: false,
-      stderr: streams.stderr as NodeJS.WriteStream,
-      stdin: streams.stdin as NodeJS.ReadStream,
-      stdout: streams.stdout as NodeJS.WriteStream
-    }
-  )
+  const instance = renderSync(React.createElement(SessionPanel, { info, maxWidth, sid: 'test', t: DEFAULT_THEME }), {
+    patchConsole: false,
+    stderr: streams.stderr as NodeJS.WriteStream,
+    stdin: streams.stdin as NodeJS.ReadStream,
+    stdout: streams.stdout as NodeJS.WriteStream
+  })
 
   try {
     await delay(20)
