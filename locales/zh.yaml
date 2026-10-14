@@ -205,6 +205,9 @@ gateway:
     header:                "👤 **配置文件：** `{profile}`"
     home:                  "📂 **主目录：** `{home}`"
 
+  id:
+    session_id:            "🆔 **会话 ID：** `{session_id}`"
+
   reasoning:
     level_default:             "medium（默认）"
     level_disabled:            "none（已禁用）"

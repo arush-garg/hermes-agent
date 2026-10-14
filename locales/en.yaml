@@ -220,6 +220,9 @@ gateway:
     header:                "👤 **Profile:** `{profile}`"
     home:                  "📂 **Home:** `{home}`"
 
+  id:
+    session_id:            "🆔 **Session ID:** `{session_id}`"
+
   reasoning:
     level_default:             "medium (default)"
     level_disabled:            "none (disabled)"

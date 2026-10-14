@@ -1099,6 +1099,7 @@ class ComputeHost:
                 text,
                 display_kind=frame.get("display_kind") or None,
                 extra_system=frame.get("extra_system") or None,
+                keep_current_model=frame.get("keep_current_model") is True,
             )
             run_thread = session.get("_run_thread")
             if run_thread is not None and hasattr(run_thread, "join"):

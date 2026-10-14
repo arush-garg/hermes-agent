@@ -209,6 +209,12 @@ def _format_live_status_output(sid: str, session: dict, arg: str) -> str:
     return str(response.get("result", {}).get("output") or "")
 
 
+def _format_live_id_output(sid: str, session: dict, arg: str) -> str:
+    """Display the current session ID."""
+    session_id = session.get("session_key") or sid
+    return f"🆔 **Session ID:** `{session_id}`"
+
+
 # name → (reply when there is no session, formatter(sid, session, arg) or a fixed reply).
 # A None no-session reply means the formatter handles a missing session itself.
 _LIVE_SLASH_OUTPUT = {
@@ -219,6 +225,7 @@ _LIVE_SLASH_OUTPUT = {
     "history": ("No conversation history yet.", _format_live_history_output),
     "prompt": (_NO_AGENT, _format_live_prompt_output),
     "status": (None, _format_live_status_output),
+    "id": (None, _format_live_id_output),
     "context": ("Conversation is empty (no messages yet).", _format_live_context_output),
     "tools": ("No tools available.", _format_live_tools_output),
     "help": (None, _format_live_help_output),

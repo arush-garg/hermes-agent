@@ -34,6 +34,25 @@ describe('createSlashHandler', () => {
     envState.dashboardTuiMode = false
   })
 
+  it('submits /keep and /k as a pinned prompt, not a slash worker command', () => {
+    const ctx = buildCtx()
+    const handler = createSlashHandler(ctx)
+    expect(handler('/keep explain this  exactly')).toBe(true)
+    expect(ctx.transcript.send).toHaveBeenCalledWith('explain this  exactly', true, '/keep explain this  exactly', {
+      keepCurrentModel: true
+    })
+    expect(handler('/k next')).toBe(true)
+    expect(ctx.transcript.send).toHaveBeenCalledWith('next', true, '/k next', { keepCurrentModel: true })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('shows usage for bare /keep without sending a prompt', () => {
+    const ctx = buildCtx()
+    expect(createSlashHandler(ctx)('/keep')).toBe(true)
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('Usage: /keep <prompt>')
+    expect(ctx.transcript.send).not.toHaveBeenCalled()
+  })
+
   it('opens the unified sessions overlay for /resume', () => {
     const ctx = buildCtx()
 

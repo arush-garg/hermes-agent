@@ -228,6 +228,12 @@ gateway:
     header:                "👤 **الملف الشخصي:** `{profile}`"
     home:                  "📂 **المجلد الرئيسي:** `{home}`"
 
+  id:
+    session_id:            "🆔 **Session ID:** `{session_id}`"
+
+  id:
+    session_id:            "🆔 **Session ID:** "
+
   reasoning:
     level_default:             "medium (افتراضي)"
     level_disabled:            "none (مُعطّل)"

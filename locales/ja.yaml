@@ -205,6 +205,12 @@ gateway:
     header:                "👤 **プロファイル:** `{profile}`"
     home:                  "📂 **ホーム:** `{home}`"
 
+  id:
+    session_id:            "🆔 **Session ID:** `{session_id}`"
+
+  id:
+    session_id:            "🆔 **Session ID:** "
+
   reasoning:
     level_default:             "medium (デフォルト)"
     level_disabled:            "none (無効)"

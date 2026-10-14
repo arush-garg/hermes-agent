@@ -42,6 +42,17 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
 
     const runCtx: SlashRunCtx = { ...ctx, flight, guarded, guardedErr, sid, stale, ui }
 
+    // /keep is a prompt, not a slash worker command: forward the one-turn pin
+    // with the actual submit so the gateway can apply it to this turn only.
+    if (parsed.name === 'keep' || parsed.name === 'k') {
+      if (!parsed.arg.trim()) {
+        sys('Usage: /keep <prompt>')
+      } else {
+        send(parsed.arg, true, cmd, { keepCurrentModel: true })
+      }
+      return true
+    }
+
     const found = findSlashCommand(parsed.name)
 
     if (found) {

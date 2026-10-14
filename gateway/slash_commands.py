@@ -301,6 +301,18 @@ class GatewaySlashCommandsMixin(
         from gateway.run import _gateway_config_home, _platform_config_key
         return _gateway_config_home() / "config.yaml", _platform_config_key(event.source.platform)
 
+    async def _handle_id_command(self, event: MessageEvent) -> str:
+        """Handle /id — show the current session ID (usable for transcript pulls mid-session)."""
+        source = getattr(event, "source", None)
+        session_id = ""
+        if source and hasattr(source, "session_id"):
+            session_id = getattr(source, "session_id", "") or ""
+        if not session_id and hasattr(self, "session_store") and self.session_store:
+            session_key = getattr(source, "session_key", None) if source else None
+            if session_key:
+                session_id = self.session_store.get_session_id(session_key)
+        return t("gateway.id.session_id", session_id=session_id or "unknown")
+
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show the profile serving this source and its home.  On a multiplexed
         gateway the process-level profile is the multiplexer's own ("default" in every chat), so

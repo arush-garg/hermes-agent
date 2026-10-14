@@ -1041,7 +1041,8 @@ def _run_prompt_submit(
     display_metadata: dict | None = None, image_paths: list[str] | None = None,
     queued_prompt_generation: int | None = None,
     terminal_callback: Callable[[dict[str, Any]], None] | None = None,
-    turn_author: dict | None = None, extra_system: str | None = None) -> bool:
+    turn_author: dict | None = None, extra_system: str | None = None,
+    keep_current_model: bool = False) -> bool:
     # Every dispatch binds the session's own row (session_key, real source) before the turn writes:
     # the synthesized turns that enter here directly (crash auto-continue, queued-prompt drain,
     # wake-ups) bypass prompt.submit's persist, and a row-less turn is otherwise materialized by
@@ -1105,8 +1106,12 @@ def _run_prompt_submit(
                         f"{prior_ephemeral_system_prompt}\n\n{extra_system}"
                         if prior_ephemeral_system_prompt else extra_system)
                     ephemeral_system_prompt_overridden = True
+            if keep_current_model:
+                st.agent._keep_on_fallback_this_turn = True
             prepared = _prepare_turn_input(sid, session, st, text, images)
             if prepared is None:
+                if keep_current_model:
+                    st.agent._keep_on_fallback_this_turn = False
                 if st.terminal_callback is not None and not st.receipt_attempted:
                     st.receipt_attempted = True
                     st.terminal_callback({
@@ -1130,6 +1135,9 @@ def _run_prompt_submit(
         except Exception as e:
             _recover_turn_exception(sid, session, st, e)
         finally:
+            if keep_current_model:
+                # A preflight error may occur before restore_primary_runtime consumes the pin.
+                st.agent._keep_on_fallback_this_turn = False
             _finish_turn(sid, session, st)
             if ephemeral_system_prompt_overridden:
                 with session["history_lock"]:

@@ -205,6 +205,12 @@ gateway:
     header:                "👤 **設定檔：** `{profile}`"
     home:                  "📂 **主目錄：** `{home}`"
 
+  id:
+    session_id:            "🆔 **Session ID:** `{session_id}`"
+
+  id:
+    session_id:            "🆔 **Session ID:** "
+
   reasoning:
     level_default:             "medium（預設）"
     level_disabled:            "none（已停用）"

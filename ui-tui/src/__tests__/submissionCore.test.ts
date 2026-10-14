@@ -50,6 +50,21 @@ describe('submissionCore.submitPrompt — synchronous busy (queue-race fix)', ()
     patchUiState({ sid: 'sess-1' })
   })
 
+  it('attaches the one-turn pin only to a /keep submission', async () => {
+    const { gw, resolveDrop } = makeDeferredGateway()
+    submitPrompt('pinned prompt', makeDeps(gw), true, '/keep pinned prompt', { keepCurrentModel: true })
+    resolveDrop()
+    await vi.waitFor(() => {
+      expect(gw.request).toHaveBeenCalledWith('prompt.submit', {
+        session_id: 'sess-1', text: 'pinned prompt', keep_current_model: true
+      })
+    })
+    submitPrompt('ordinary prompt', makeDeps(gw), true, undefined, { skipDetectDrop: true })
+    expect(gw.request).toHaveBeenCalledWith('prompt.submit', {
+      session_id: 'sess-1', text: 'ordinary prompt'
+    })
+  })
+
   it('flips busy=true SYNCHRONOUSLY, before input.detect_drop resolves', () => {
     const { gw, resolveDrop } = makeDeferredGateway()
 

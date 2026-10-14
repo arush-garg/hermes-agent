@@ -1669,10 +1669,16 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     # listing lacks is soft-accepted) whether the slug arrived as ``custom:<key>`` or the bare key
     # the picker rows carry — otherwise the bare spelling fell into the built-in live-listing
     # branch and hard-rejected the very model the user selected.
+    # Metadata-only config entries for OAuth providers are not custom endpoints. Their
+    # catalog validation needs the provider-specific auth shape, not a generic /models probe.
     validate_as = st.target_provider
     if not validate_as.lower().startswith("custom"):
         pdef = resolve_provider_full(validate_as, st.user_providers, st.custom_providers)
-        if pdef is not None and pdef.source == "user-config":
+        entry = (st.user_providers or {}).get(validate_as, {})
+        has_custom_endpoint = isinstance(entry, dict) and any(
+            entry.get(key) for key in ("api", "url", "base_url"))
+        oauth_metadata = validate_as.lower() in {"openai-codex", "xai-oauth"} and not has_custom_endpoint
+        if pdef is not None and pdef.source == "user-config" and not oauth_metadata:
             validate_as = f"custom:{validate_as}"
     try:
         validation = validate_requested_model(

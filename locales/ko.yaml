@@ -205,6 +205,12 @@ gateway:
     header:                "👤 **프로필:** `{profile}`"
     home:                  "📂 **홈:** `{home}`"
 
+  id:
+    session_id:            "🆔 **Session ID:** `{session_id}`"
+
+  id:
+    session_id:            "🆔 **Session ID:** "
+
   reasoning:
     level_default:             "medium (기본값)"
     level_disabled:            "none (비활성화됨)"

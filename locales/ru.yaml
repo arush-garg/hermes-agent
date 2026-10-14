@@ -205,6 +205,12 @@ gateway:
     header:                "👤 **Профиль:** `{profile}`"
     home:                  "📂 **Домашний каталог:** `{home}`"
 
+  id:
+    session_id:            "🆔 **Session ID:** `{session_id}`"
+
+  id:
+    session_id:            "🆔 **Session ID:** "
+
   reasoning:
     level_default:             "medium (по умолчанию)"
     level_disabled:            "none (отключено)"

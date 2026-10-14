@@ -205,6 +205,12 @@ gateway:
     header:                "👤 **Profil:** `{profile}`"
     home:                  "📂 **Kezdőkönyvtár:** `{home}`"
 
+  id:
+    session_id:            "🆔 **Session ID:** `{session_id}`"
+
+  id:
+    session_id:            "🆔 **Session ID:** "
+
   reasoning:
     level_default:             "medium (alapértelmezett)"
     level_disabled:            "none (kikapcsolva)"

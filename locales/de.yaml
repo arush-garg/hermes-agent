@@ -205,6 +205,12 @@ gateway:
     header:                "👤 **Profil:** `{profile}`"
     home:                  "📂 **Stammverzeichnis:** `{home}`"
 
+  id:
+    session_id:            "🆔 **Session ID:** `{session_id}`"
+
+  id:
+    session_id:            "🆔 **Session ID:** "
+
   reasoning:
     level_default:             "medium (Standard)"
     level_disabled:            "none (deaktiviert)"

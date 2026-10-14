@@ -496,7 +496,7 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
 
 def _run_after_agent_ready(
     rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None,
-    extra_system=None
+    extra_system=None, keep_current_model=False
 ):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
@@ -528,6 +528,7 @@ def _run_after_agent_ready(
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
         terminal_callback=hosted_terminal_callback, turn_author=turn_author,
+        keep_current_model=keep_current_model,
         **({"extra_system": extra_system} if extra_system else {}))
 
 
@@ -680,6 +681,7 @@ def _(rid, params: dict) -> dict:
                          turn_author.get("id"))
         isolated_response = _submit_prompt_to_compute_host(
             rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
+            keep_current_model=bool(params.get("keep_current_model")),
             **({"extra_system": extra_system} if extra_system else {}))
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
@@ -707,7 +709,8 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author, extra_system),
+            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author,
+            extra_system, bool(params.get("keep_current_model"))),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread
@@ -926,19 +929,59 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
 
+    # Register the background agent in the live subagent registry so the TUI
+    # can show it in the Live Agents panel (same registry as delegate_task).
+    # Background agents don't have _subagent_id from delegate_task, so we create one.
+
+    import time
+    subagent_id = f"bg_{task_id}"
+
     def body():
         from run_agent import AIAgent
         kwargs = _background_agent_kwargs(session["agent"], task_id)
         with _side_agent_session_db(kwargs.get("session_db")) as session_db:
             agent = AIAgent(**{**kwargs, "session_db": session_db})
+            # Mark the agent and register it in the live subagent registry.
+            agent._subagent_id = subagent_id
+            agent._parent_subagent_id = None
+            agent._delegate_depth = 1
+            from tools.delegate_tool_registry import _active_subagents_lock
+            from tools.delegate_tool_registry import _active_subagents
+            from tools.delegate_tool_registry import _recent_subagents
+            with _active_subagents_lock:
+                _active_subagents[subagent_id] = {
+                    "subagent_id": subagent_id,
+                    "parent_id": None,
+                    "depth": 0,
+                    "goal": text[:100],
+                    "delegation_id": None,
+                    "model": getattr(agent, "model", None),
+                    "started_at": time.time(),
+                    "status": "running",
+                    "tool_count": 0,
+                    "agent": agent,
+                    "owner_agent_session_id": session.get("agent_session_id"),
+                    "accepting_steer": False,
+                    "steer_status": None,
+                }
             try:
                 result = agent.run_conversation(user_message=text, task_id=task_id)
             finally:
                 # AIAgent.close() is the owner boundary (memory shutdown, tool
                 # subprocesses, httpx clients); an unclosed side agent leaks
-                # all of them for the gateway's life (#50197).
+                # all of them for the gateway's lifetime (#50197).
                 with contextlib.suppress(Exception):
                     agent.close()
+                # Unregister from the live subagent registry after completion.
+                with _active_subagents_lock:
+                    _active_subagents.pop(subagent_id, None)
+                    _recent_subagents[subagent_id] = {
+                        "goal": text[:100],
+                        "delegation_id": None,
+                        "owner_agent_session_id": session.get("agent_session_id"),
+                    }
+                    while len(_recent_subagents) > 200:
+                        _recent_subagents.pop(next(iter(_recent_subagents)), None)
         return _final_response_text(result)
 
     return _spawn_side_agent(rid, session, task_id, parent, "background.complete", body)

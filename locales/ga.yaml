@@ -209,6 +209,12 @@ gateway:
     header:                "👤 **Próifíl:** `{profile}`"
     home:                  "📂 **Baile:** `{home}`"
 
+  id:
+    session_id:            "🆔 **Session ID:** `{session_id}`"
+
+  id:
+    session_id:            "🆔 **Session ID:** "
+
   reasoning:
     level_default:             "medium (réamhshocraithe)"
     level_disabled:            "none (díchumasaithe)"
