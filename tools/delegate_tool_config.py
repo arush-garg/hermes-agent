@@ -618,7 +618,8 @@ def _resolve_child_runtime(
             parent_agent, delegation_cfg if routing_cfg is None else routing_cfg,
             # A pin that restates the parent's route is not a route change: the parent's chain
             # stays valid, so keep inheriting it.
-            pinned=not _delegation_uses_parent_route(parent_agent, override_provider, override_base_url)),
+            pinned=((effective_model != getattr(parent_agent, "model", None) and not override_provider)
+                    or not _delegation_uses_parent_route(parent_agent, override_provider, override_base_url))),
         "openrouter_min_coding_score": getattr(parent_agent, "openrouter_min_coding_score", None),
         # Routing filters reset to their defaults under a pinned provider (see _ROUTING_FILTER_DEFAULTS).
         **{a: d if override_provider else getattr(parent_agent, a, d) for a, d in _ROUTING_FILTER_DEFAULTS},

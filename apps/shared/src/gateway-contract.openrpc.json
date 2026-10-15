@@ -2455,24 +2455,6 @@
       }
     },
     {
-      "name": "profiles.remember_onboarding",
-      "summary": "Write the onboarding facts into the default profile's user memory and confirm they landed.",
-      "params": [
-        {
-          "name": "params",
-          "schema": {
-            "$ref": "#/components/schemas/ProfilesRememberOnboardingParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/ProfilesRememberOnboardingResult"
-        }
-      }
-    },
-    {
       "name": "profiles.set_asset",
       "summary": "Store or clear a profile asset (avatar) atomically.",
       "params": [
@@ -18657,119 +18639,6 @@
         "title": "OkResult",
         "type": "object"
       },
-      "OnboardingAnswers": {
-        "additionalProperties": true,
-        "description": "``tui_gateway/onboarding_personalization.py`` \u2014 the facts agreed during onboarding.",
-        "properties": {
-          "name": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Name"
-          },
-          "context": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Context"
-          },
-          "theme": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Theme"
-          },
-          "accent": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Accent"
-          },
-          "layout": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Layout"
-          },
-          "focus": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Focus"
-          },
-          "connectors": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Connectors"
-          },
-          "plugins": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Plugins"
-          }
-        },
-        "title": "OnboardingAnswers",
-        "type": "object"
-      },
       "OnboardingCatalogPlugin": {
         "additionalProperties": false,
         "description": "A catalog plugin curated for the onboarding card (``onboarding: true``) that this OS runs.\n``app_state`` is the pinned ``plugin.json`` declaration judged on this host; ``sentence`` names what\nis missing (empty when present or unknown).",
@@ -23563,58 +23432,6 @@
           }
         },
         "title": "ProfilesListResult",
-        "type": "object"
-      },
-      "ProfilesRememberOnboardingParams": {
-        "additionalProperties": false,
-        "properties": {
-          "profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Profile"
-          },
-          "answers": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/OnboardingAnswers"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null
-          }
-        },
-        "title": "ProfilesRememberOnboardingParams",
-        "type": "object"
-      },
-      "ProfilesRememberOnboardingResult": {
-        "additionalProperties": false,
-        "properties": {
-          "saved": {
-            "default": true,
-            "title": "Saved",
-            "type": "boolean"
-          },
-          "profile": {
-            "default": "default",
-            "title": "Profile",
-            "type": "string"
-          },
-          "target": {
-            "default": "user",
-            "title": "Target",
-            "type": "string"
-          }
-        },
-        "title": "ProfilesRememberOnboardingResult",
         "type": "object"
       },
       "ProfilesSetAssetParams": {

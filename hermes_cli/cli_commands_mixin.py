@@ -1114,7 +1114,7 @@ class CLICommandsMixin:
         reply = execute_command("profile", CommandContext(surface="cli"))
         _say_block(f"  Profile: {reply.data['profile']}", f"  Home:    {reply.data['home']}")
 
-    def _handle_id_command(self, cmd_original: str) -> None:
+    def _handle_id_command(self) -> None:
         """Display the current session ID (usable for transcript pulls mid-session)."""
         _cp(f"  Session ID: {self.session_id}")
 

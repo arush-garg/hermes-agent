@@ -1911,27 +1911,6 @@ export interface ProfilesGetAssetResult {
   size?: number | null
   data?: string | null
 }
-export interface ProfilesRememberOnboardingParams {
-  profile?: string | null
-  answers?: OnboardingAnswers | null
-}
-/** ``tui_gateway/onboarding_personalization.py`` — the facts agreed during onboarding. */
-export interface OnboardingAnswers {
-  name?: string | null
-  context?: string | null
-  theme?: string | null
-  accent?: string | null
-  layout?: string | null
-  focus?: string[] | null
-  connectors?: string[] | null
-  plugins?: string[] | null
-  [key: string]: unknown
-}
-export interface ProfilesRememberOnboardingResult {
-  saved?: boolean
-  profile?: string
-  target?: string
-}
 /** Client→server method params / server→client request params. Unknown keys are rejected. */
 export type Params = Record<string, never>
 /** ``created`` is false when an existing setup profile was found (and returned untouched). */
@@ -4944,8 +4923,6 @@ export interface RpcMethods {
   'profiles.get_asset': { params: ProfilesGetAssetParams; result: ProfilesGetAssetResult }
   /** Roster of profiles with previews so a client paints without N follow-up calls. */
   'profiles.list': { params: ProfilesListParams; result: ProfilesListResult }
-  /** Write the onboarding facts into the default profile's user memory and confirm they landed. */
-  'profiles.remember_onboarding': { params: ProfilesRememberOnboardingParams; result: ProfilesRememberOnboardingResult }
   /** Store or clear a profile asset (avatar) atomically. */
   'profiles.set_asset': { params: ProfilesSetAssetParams; result: ProfilesSetAssetResult }
   /** Structured project facts for a cwd so UIs don't re-sniff the workspace. */
@@ -5285,7 +5262,6 @@ export const RPC_METHODS = [
   'profiles.describe',
   'profiles.get_asset',
   'profiles.list',
-  'profiles.remember_onboarding',
   'profiles.set_asset',
   'project.facts',
   'projects.add_folder',

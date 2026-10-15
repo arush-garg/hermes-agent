@@ -89,7 +89,6 @@ CONFIGURABLE_TOOLSETS = [
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("monitor",         "⏱️ Periodic Monitor",          "add_monitor, delete_monitors"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
-    ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
@@ -363,10 +362,6 @@ TOOL_CATEGORIES = {
                  env_vars=[_key("HASS_TOKEN", "Home Assistant Long-Lived Access Token"),
                            _key("HASS_URL", "Home Assistant URL", default="http://homeassistant.local:8123")]),
         ],
-    },
-    "spotify": {
-        "name": "Spotify", "icon": "🎵",
-        "providers": [_row("Spotify Web API", tag="PKCE OAuth — opens the setup wizard", post_setup="spotify")],
     },
     "computer_use": {
         "name": "Computer Use (macOS/Windows/Linux)", "icon": "🖱️",

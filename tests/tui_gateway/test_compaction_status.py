@@ -132,3 +132,42 @@ def test_is_compaction_progress_status_covers_routine_in_progress_lines():
         tokens=85_000, threshold=72_000, reason="ineffective"
     )
     assert is_compaction_progress_status(overflow) is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Replayed at the start of every turn after a 2nd+ compaction (turn_context replay_compression_warning).
+        "⚠️  Session compressed 3 times — accuracy may degrade. Consider /new to start fresh.",
+        # Feasibility notice: aux compression model context below threshold.
+        "⚠️ Compression model auto/fast context is 128,000 tokens, below the main model's compression threshold.",
+    ],
+)
+def test_diagnostic_mentioning_compression_is_not_retagged(server, monkeypatch, text):
+    from gateway.warning_notifications import DiagnosticText
+
+    events = _capture(server, monkeypatch)
+    server._status_update("sid", "lifecycle", DiagnosticText(text))
+
+    assert events == [{"kind": "lifecycle", "text": text}]
+
+
+def test_status_callback_preserves_diagnostic_classification(server, monkeypatch):
+    """The agent status_callback lambda must not str()-strip DiagnosticText before _status_update."""
+    from gateway.warning_notifications import DiagnosticText
+
+    seen: list = []
+    monkeypatch.setattr(server, "_status_update", lambda sid, kind, text=None: seen.append(text))
+    cb = lambda kind, text=None: server._status_update(  # mirrors the server's wiring
+        "sid", str(kind), None if text is None else (text if isinstance(text, str) else str(text))
+    )
+    cb("lifecycle", DiagnosticText("⚠️  Session compressed 2 times"))
+    assert isinstance(seen[0], DiagnosticText)
+
+
+def test_continuing_after_compaction_is_not_retagged(server, monkeypatch):
+    """Iteration-budget auto-continue status follows the done edge; it must not re-latch the spinner."""
+    events = _capture(server, monkeypatch)
+    server._status_update("sid", "lifecycle", "Continuing after compaction (1/3)")
+
+    assert events == [{"kind": "lifecycle", "text": "Continuing after compaction (1/3)"}]

@@ -541,11 +541,6 @@ class AIAgent(
         value = self._hook_jsonable(state)
         return value if isinstance(value, dict) else None
 
-    def _try_turn_restart(self, api_error: Exception, messages: list) -> bool:
-        """Forwarder — see ``agent.agent_runtime_helpers.try_turn_restart``."""
-        from agent.agent_runtime_helpers import try_turn_restart
-        return try_turn_restart(self, api_error, messages)
-
     @staticmethod
     def _effective_lmstudio_context_length(config_context_length: Optional[int], runtime_context_length: Any) -> Optional[int]:
         """Return a safe context budget from explicit intent and verified runtime."""

@@ -446,12 +446,6 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"found": False})
 
 
-@_profile_handler("profiles.remember_onboarding", 5067)
-def _(rid, params: dict) -> dict:
-    from tui_gateway.onboarding_personalization import remember_onboarding
-    return _ok(rid, remember_onboarding(params.get("answers")))
-
-
 def _mirror_secret(path, launch_home, name: str, wanted) -> bool:
     """Copy the launch ``name`` file into the profile (0600) when it exists and ``wanted(src, dst)``."""
     src, dst = launch_home / name, path / name

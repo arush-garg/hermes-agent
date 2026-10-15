@@ -151,7 +151,10 @@ def is_compaction_progress_status(text: str | None) -> bool:
         return False
     lowered = body.lower()
     # The failure-class overflow warning mentions compression but is a blocked notice, not progress.
-    if "compaction complete" in lowered or "compression is currently blocked" in lowered:
+    # "Continuing after compaction (n/m)" (iteration-budget auto-continue) is emitted AFTER the done edge;
+    # matching it re-latched the TUI "compacting" spinner for the whole continuation.
+    if ("compaction complete" in lowered or "compression is currently blocked" in lowered
+            or lowered.startswith("continuing after compaction")):
         return False
     return "compact" in lowered or "compress" in lowered or "context reduced to" in lowered
 

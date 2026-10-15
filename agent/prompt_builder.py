@@ -22,9 +22,9 @@ from hermes_constants import (
 from agent.model_metadata import CHARS_PER_TOKEN
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
-    EXCLUDED_SKILL_DIRS, ORG_ACTIVE_MARKER, ORG_MIRROR_DIR_NAME, ORG_PROVENANCE_FILE, SKILL_SUPPORT_DIRS,
+    EXCLUDED_SKILL_DIRS, SKILL_SUPPORT_DIRS,
     extract_skill_conditions, extract_skill_description, get_all_skills_dirs, get_disabled_skill_names,
-    iter_skill_index_files, parse_frontmatter, read_active_org_id, skill_matches_apps, skill_matches_environment,
+    iter_skill_index_files, parse_frontmatter, skill_matches_apps, skill_matches_environment,
     skill_matches_platform, skill_matches_platform_list,
 )
 from tools.threat_patterns import scan_for_threats as _scan_for_threats
@@ -1147,8 +1147,8 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 32
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-# v2 added org provenance fields (org_id/org_author); older snapshots are rebuilt.
-_SKILLS_SNAPSHOT_VERSION = 3
+# v4 dropped the org-mirror provenance fields (org_id/org_author); older snapshots are rebuilt.
+_SKILLS_SNAPSHOT_VERSION = 4
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1167,24 +1167,12 @@ def clear_skills_system_prompt_cache(*, clear_snapshot: bool = False) -> None:
 
 
 def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
-    """File-signature manifest of every SKILL.md and DESCRIPTION.md; only the ACTIVE org mirror participates, and
-    the ``.active_org`` marker is included so switching/leaving an org invalidates the snapshot by itself."""
+    """File-signature manifest of every SKILL.md and DESCRIPTION.md."""
     manifest: dict[str, list[int]] = {}
     skills_dir_str = str(skills_dir)
     prefix_len = len(os.path.join(skills_dir_str, ""))
-    active_org = read_active_org_id(skills_dir)
-    org_root = os.path.join(skills_dir_str, ORG_MIRROR_DIR_NAME)
-    try:
-        st = os.stat(os.path.join(org_root, ORG_ACTIVE_MARKER))
-        manifest[ORG_MIRROR_DIR_NAME + "/" + ORG_ACTIVE_MARKER] = list(file_signature(st))
-    except OSError:
-        pass
     for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
         has_skill_md = "SKILL.md" in files
-        if root == skills_dir_str and ORG_MIRROR_DIR_NAME in dirs and active_org is None:
-            dirs.remove(ORG_MIRROR_DIR_NAME)
-        elif root == org_root:
-            dirs[:] = [d for d in dirs if d == active_org]
         dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
         for filename in ("SKILL.md", "DESCRIPTION.md"):
             path = os.path.join(root, filename)
@@ -1218,10 +1206,6 @@ def _requires_apps_list(frontmatter: dict) -> list[str]:
 def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict, description: str) -> dict:
     """Serialisable metadata dict for one skill."""
     parts = skill_file.relative_to(skills_dir).parts
-    # Org mirror: category/name derive from the path WITHIN `_org/<org_id>/`; org_id drives labeling + collisions.
-    org_id: str | None = None
-    if len(parts) >= 3 and parts[0] == ORG_MIRROR_DIR_NAME:
-        org_id, parts = parts[1], parts[2:]
     skill_name = skill_file.parent.name  # == parts[-2] whenever a parent component exists
     category = "general" if len(parts) < 2 else "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
     platforms = frontmatter.get("platforms") or []
@@ -1232,21 +1216,6 @@ def _build_snapshot_entry(skill_file: Path, skills_dir: Path, frontmatter: dict,
         "conditions": extract_skill_conditions(frontmatter),
         "requires_apps": _requires_apps_list(frontmatter),
     }
-    if org_id:
-        entry["org_id"] = org_id
-        # Author from the pull-time provenance sidecar (token-verified at
-        # push by the plane's author_mismatch guard). Best-effort.
-        try:
-            import json as _json
-
-            prov_path = (
-                skills_dir / ORG_MIRROR_DIR_NAME / org_id / ORG_PROVENANCE_FILE
-            )
-            prov = _json.loads(prov_path.read_text(encoding="utf-8-sig"))
-            device = str(prov.get("author_device") or "")
-            entry["org_author"] = device or str(prov.get("author_user_id") or "")
-        except Exception:
-            entry["org_author"] = ""
     return entry
 
 
@@ -1365,20 +1334,10 @@ def _collect_extra_skills(
 
 
 def _label_visible_entries(visible_entries: list[dict], skills_by_category: dict[str, list[tuple[str, str]]]) -> None:
-    """Org labeling + FAIL-LOUD collisions: a personal/org name clash flags BOTH
-    entries (neither silently wins) and skill_view refuses the bare name."""
-    name_owners: dict[str, set[str]] = {}
+    """Index each visible entry under its category."""
     for entry in visible_entries:
-        name_owners.setdefault(_entry_name(entry), set()).add("org" if entry.get("org_id") else "personal")
-    for entry in visible_entries:
-        fm, desc, org_id = _entry_name(entry), entry.get("description", ""), entry.get("org_id")
-        if org_id:
-            author = entry.get("org_author") or ""
-            desc = f"[org-shared{': by ' + author if author else ''}] {desc}".strip()
-        category = f"org:{org_id}" if org_id else (entry.get("category") or "general")
-        if len(name_owners[fm]) > 1:
-            desc = f"[name collision — also exists {'personally' if org_id else 'in your org'}; load via category path] {desc}".strip()
-        skills_by_category.setdefault(category, []).append((fm, desc))
+        skills_by_category.setdefault(entry.get("category") or "general", []).append(
+            (_entry_name(entry), entry.get("description", "")))
 
 
 def _render_skills_index(
@@ -1798,23 +1757,3 @@ def build_context_files_prompt(
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import List  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'org_id_of_path': ('agent.skill_utils', 'org_id_of_path'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

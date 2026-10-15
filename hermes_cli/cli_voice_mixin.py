@@ -11,6 +11,7 @@ import json
 import os
 import queue
 import re
+import sys
 import tempfile
 import threading
 import time
@@ -400,7 +401,7 @@ class CLIVoiceMixin:
         Ctrl+C); playback phase: speech cuts TTS. Either way the captured utterance is
         submitted as the next message; the stop phrase ends the voice chat in BOTH phases.
         """
-        from cli import _DIM, _RST, _cprint, logger
+        from cli import logger
         fd_active = getattr(self, "_voice_fd_active", None)
         if fd_active is None:
             fd_active = threading.Event()

@@ -418,8 +418,6 @@ TIPS = [
     'image_gen.provider routes image generation through a plugin (OpenAI Images, Codex, FAL) instead of the default.',
     'AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY point vision analysis at any OpenAI-compatible endpoint.',
     # --- Security ---
-    'security.tirith_fail_open: false makes Hermes block commands when the tirith scanner itself errors out.',
-    'TIRITH_FAIL_OPEN env var overrides the tirith_fail_open config — a quick toggle without editing config.yaml.',
     # --- Sessions & Source Tags ---
     '--source tool chats are excluded from hermes sessions list by default — set --source explicitly to see them.',
     'Session IDs are timestamp-prefixed (20250305_091523_abcd) so sorting works naturally in ls and jq.',

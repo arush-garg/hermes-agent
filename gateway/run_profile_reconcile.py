@@ -254,8 +254,8 @@ class GatewayProfileReconcileMixin:
                 from hermes_state_registry import close_all_under
                 close_all_under(home)
             with _log_suppressed(logging.DEBUG, "memory-store release failed", exc_info=True):
-                from plugins.memory.holographic.store import MemoryStore
-                MemoryStore.release_all_under(home)
+                from plugins.memory import import_provider_module  # catalog plugin since it left core
+                import_provider_module("holographic", "store").MemoryStore.release_all_under(home)
             logger.info("[MULTIPLEX] Profile '%s' unserved — %d adapter(s) stopped and unrouted", name, len(adapters))
 
 

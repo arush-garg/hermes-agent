@@ -6,7 +6,7 @@
   only I/O primitives (cross-process flock, atomic 0o600 writes).
 - ``resolve_provider()`` picks the active provider via the documented priority chain.
 - ``OAUTH_PROVIDER_FLOWS`` maps each OAuth provider to its resolver/status builder; the flows live in
-  ``auth_nous``/``auth_codex``/``auth_xai``/``auth_qwen``/``auth_minimax``/``auth_spotify``/``auth_openrouter`` and are
+  ``auth_nous``/``auth_codex``/``auth_xai``/``auth_qwen``/``auth_minimax``/``auth_openrouter`` and are
   re-imported here so ``hermes_cli.auth.<name>`` stays the public/patchable surface."""
 
 from __future__ import annotations
@@ -80,9 +80,6 @@ from hermes_cli.auth_codex import (  # noqa: F401  re-exported
     _probe_codex_quota_restored, _read_codex_tokens, _refresh_codex_auth_tokens,
     _refresh_expired_codex_probe_token, _save_codex_tokens, clear_codex_pool_quota_cooldowns,
     refresh_codex_oauth_pure, resolve_codex_runtime_credentials)
-from hermes_cli.auth_spotify import (  # noqa: F401  re-exported
-    _refresh_spotify_oauth_state, get_spotify_auth_status, login_spotify_command,
-    resolve_spotify_runtime_credentials)
 from hermes_cli.auth_openrouter import _openrouter_pkce_login  # noqa: F401  re-exported
 from hermes_cli.auth_qwen import (  # noqa: F401  re-exported
     _qwen_access_token_is_expiring, _qwen_cli_auth_path, _read_qwen_cli_tokens,
@@ -101,8 +98,7 @@ from hermes_cli.auth_constants import (  # noqa: F401  re-exported
     STEPFUN_STEP_PLAN_CN_BASE_URL, CODEX_OAUTH_CLIENT_ID, CODEX_OAUTH_TOKEN_URL,
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, XAI_OAUTH_CLIENT_ID, XAI_OAUTH_SCOPE,
     XAI_ACCESS_TOKEN_REFRESH_SKEW_SECONDS, QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
-    DEFAULT_SPOTIFY_ACCOUNTS_BASE_URL, DEFAULT_SPOTIFY_API_BASE_URL, SPOTIFY_DOCS_URL,
-    DEFAULT_SPOTIFY_SCOPE, SERVICE_PROVIDER_NAMES, LMSTUDIO_NOAUTH_PLACEHOLDER,
+    LMSTUDIO_NOAUTH_PLACEHOLDER,
     ACTUAL_LOCAL_NOAUTH_PLACEHOLDER, CODEX_RATE_LIMITED_CODE, AuthError, _nous_err, httpx)
 
 logger = logging.getLogger(__name__)
@@ -863,14 +859,14 @@ def mark_provider_active_if_unset(provider_id: str) -> None:
 
 def is_known_auth_provider(provider_id: str) -> bool:
     normalized = (provider_id or "").strip().lower()
-    return _registry_lookup(normalized) is not None or normalized in SERVICE_PROVIDER_NAMES
+    return _registry_lookup(normalized) is not None
 
 
 def get_auth_provider_display_name(provider_id: str) -> str:
     normalized = (provider_id or "").strip().lower()
     if normalized in PROVIDER_REGISTRY:
         return PROVIDER_REGISTRY[normalized].name
-    return SERVICE_PROVIDER_NAMES.get(normalized, provider_id)
+    return provider_id
 
 
 def is_runtime_provider_routable(provider_id: str) -> bool:
@@ -2123,8 +2119,8 @@ def _get_aws_sdk_auth_status(target: str) -> Dict[str, Any]:
 
 
 def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
-    """Generic auth status dispatcher: bespoke builders (``OAUTH_PROVIDER_FLOWS`` plus Spotify /
-    Azure Foundry) first, then the registry ``auth_type`` so a whole provider class (e.g. every
+    """Generic auth status dispatcher: bespoke builders (``OAUTH_PROVIDER_FLOWS`` plus Azure
+    Foundry) first, then the registry ``auth_type`` so a whole provider class (e.g. every
     external-process ACP backend) gets a real status. Builders are looked up by NAME at call time so
     tests that patch ``hermes_cli.auth.get_*_auth_status`` still apply."""
     target = (provider_id or get_active_provider() or "").strip().lower()
@@ -2143,7 +2139,6 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
 # auth_type-keyed fallbacks below.
 _BESPOKE_STATUS_FUNCTIONS: Dict[str, str] = {
     **{pid: flow.status_fn for pid, flow in OAUTH_PROVIDER_FLOWS.items()},
-    "spotify": "get_spotify_auth_status",
     "azure-foundry": "_get_azure_foundry_auth_status"}
 _STATUS_BY_AUTH_TYPE: Dict[str, str] = {
     "external_process": "get_external_process_provider_status",
@@ -2459,7 +2454,6 @@ from urllib.parse import urlencode  # noqa: F401,E402
 _PLUGIN_COMPAT_LAZY = {
     'CODEX_OAUTH_USER_AGENT': ('hermes_cli.auth_constants', 'CODEX_OAUTH_USER_AGENT'),
     'CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS': ('hermes_cli.auth_codex', 'CODEX_QUOTA_PROBE_MIN_INTERVAL_SECONDS'),
-    'DEFAULT_SPOTIFY_REDIRECT_URI': ('hermes_cli.auth_constants', 'DEFAULT_SPOTIFY_REDIRECT_URI'),
     'DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS': ('hermes_cli.auth_constants', 'DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS'),
     'MINIMAX_OAUTH_GRANT_TYPE': ('hermes_cli.auth_constants', 'MINIMAX_OAUTH_GRANT_TYPE'),
     'NOUS_INFERENCE_INVOKE_SCOPE': ('hermes_cli.auth_constants', 'NOUS_INFERENCE_INVOKE_SCOPE'),
@@ -2468,8 +2462,6 @@ _PLUGIN_COMPAT_LAZY = {
     'QWEN_OAUTH_CLIENT_ID': ('hermes_cli.auth_constants', 'QWEN_OAUTH_CLIENT_ID'),
     'QWEN_OAUTH_TOKEN_URL': ('hermes_cli.auth_constants', 'QWEN_OAUTH_TOKEN_URL'),
     'SINGLE_USE_OAUTH_SINGLETON_FILES': ('hermes_cli.auth_oauth_grants', 'SINGLE_USE_OAUTH_SINGLETON_FILES'),
-    'SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS': ('hermes_cli.auth_constants', 'SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS'),
-    'SPOTIFY_DASHBOARD_URL': ('hermes_cli.auth_constants', 'SPOTIFY_DASHBOARD_URL'),
     'XAI_OAUTH_DEVICE_CODE_URL': ('hermes_cli.auth_constants', 'XAI_OAUTH_DEVICE_CODE_URL'),
     'XAI_OAUTH_DISCOVERY_URL': ('hermes_cli.auth_constants', 'XAI_OAUTH_DISCOVERY_URL'),
     'XAI_OAUTH_ISSUER': ('hermes_cli.auth_constants', 'XAI_OAUTH_ISSUER'),

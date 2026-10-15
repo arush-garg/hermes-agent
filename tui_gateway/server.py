@@ -1071,7 +1071,7 @@ def _pending_approval_request_payload(session_key: str) -> dict | None:
 
 
 def _emit_approval_request(sid: str, data: dict | None) -> None:
-    """Send an ``approval`` server request with the command redacted: a credential-shaped value Tirith flagged
+    """Send an ``approval`` server request with the command redacted: a credential-shaped value
     would otherwise echo verbatim to the TUI (third egress alongside chat platforms and the SSE/API stream).
     See #48456, #50767.
 
@@ -1113,9 +1113,14 @@ def _status_update(sid: str, kind: str, text: str | None = None):
     # Auto-compaction arrives as a generic "lifecycle" status; re-tag so drivers can show a
     # summarizing indicator — otherwise idle/preflight compaction looks like a hung turn.
     # See #97239.
+    # Diagnostics (DiagnosticText) ride the lifecycle rail too, and several mention compression without
+    # being progress: the replayed feasibility/auto-lowered-threshold notice at turn start and the
+    # "Session compressed N times" warning. Re-tagging those as "compacting" latched the TUI spinner on
+    # for a whole turn with no matching "compacted" edge. Only plain routine lifecycle lines are progress.
     if out_kind == "lifecycle":
         from agent.conversation_compression import is_compaction_progress_status
-        if is_compaction_progress_status(body):
+        from gateway.warning_notifications import DiagnosticText
+        if not isinstance(text, DiagnosticText) and is_compaction_progress_status(body):
             out_kind = "compacting"
     _emit("status.update", sid, {"kind": out_kind, "text": body})
 
@@ -3186,8 +3191,9 @@ def _agent_cbs(sid: str) -> dict:
             sid,
             {"text": text, **({"verbose": True} if _session_verbose(sid) else {})},
         ),
+        # Keep str subclasses (DiagnosticText) intact: _status_update reads the producer's classification.
         "status_callback": lambda kind, text=None: _status_update(
-            sid, str(kind), None if text is None else str(text)
+            sid, str(kind), None if text is None else (text if isinstance(text, str) else str(text))
         ),
         # Credits/notice spine (L1): an AgentNotice fired by the agent becomes a
         # notification.show WS event; a recovery clear becomes notification.clear.
@@ -11058,10 +11064,7 @@ def _browser_disconnect(rid) -> dict:
 # Per-profile MCP lifecycle helpers (mcp.servers.* handlers). Defined on THIS
 # namespace so the rebound handler bodies (register() below) can resolve them,
 # same as _ok/_err — a plain def in methods_tools would be unreachable.
-from .mcp_rpc_helpers import (  # noqa: E402
-    reset_profile as _mcp_reset_profile,
-    summarize_server as _mcp_summarize_server_impl,
-)
+from .mcp_rpc_helpers import summarize_server as _mcp_summarize_server_impl  # noqa: E402
 
 
 def _mcp_resolve_profile(rid, params):  # noqa: E402

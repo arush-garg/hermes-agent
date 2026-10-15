@@ -14,7 +14,7 @@ from typing import Literal
 from pydantic import Field
 
 from .base import JsonValue, Params, Result, WireEnum
-from .common import OpenModel, ProfileParams, SessionParams, SubagentStatus
+from .common import ProfileParams, SessionParams, SubagentStatus
 from .config_free_tier_control import ModelOptionProvider
 from .registry import method
 
@@ -345,36 +345,6 @@ class ProfilesGetAssetResult(Result):
 
 method("profiles.get_asset", params=ProfilesGetAssetParams, result=ProfilesGetAssetResult,
        doc="A profile asset as a data URL.")
-
-
-class OnboardingAnswers(Params):
-    """``tui_gateway/onboarding_personalization.py`` — the facts agreed during onboarding."""
-
-    name: str | None = None
-    context: str | None = None
-    theme: str | None = None
-    accent: str | None = None
-    layout: str | None = None
-    focus: list[str] | None = None
-    connectors: list[str] | None = None
-    plugins: list[str] | None = None
-    # The onboarding store may carry extra UI-only keys; the writer ignores unknown ones.
-    model_config = Params.model_config | {"extra": "allow"}
-
-
-class ProfilesRememberOnboardingParams(ProfileParams):
-    answers: OnboardingAnswers | None = None
-
-
-class ProfilesRememberOnboardingResult(Result):
-    saved: bool = True
-    profile: str = "default"
-    target: str = "user"
-
-
-method("profiles.remember_onboarding", params=ProfilesRememberOnboardingParams,
-       result=ProfilesRememberOnboardingResult,
-       doc="Write the onboarding facts into the default profile's user memory and confirm they landed.")
 
 
 # ── onboarding (methods_onboarding) ───────────────────────────────────────────────────────────

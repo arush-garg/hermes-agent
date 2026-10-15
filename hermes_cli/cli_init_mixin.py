@@ -299,7 +299,7 @@ class CLIInitMixin:
         # A signature change across turns (/model, credential rotation) rebuilds the agent.
         self._active_agent_route_signature = None
         self.agent: Optional[Any] = None  # initialized on first use
-        self._tool_callbacks_installed = self._tirith_security_checked = False
+        self._tool_callbacks_installed = False
         self._app = None  # prompt_toolkit Application (set in run())
 
         self.conversation_history: List[Dict[str, Any]] = []
@@ -331,6 +331,7 @@ class CLIInitMixin:
             from hermes_state_registry import acquire
             self._session_db = acquire()
         except Exception as e:
+            _store_exc = e
             # Without a store the transcript is NOT persisted while the chat looks healthy,
             # so surface it prominently rather than only logging.
             # #41386: a failed session store means the transcript is NOT persisted to state.db — the live
@@ -349,7 +350,7 @@ class CLIInitMixin:
                         "Searching past sessions is also disabled.\n"
                         f"  Reason: {failure.gloss}.\n"
                         f"  {failure.action}\n"
-                        f"  [dim]Details: {storage_failure_details(e)}[/dim]"
+                        f"  [dim]Details: {storage_failure_details(_store_exc)}[/dim]"
                     )
                 except Exception:
                     print(

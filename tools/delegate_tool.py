@@ -404,16 +404,18 @@ def _build_children(
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
     from tools.delegation_live_log import wrap_progress_callback
     from tools.delegation_output_schema import append_output_contract
-    overrides = {
-        "override_provider": creds["provider"], "override_base_url": creds["base_url"],
-        "override_api_key": creds["api_key"], "override_api_mode": creds["api_mode"],
-        "override_request_overrides": creds.get("request_overrides"),
-        "override_acp_command": creds.get("command"),
-        "override_acp_args": creds.get("args"),
-        "routing_cfg": routing_cfg,
-    }
     children = []
     for i, t in enumerate(task_list):
+        task_creds = creds.get("_per_task", [creds] * len(task_list))[i]
+        task_routing_cfg = routing_cfg.get("_per_task", [routing_cfg] * len(task_list))[i]
+        overrides = {
+            "override_provider": task_creds["provider"], "override_base_url": task_creds["base_url"],
+            "override_api_key": task_creds["api_key"], "override_api_mode": task_creds["api_mode"],
+            "override_request_overrides": task_creds.get("request_overrides"),
+            "override_acp_command": task_creds.get("command"),
+            "override_acp_args": task_creds.get("args"),
+            "routing_cfg": task_routing_cfg,
+        }
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
@@ -422,7 +424,7 @@ def _build_children(
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
-                model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
+                model=task_creds["model"], max_iterations=max_iterations, task_count=len(task_list),
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
             )
         except ValueError as exc:
@@ -468,6 +470,43 @@ def _oneshot_spawn_budget(parent_agent: Any, requested: int) -> Optional[str]:
         )
     parent_agent._oneshot_children_spawned = spent + requested
     return None
+
+
+def _resolve_task_routes(task_list, routing_cfg, parent_agent, credentials_cfg, default_creds):
+    """Preflight all per-task routes without constructing or starting children."""
+    task_creds, task_routing_cfgs = [], []
+    for i, task in enumerate(task_list):
+        model_pin, provider_pin = task.get("model"), task.get("provider")
+        for field, value in (("model", model_pin), ("provider", provider_pin)):
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"Task {i + 1}: {field} must be a nonempty string.")
+        if not model_pin and not provider_pin:
+            task_creds.append(default_creds)
+            task_routing_cfgs.append(routing_cfg)
+            continue
+        if credentials_cfg is not None:
+            raise ValueError(f"Task {i + 1}: task routing cannot override an internal routing configuration.")
+        child_cfg = dict(routing_cfg)
+        if provider_pin:
+            # A new provider owns its own endpoint, key, transport, and default
+            # model. Do not pair it with the configured delegation model/URL.
+            for key in ("base_url", "api_key", "api_mode", "command", "args",
+                        "request_overrides", "fallback_providers", "model"):
+                child_cfg.pop(key, None)
+            child_cfg["provider"] = provider_pin.strip()
+            child_cfg["fallback_providers"] = []
+        if model_pin:
+            child_cfg["model"] = model_pin.strip()
+            child_cfg["fallback_providers"] = []
+        try:
+            resolved = _resolve_delegation_credentials(child_cfg, parent_agent)
+        except ValueError as exc:
+            raise ValueError(f"Task {i + 1}: {exc}") from exc
+        if provider_pin and not resolved.get("model"):
+            raise ValueError(f"Task {i + 1}: provider '{provider_pin}' has no default model; specify model explicitly.")
+        task_creds.append(resolved)
+        task_routing_cfgs.append(child_cfg)
+    return task_creds, task_routing_cfgs
 
 
 def delegate_task(
@@ -538,6 +577,17 @@ def delegate_task(
         task_images, err = _coerce_task_images(task_list, images)
     if err:
         return tool_error(err)
+    assert task_list is not None
+    # Resolve every child route before building any agent. An omitted route keeps
+    # the configured delegation behavior; task pins never supply credentials.
+    try:
+        task_creds, task_routing_cfgs = _resolve_task_routes(
+            task_list, routing_cfg, parent_agent, credentials_cfg, creds,
+        )
+    except ValueError as exc:
+        return tool_error(str(exc))
+    creds = dict(creds, _per_task=task_creds)
+    routing_cfg = dict(routing_cfg, _per_task=task_routing_cfgs)
     err = _oneshot_spawn_budget(parent_agent, len(task_list))
     if err:
         return tool_error(err)
@@ -547,7 +597,15 @@ def delegate_task(
     # content or prompt caching. Best-effort: on failure live_paths is empty and delegation proceeds.
     from tools.delegation_live_log import create_live_transcripts
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
-        task_list, context, model=creds.get("model"), provider=creds.get("provider")
+        task_list, context,
+        model=(task_creds[0].get("model") if task_creds and all(
+            route.get("model") == task_creds[0].get("model") for route in task_creds) else None),
+        provider=(task_creds[0].get("provider") if task_creds and all(
+            route.get("provider") == task_creds[0].get("provider") for route in task_creds) else None),
+        task_routes=[{
+            "model": route.get("model") or getattr(parent_agent, "model", None),
+            "provider": route.get("provider") or getattr(parent_agent, "provider", None),
+        } for route in task_creds],
     )
     _announce_batch(parent_agent, len(task_list), live_deleg_id)
     origin = _capture_origin()
@@ -595,9 +653,9 @@ def _build_top_level_description(*, independent_completions=None) -> str:
     return _DESCRIPTION_HEAD.format(delivery=delivery) + restrictions_rule + _DESCRIPTION_TAIL
 
 _DESCRIPTION_HEAD = (
-    "Spawn subagents in isolated contexts; each gets its own conversation, terminal session, and toolset, and only its "
-    "final summary returns to you. Pass every task in `tasks` — one entry spawns one subagent, several run in parallel "
-    "(limit in the tasks description).\n\n"
+    "Children run independently and return summaries. Pass one entry per child in `tasks` (parallel within the "
+    "configured limit). Usually omit model/provider; specify a route only if the user asks, or clarify with the user "
+    "before choosing one yourself.\n\n"
     "Sessions without a later-result consumer (including one-shot CLI and cron) join parallel children "
     "and return results in this tool call. "
     "Otherwise runs in the background: dispatch returns live transcript paths and results re-enter "
@@ -623,7 +681,7 @@ _DESCRIPTION_HEAD = (
     "the parent applies the transition.\n"
 )
 _DESCRIPTION_TAIL = (
-    "- Children inherit the parent model unless pinned via delegation.provider / delegation.model in config.yaml."
+    "- Default: delegation.provider / delegation.model config or parent. Task pins affect only that child."
 )
 
 def _build_tasks_param_description() -> str:
@@ -695,6 +753,16 @@ DELEGATE_TASK_SCHEMA = {
                             "string",
                             "Background THIS child needs: file paths, error messages, constraints. Each child "
                             "sees only its own context — repeat shared background in every task that needs it.",
+                        ),
+                        "provider": _p(
+                            "string", "Optional provider for this child. Usually omit; use only when the user "
+                            "requests a specific route or approves one after clarification. Resolves its own "
+                            "credentials, endpoint, and default model (unless model is also set).",
+                        ),
+                        "model": _p(
+                            "string", "Optional model for this child. Usually omit; use only when the user "
+                            "requests a specific model or approves one after clarification. Without provider, "
+                            "uses the configured delegation provider (otherwise the parent provider).",
                         ),
                         "output_schema": _p(
                             "object",
