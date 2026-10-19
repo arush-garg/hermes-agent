@@ -455,6 +455,9 @@ _PREVIEW_BUILDERS = {
     "read_file": _preview_read_file, "memory": _preview_memory, "send_message": _preview_send_message,
     "skill_view": _preview_skill_view,
     "session_search": lambda args, _m: f"recall: \"{_clip(_oneline(args.get('query', '')), 25)}\"",
+    "sessions_peers": lambda args, _m: (
+        f"→ {_clip(_oneline(str(args.get('to', ''))), 24)}: {_clip(_oneline(str(args.get('message', ''))), 40)}"
+        if args.get("action") == "send" else "list peers"),
     "tool_call": _preview_bridge_call("tool_call"),
     "tool_search": _preview_bridge_call("tool_search"),
     "tool_describe": _preview_bridge_call("tool_describe"),
@@ -507,7 +510,7 @@ _TOOL_VERBS: dict[str, str] = {
     "terminal": "Running", "execute_code": "Running code",
     "image_generate": "Generating image", "video_generate": "Generating video",
     "text_to_speech": "Generating speech", "vision_analyze": "Looking at the image",
-    "session_search": "Searching past sessions",
+    "session_search": "Searching past sessions", "sessions_peers": "Messaging sessions",
     "skill_view": "Reading skill", "skills_list": "Listing skills", "skill_manage": "Updating skill",
     "delegate_task": "Delegating", "cronjob_manage": "Scheduling", "clarify": "Asking",
     "memory": "Updating memory", "todo_list": "Updating tasks",
@@ -1133,6 +1136,9 @@ _CUTE_LINES = {
     "browser_vision": lambda a, r: "┊ 👁️  vision    analyzing page",
     "todo_list": _cute_todo_list,
     "session_search": lambda a, r: f"┊ 🔍 recall    \"{_cute_trunc(a.get('query', ''))}\"",
+    "sessions_peers": lambda a, r: (
+        f"┊ 📡 peer      → {_cute_trunc(str(a.get('to', '')))}" if a.get("action") == "send"
+        else "┊ 📡 peers     list"),
     "memory": _cute_memory,
     "skills_list": lambda a, r: f"┊ 📚 skills    list {a.get('category', 'all')}",
     "skill_view": _cute_skill_view,

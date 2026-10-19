@@ -19,7 +19,7 @@ from hermes_cli.timeouts import get_provider_request_timeout
 from agent.message_sanitization import (
     _FULL_ARGS_LOG_BOUND, coalesce_tool_call_id, coerce_tool_name, tool_call_id_variants, tool_result_id_variants
 )
-from agent.prompt_builder import STEER_DISPLAY_KIND, steer_user_row
+from agent.prompt_builder import PEER_STEER_DISPLAY_KIND, STEER_DISPLAY_KIND, peer_steer_user_row, steer_user_row
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
@@ -590,7 +590,7 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             and split_user_originated_turn(prev)[0] is None
             # A /steer row that ended the previous run is already persisted; merging the next
             # prompt into it would rewrite it in place and re-break replay parity.
-            and prev.get("display_kind") != STEER_DISPLAY_KIND
+            and prev.get("display_kind") not in (STEER_DISPLAY_KIND, PEER_STEER_DISPLAY_KIND)
             # Only merge plain-text content; leave multimodal (list) content alone.
             and isinstance(prev.get("content", ""), str) and isinstance(msg.get("content", ""), str)
         ):
@@ -3536,6 +3536,14 @@ def _requeue_pending_steer(agent, steer_text: str) -> None:
         agent._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
 
 
+def _requeue_pending_peer_steer(agent, peer_text: str) -> None:
+    """Put drained (framed) peer text back so the leftover path delivers it as a next-turn message."""
+    _lock = getattr(agent, "_pending_steer_lock", None)
+    with (_lock if _lock is not None else contextlib.nullcontext()):
+        existing = getattr(agent, "_pending_peer_steer", None)
+        agent._pending_peer_steer = (peer_text + "\n\n" + existing) if existing else peer_text
+
+
 def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
     """Persist any pending /steer text as a standalone user message.
 
@@ -3559,7 +3567,10 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     if num_tool_msgs <= 0 or not messages:
         return
     steer_text = agent._drain_pending_steer()
-    if not steer_text:
+    # Cross-session peer message (already framed with the PEER marker): same slot/timing as /steer.
+    _drain_peer = getattr(agent, "_drain_pending_peer_steer", None)
+    peer_text = _drain_peer() if callable(_drain_peer) else None
+    if not steer_text and not peer_text:
         return
     # Skip non-tool messages in the tail in case something else is appended at the boundary.
     tail = range(len(messages) - 1, max(len(messages) - num_tool_msgs - 1, -1), -1)
@@ -3568,9 +3579,20 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         # No tool result in this batch (e.g. all skipped by interrupt);
         # requeue so the fallback path delivers it as a normal next-turn
         # user message (which persists like any other user turn).
-        _requeue_pending_steer(agent, steer_text)
+        if steer_text:
+            _requeue_pending_steer(agent, steer_text)
+        if peer_text:
+            _requeue_pending_peer_steer(agent, peer_text)
         return
-    messages.append(steer_user_row(steer_text))
+    if not steer_text:
+        messages.append(peer_steer_user_row(peer_text))
+        _ra().logger.info("Delivered peer message to agent after tool batch (%d chars)", len(peer_text))
+        return
+    row = steer_user_row(steer_text)
+    if peer_text:
+        # ONE combined row (never two consecutive user rows): user-steer block, then the peer block.
+        row["content"] = row["content"] + "\n\n" + peer_text
+    messages.append(row)
     try:
         from tools.delegate_tool_registry import mark_subagent_steer_delivered
 

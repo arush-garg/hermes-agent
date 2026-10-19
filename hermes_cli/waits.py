@@ -23,7 +23,7 @@ _MAX_TOMBSTONES = 32
 
 WAIT_USAGE = (
     "Usage: /wait <duration> <message>   (e.g. /wait 2h continue working on this)\n"
-    "Also: /wait list | cancel [<id>|all]"
+    "Also: /wait list | cancel [<id>|all] | edit <id> <new message>"
 )
 
 
@@ -213,6 +213,29 @@ class WaitManager:
         return "\n".join(lines)
 
 
+def _handle_wait_edit(mgr: WaitManager, args: str) -> tuple[str, bool]:
+    """Edit the prompt of an existing wait: /wait edit <id> <new message>"""
+    args = (args or "").strip()
+    tokens = args.split(None, 1)
+    if not tokens or not tokens[0].isdigit():
+        return "Usage: /wait edit <id> <new message>", False
+    wait_id = int(tokens[0])
+    new_prompt = tokens[1].strip() if len(tokens) > 1 else ""
+    if not new_prompt:
+        return "Usage: /wait edit <id> <new message> — the message is required.", False
+    if new_prompt.startswith("/"):
+        return "/wait sends a chat message, not a slash command.", False
+    
+    # Find the wait in current state (includes in-memory additions)
+    for w in mgr._state.waits:
+        if w.id == wait_id:
+            w.prompt = new_prompt
+            save_waits(mgr.session_id, mgr._state)
+            return f"✓ Wait #{wait_id} updated: {new_prompt}", False
+    
+    return f"No pending wait #{wait_id}.", False
+
+
 def run_wait_command(mgr: WaitManager, args: str) -> tuple[str, bool]:
     """The whole ``/wait`` grammar for every surface: ``(reply, armed)``; *armed* tells the caller a new wait
     was stored and its driver (CLI watchdog / gateway poller) must be running."""
@@ -222,6 +245,8 @@ def run_wait_command(mgr: WaitManager, args: str) -> tuple[str, bool]:
     rest = tokens[1].strip() if len(tokens) > 1 else ""
     if head in {"", "list", "status"} and not rest:
         return mgr.status_line(), False
+    if head == "edit":
+        return _handle_wait_edit(mgr, rest)
     if head in {"cancel", "clear", "stop", "off"}:
         target = rest.lstrip("#")
         if target.lower() in {"", "all"}:

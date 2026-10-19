@@ -61,7 +61,13 @@ def _has_configured_mcp_servers() -> bool:
             return True
         from hermes_cli.agent_plugins import has_enabled_agent_plugin_mcp
 
-        return has_enabled_agent_plugin_mcp(raw_config)
+        if has_enabled_agent_plugin_mcp(raw_config):
+            return True
+        # Use the discovery loader's workspace resolution and entry validation. A project-only
+        # configuration must open the same startup gate as global and portable servers.
+        from tools.mcp_tool_config import _load_project_mcp_json
+
+        return bool(_load_project_mcp_json())
     except Exception:
         return True  # conservative: still try discovery in the background; startup can't block
 

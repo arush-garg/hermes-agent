@@ -1771,28 +1771,21 @@ def _config_model_target() -> tuple[str, str]:
     return (cfg_model.strip() if isinstance(cfg_model, str) else ""), ""
 
 
-def _resolve_startup_runtime() -> tuple[str, str | None]:
-    model = _resolve_model()
-    if explicit_provider := os.environ.get("HERMES_TUI_PROVIDER", "").strip():
-        return model, explicit_provider
-    if not (explicit_model := _env_model_seed()):
-        return model, None
+def _startup_model_selection():
+    """Launch model choice through the owner HermesCLI uses (``hermes_cli.agent_build_options``): the
+    ``HERMES_MODEL`` / ``HERMES_TUI_PROVIDER`` launch seeds stand in for ``-m`` / ``--provider``."""
+    from hermes_cli.agent_build_options import StartupModelSelection, resolve_startup_model_selection
+    explicit_provider = os.environ.get("HERMES_TUI_PROVIDER", "").strip()
     with contextlib.suppress(Exception):
-        from hermes_cli.model_switch import resolve_startup_model_route
-        from hermes_cli.models import detect_static_provider_for_model
-        full_cfg = _load_cfg()
-        cfg = full_cfg.get("model") or {}
-        current_provider = ((str(cfg.get("provider") or "").strip().lower() if isinstance(cfg, dict) else "")
-                            or os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto")
-        # Same owner as HermesCLI/oneshot: ``custom:<name>:<model>`` selects that provider (#73943).
-        if route := resolve_startup_model_route(
-                explicit_model, current_provider=current_provider,
-                user_providers=full_cfg.get("providers"), custom_providers=full_cfg.get("custom_providers")):
-            return route.model, route.provider
-        if detected := detect_static_provider_for_model(explicit_model, current_provider):
-            provider, detected_model = detected
-            return detected_model, provider
-    return model, None
+        selection = resolve_startup_model_selection(_load_cfg(), model=_env_model_seed(), provider=explicit_provider)
+        if selection.model:
+            return selection
+    return StartupModelSelection(model=_resolve_model(), provider=explicit_provider)
+
+
+def _resolve_startup_runtime() -> tuple[str, str | None]:
+    selection = _startup_model_selection()
+    return selection.model, selection.provider or None
 
 
 # Bare billing buckets are not routable provider identities; restoring one as a session provider override
@@ -2116,12 +2109,10 @@ def _load_reasoning_config(model: str = "") -> dict | None:
     return resolve_reasoning_config(_load_cfg(), model)
 
 
-_SERVICE_TIER_ALIASES = {"fast": "priority", "priority": "priority", "on": "priority", "auto": "auto", "cold": "cold"}
-
-
 def _load_service_tier() -> str | None:
-    raw = str((_load_cfg().get("agent") or {}).get("service_tier", "") or "").strip().lower()
-    return _SERVICE_TIER_ALIASES.get(raw)
+    """Persisted ``agent.service_tier`` via the owner the classic CLI uses (same aliases + off/normal words)."""
+    from hermes_cli.agent_build_options import service_tier
+    return service_tier(_load_cfg())
 
 
 def _load_provider_routing() -> dict:
@@ -3793,34 +3784,17 @@ class _RuntimeFallbackResolution(NamedTuple):
 def _resolve_runtime_with_fallback(resolve_kwargs: dict | None = None) -> _RuntimeFallbackResolution:
     """Resolve the primary runtime or one complete provider/model fallback. Provider-only fallback entries
     are skipped so the unavailable primary model can never leak into a different runtime."""
+    from hermes_cli.agent_build_options import resolve_auth_fallback_runtime
     from hermes_cli.auth import AuthError
     from hermes_cli.runtime_provider import resolve_runtime_provider
     try:
         return _RuntimeFallbackResolution(resolve_runtime_provider(**(resolve_kwargs or {})), None, False)
     except AuthError as primary_exc:
-        for entry in _load_fallback_model() or []:
-            fb_provider = str(entry.get("provider") or "").strip() if isinstance(entry, dict) else ""
-            fb_model = str(entry.get("model") or "").strip() if isinstance(entry, dict) else ""
-            if not fb_provider or not fb_model:
-                continue
-            try:
-                from hermes_cli.fallback_config import effective_runtime_provider, resolve_entry_api_key
-                fb_kwargs: dict = {"requested": fb_provider, "target_model": fb_model,
-                                   **({"explicit_base_url": entry["base_url"]} if entry.get("base_url") else {})}
-                if fb_api_key := resolve_entry_api_key(entry):
-                    fb_kwargs["explicit_api_key"] = fb_api_key
-                runtime = resolve_runtime_provider(**fb_kwargs)
-                # Named custom entries resolve to the bare "custom" billing class; keep the configured
-                # identity so the session/UI shows the provider name, matching the manual-switch path (#98739).
-                runtime["provider"] = effective_runtime_provider(entry, runtime)
-                from hermes_cli.auth import primary_failure_wording
-                logging.getLogger(__name__).warning(
-                    "Primary %s (%s), falling back to %s model %s",
-                    primary_failure_wording(primary_exc)[0], primary_exc, fb_provider, fb_model)
-                return _RuntimeFallbackResolution(runtime, fb_model, True)
-            except Exception:
-                continue
-        raise
+        # Same owner as HermesCLI._resolve_fallback_runtime (entry filter, target_model, named identity).
+        if (resolved := resolve_auth_fallback_runtime(_load_fallback_model(), primary_exc)) is None:
+            raise
+        entry, runtime = resolved
+        return _RuntimeFallbackResolution(runtime, entry["model"], True)
 
 
 def _resolve_agent_model_runtime(model_override, provider_override) -> tuple[str, dict]:
@@ -3891,8 +3865,9 @@ def _rederive_per_model_route(model: str, runtime: dict) -> None:
 def _startup_system_prompt(cfg: dict, task_id: str) -> str:
     """Config ephemeral system prompt + HERMES_TUI_SKILLS preload block. Hard-fails only when EVERY requested
     skill is missing (cli.py parity): a typo'd name must not auto-block the Kanban task."""
-    from hermes_cli.config import resolve_ephemeral_system_prompt_from_config
-    system_prompt = resolve_ephemeral_system_prompt_from_config(cfg)
+    # HERMES_EPHEMERAL_SYSTEM_PROMPT wins, then the personality/agent.system_prompt overlay (CLI parity).
+    from hermes_cli.agent_build_options import ephemeral_system_prompt
+    system_prompt = ephemeral_system_prompt(cfg)
     startup_skills = _parse_tui_skills_env()
     if not startup_skills:
         return system_prompt
@@ -3947,9 +3922,11 @@ def _make_agent(
         with contextlib.suppress(Exception):
             importlib.import_module(_mod).wait_for_mcp_discovery()
     cfg = _load_cfg()
-    # Load hooks alongside the same profile config used to construct this agent.
-    from agent.shell_hooks import register_from_config
-    register_from_config(cfg)
+    # Shell hooks AND outbound webhooks from the same profile config used to construct this agent (CLI parity:
+    # cli.py registers both; HERMES_ACCEPT_HOOKS carries ``--accept-hooks`` from the TUI launcher).
+    from hermes_cli.agent_build_options import (
+        checkpoint_settings, fast_mode_request_overrides, openrouter_min_coding_score, register_config_hooks)
+    register_config_hooks(cfg)
     system_prompt = _startup_system_prompt(cfg, session_id or key)
     model, runtime = _resolve_agent_model_runtime(model_override, provider_override)
     fallback_notice = runtime.pop("_fallback_notice", None)
@@ -3958,6 +3935,7 @@ def _make_agent(
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
     with _sessions_lock:
         session = _sessions.get(sid)
+    tier = service_tier_override if service_tier_override is not None else _load_service_tier()
     agent = AIAgent(
         model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
         requested_provider=runtime.get("requested_provider"),
@@ -3967,7 +3945,10 @@ def _make_agent(
         verbose_logging=False,  # DEBUG agent logging; independent of tool_progress_mode
         reasoning_config=(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
-        service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
+        service_tier=tier,
+        # Static fast mode is pinned at build time on BOTH surfaces (CLI: _resolve_turn_agent_config).
+        request_overrides=fast_mode_request_overrides(tier, model, runtime.get("provider"), runtime.get("base_url")),
+        openrouter_min_coding_score=openrouter_min_coding_score(cfg),
         enabled_toolsets=_load_enabled_toolsets(platform),
         disabled_toolsets=_load_disabled_toolsets(),
         # OpenRouter provider_routing prefs (gateway + CLI parity).
@@ -3979,7 +3960,8 @@ def _make_agent(
         # Builds that run before the record exists (branch, eager resume, compute host) pass it explicitly.
         user_id=auth_user_id if auth_user_id is not None else _session_auth_user_id(session),
         session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
-        checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
+        # ``--checkpoints`` (HERMES_TUI_CHECKPOINTS) OR ``checkpoints.enabled`` + configured limits/interval.
+        **checkpoint_settings(cfg, enabled_flag=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS"))),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
         prefill_messages=_load_prefill_messages() or None, **_agent_cbs(sid))

@@ -215,6 +215,44 @@ def _format_live_id_output(sid: str, session: dict, arg: str) -> str:
     return f"🆔 **Session ID:** `{session_id}`"
 
 
+def _live_agent_and_history(session: Optional[dict]):
+    """(agent, history snapshot) for an in-process live agent; (None, []) when none/remote."""
+    if session is None or _session_uses_compute_host(session) or session.get("agent") is None:
+        return None, []
+    agent = session["agent"]
+    with session.get("history_lock") or contextlib.nullcontext():
+        history = list(session.get("history", []))
+    return agent, history or list(getattr(agent, "_session_messages", None) or [])
+
+
+def _format_live_context_breakdown(sid: str, session: dict, arg: str) -> Optional[str]:
+    """/context against the live agent — the same body as the classic CLI (hermes_cli.live_slash_core).
+    The slash worker resumes WITHOUT an agent, so routing it there always said "send a message first"."""
+    agent, history = _live_agent_and_history(session)
+    if agent is None:
+        return None
+    from hermes_cli.live_slash_core import context_breakdown_lines
+    tokens = _set_session_context(session["session_key"], cwd=_session_cwd(session))
+    try:
+        return "\n".join(context_breakdown_lines(agent, history, arg, model=getattr(agent, "model", "")))
+    except Exception as exc:
+        return f"(._.) Could not compute context breakdown: {exc}"
+    finally:
+        _clear_session_context(tokens)
+
+
+def _format_live_refine_output(sid: str, session: Optional[dict], arg: str) -> str:
+    """/refine against the live agent (shared body with the classic CLI); the worker has no agent."""
+    from hermes_cli.live_slash_core import NOTHING_TO_REFINE, start_refine
+    if session is not None and _session_uses_compute_host(session):
+        return "/refine runs on the local agent only for now — this session's agent lives on a remote compute host."
+    agent, history = _live_agent_and_history(session)
+    if agent is None:
+        return NOTHING_TO_REFINE
+    with _session_profile_runtime_scope(session):
+        return start_refine(agent, history, (arg or "").strip())[1]
+
+
 # name → (reply when there is no session, formatter(sid, session, arg) or a fixed reply).
 # A None no-session reply means the formatter handles a missing session itself.
 _LIVE_SLASH_OUTPUT = {
@@ -222,6 +260,7 @@ _LIVE_SLASH_OUTPUT = {
                  lambda sid, session, arg: _mirror_slash_side_effects(sid, session, f"/compress {arg}".strip())),
     "usage": (_NO_AGENT_USAGE, _format_live_usage_output),
     "review": (None, _format_live_review_output),
+    "refine": (None, _format_live_refine_output),
     "history": ("No conversation history yet.", _format_live_history_output),
     "prompt": (_NO_AGENT, _format_live_prompt_output),
     "status": (None, _format_live_status_output),
@@ -230,6 +269,7 @@ _LIVE_SLASH_OUTPUT = {
     "tools": ("No tools available.", _format_live_tools_output),
     "help": (None, _format_live_help_output),
     "clear": (None, "Screen clear is terminal-only; desktop/TUI chat left unchanged."),
+    "palette": (None, "The Ctrl+P command palette is classic-CLI only; type / here to browse and complete commands."),
     "models": (None, "Use /model to view or switch the current model; desktop users can also open the model picker."),
     "rename": (None, "Use /title <name> to rename this session."),
     "effort": (None, "Use /reasoning <effort> to change reasoning effort.")}
@@ -241,6 +281,8 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
     arg = arg or ""
     if name == "model" and not arg.strip():
         return _format_live_model_output(session or {})
+    if name == "context" and (out := _format_live_context_breakdown(sid, session, arg)) is not None:
+        return out
     if name in _ISOLATED_SESSION_READ_COMMANDS and not (session is not None and _session_uses_compute_host(session)):
         return None
     entry = _LIVE_SLASH_OUTPUT.get(name)

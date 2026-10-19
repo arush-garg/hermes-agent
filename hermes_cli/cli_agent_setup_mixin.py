@@ -359,43 +359,25 @@ class CLIAgentSetupMixin:
         """Primary provider resolution failed: on an AuthError try each fallback entry in
         order and switch the CLI's requested_provider/model to the first that resolves.
         None when the error is not auth-related or no fallback resolves."""
-        from cli import _cprint, logger
-        from hermes_cli.auth import AuthError, primary_failure_wording
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        if not isinstance(primary_exc, AuthError):
+        from cli import _cprint
+        from hermes_cli.agent_build_options import resolve_auth_fallback_runtime
+        from hermes_cli.auth import primary_failure_wording
+        # One owner with the TUI gateway (_resolve_runtime_with_fallback): same entry filter,
+        # target_model (#112600), per-entry key, and named-provider identity (#98739).
+        resolved = resolve_auth_fallback_runtime(self._fallback_model, primary_exc)
+        if resolved is None:
             return None
-        _fb_chain = self._fallback_model if isinstance(self._fallback_model, list) else []
-        for _fb in _fb_chain:
-            _fb_provider = (_fb.get("provider") or "").strip().lower()
-            _fb_model = (_fb.get("model") or "").strip()
-            if not _fb_provider or not _fb_model:
-                continue
-            try:
-                from hermes_cli.fallback_config import resolve_entry_api_key
-                # target_model: the fallback entry names the model that will be sent; without it the
-                # ladder keys off config `default` (see _ensure_runtime_credentials, #112600).
-                _fb_kwargs = {"requested": _fb_provider, "target_model": _fb_model}
-                if _fb.get("base_url"):
-                    _fb_kwargs["explicit_base_url"] = _fb["base_url"]
-                _fb_api_key = resolve_entry_api_key(_fb)
-                if _fb_api_key:
-                    _fb_kwargs["explicit_api_key"] = _fb_api_key
-                runtime = resolve_runtime_provider(**_fb_kwargs)
-                _why_log, _why = primary_failure_wording(primary_exc)  # #117482: quota is not auth
-                logger.warning(
-                    "Primary provider %s (%s). Falling through to fallback: %s/%s",
-                    _why_log, primary_exc, _fb_provider, _fb_model)
-                from gateway.warning_notifications import render_notification
-                render_notification(
-                    lambda: _cprint(f"⚠️  {_why} — switching to fallback: {_fb_provider} / {_fb_model}"),
-                    platform="cli")
-                self.requested_provider = _fb_provider
-                self.model = _fb_model
-                # reasoning_config follows the swap in _ensure_runtime_credentials (the only caller).
-                return runtime
-            except Exception:
-                continue
-        return None
+        entry, runtime = resolved
+        _fb_provider, _fb_model = entry["provider"], entry["model"]
+        _why = primary_failure_wording(primary_exc)[1]  # #117482: quota is not auth
+        from gateway.warning_notifications import render_notification
+        render_notification(
+            lambda: _cprint(f"⚠️  {_why} — switching to fallback: {_fb_provider} / {_fb_model}"),
+            platform="cli")
+        self.requested_provider = _fb_provider
+        self.model = _fb_model
+        # reasoning_config follows the swap in _ensure_runtime_credentials (the only caller).
+        return runtime
 
     def _runtime_credentials_ready(self) -> bool:
         """Silently probe whether any inference provider can be resolved.
@@ -518,17 +500,12 @@ class CLIAgentSetupMixin:
         """Effective model/runtime config for one turn — always the session's primary
         provider. With `/fast` on (service_tier == "priority") attach request_overrides;
         auto/cold tiers are applied per request by agent.fast_mode instead."""
-        from hermes_cli.models import resolve_fast_mode_overrides
+        from hermes_cli.agent_build_options import fast_mode_request_overrides
         runtime = _current_runtime(self)
         route = {"model": self.model, "runtime": runtime, "signature": _route_signature(self.model, runtime)}
-        overrides = None
-        if getattr(self, "service_tier", None) == "priority":
-            try:
-                overrides = resolve_fast_mode_overrides(
-                    route["model"], provider=runtime["provider"], base_url=runtime["base_url"])
-            except Exception:
-                pass
-        route["request_overrides"] = overrides
+        # Same owner as the TUI gateway's _make_agent.
+        route["request_overrides"] = fast_mode_request_overrides(
+            getattr(self, "service_tier", None), route["model"], runtime.get("provider"), runtime.get("base_url"))
         return route
 
     def _follow_compression_chain(self, session_meta, announce):

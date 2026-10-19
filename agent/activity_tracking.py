@@ -64,6 +64,11 @@ class ActivityTrackingMixin:
                 getattr(self, "_turn_liveness_activity_generation", 0) + 1
             )
             self._last_activity_ts = time.time()
+            # Paired suspend-aware stamp for the turn liveness watchdog: time.monotonic() does not advance
+            # while the host sleeps (mach_absolute_time on macOS, CLOCK_MONOTONIC on Linux), so a laptop lid
+            # close during a connectivity pause is not mistaken for a stalled turn. Stored as a pair so a
+            # direct writer of _last_activity_ts (gateway turn reset, tests) invalidates it automatically.
+            self._last_activity_clock_pair = (self._last_activity_ts, time.monotonic())
             self._last_activity_desc = bound_activity_description(desc)
             self._last_activity_provenance = normalize_activity_provenance(provenance)
             # Real progress invalidates a reserved abort claim; an in-flight watchdog interrupt must abandon

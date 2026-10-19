@@ -24,6 +24,7 @@ _HERMES_CORE_TOOLS = [
     "text_to_speech",
     "todo_list", "memory",
     "session_search",
+    "sessions_peers",  # cross-session messaging (list live peers / send one a message)
     "clarify",
     "execute_code", "delegate_task",
     "cronjob_manage",
@@ -134,6 +135,7 @@ TOOLSETS = {
     "memory": _ts("Persistent memory across sessions (personal notes + user profile)", ["memory"]),
     "context_engine": _ts("Runtime tools exposed by the active context engine"),
     "session_search": _ts("Search and recall past conversations with summarization", ["session_search"]),
+    "sessions_peers": _ts("List live Hermes sessions on this machine and send one a short message", ["sessions_peers"]),
     "connections": _ts("Remote connector discovery, execution, and account authorization", ["manage_connections"]),
     "project": _ts("Desktop Projects — create/switch named workspaces (GUI sessions only)", ["desktop_project"]),
     "bot_room": _ts("Verified text-only Group Chat turn capabilities"),

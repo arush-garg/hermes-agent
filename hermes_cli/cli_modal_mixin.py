@@ -231,6 +231,10 @@ class CLIModalMixin:
         into the composer instead. Fall back to a direct ``input()`` when we're off the main thread.
         """
         result = [None]
+        # TUI slash worker: stdin is the JSON-RPC request pipe. input() would swallow the NEXT
+        # slash.exec request as the answer (bare /hatch ate the following command). Cancel cleanly.
+        if getattr(self, "_headless_slash_worker", False):
+            return None
 
         def _ask():
             try:

@@ -603,6 +603,7 @@ class _Resume:
             self.target, cols=self.cols, cwd=cwd, history=history, lease=None, source=source,
             close_on_disconnect=_flag(self.params, "close_on_disconnect"),
             profile_home=self.profile_home, explicit_cwd=bool(self.profile_resume_cwd), **extra)
+        self.restore_yolo()
         if follows_profile:
             record.update(
                 follow_profile_config=True,
@@ -610,6 +611,13 @@ class _Resume:
                                            if overrides and overrides.get("model_override") else None),
             )
         return record
+
+    def restore_yolo(self) -> None:
+        """Re-arm the row's persisted ``/yolo`` (``model_config.yolo_mode``) — same owner as the CLI's
+        ``_restore_session_yolo``, so a session toggled on one surface resumes bypassed on the other."""
+        with contextlib.suppress(Exception):
+            from hermes_cli.agent_build_options import restore_persisted_session_yolo
+            restore_persisted_session_yolo(self.found, self.target)
 
     def claim(self, sid: str, record: dict) -> dict | None:
         """Register ``record`` live under the resume lock, or reuse a concurrent winner's session."""
@@ -918,6 +926,7 @@ def _resume_eager(ctx: _Resume) -> dict:
                 if stored_runtime_overrides.get("model_override") is not None:
                     session["model_override"] = stored_runtime_overrides["model_override"]
                 model_config = _parse_model_config(ctx.found.get("model_config"), quiet=True)
+                ctx.restore_yolo()
                 if _row_follows_profile(ctx.found):
                     session["follow_profile_config"] = True
                     session["composer_override_profile"] = (

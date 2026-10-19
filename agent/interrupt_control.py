@@ -245,17 +245,37 @@ class InterruptControlMixin:
             # hard_cancel, so a soft clear dropped a live user message with no trace.
             with _ic_lock(self, "_pending_steer_lock"):
                 self._pending_steer = None
+                # Peer messages (cross-session) ride the same steer timing: drop them with it.
+                self._pending_peer_steer = None
                 # A hard interrupt supersedes any pending /yolo-steer too (fork
                 # feature): neither will have a tool-call boundary to fire at.
                 self._pending_yolo_action = None
         return True
 
-    def steer(self, text: str) -> bool:
+    def steer(self, text: str, *, sender: Optional[dict] = None) -> bool:
         """Queue user text for delivery as its own user row after the current tool batch finishes (no
-        interrupt); multiple calls concatenate with newlines. Returns False for empty text."""
+        interrupt); multiple calls concatenate with newlines. Returns False for empty text.
+
+        ``sender`` (``{"session_id": str, "title": str}``) marks a cross-session peer message: it is
+        framed with the PEER marker (no user authority) and queued in ``_pending_peer_steer`` — same
+        lock and timing as a user steer, but never mixed into the user's marker."""
         if not text or not text.strip():
             return False
         cleaned = text.strip()
+        if sender is not None:
+            from agent.prompt_builder import format_peer_message, sanitize_peer_body
+
+            if not sanitize_peer_body(cleaned):
+                return False
+            framed = format_peer_message(
+                from_session_id=str(sender.get("session_id") or ""),
+                from_title=str(sender.get("title") or ""),
+                body=cleaned,
+            )
+            with _ic_lock(self, "_pending_steer_lock"):
+                existing = getattr(self, "_pending_peer_steer", None)
+                self._pending_peer_steer = (existing + "\n\n" + framed) if existing else framed
+            return True
         with _ic_lock(self, "_pending_steer_lock"):
             existing = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
@@ -337,4 +357,11 @@ class InterruptControlMixin:
         with _ic_lock(self, "_pending_steer_lock"):
             text = _ic_slot(self, "_pending_steer_lock", "_pending_steer")
             self._pending_steer = None
+        return text
+
+    def _drain_pending_peer_steer(self) -> Optional[str]:
+        """Return the pending (already framed) peer-message text and clear the slot; None when empty."""
+        with _ic_lock(self, "_pending_steer_lock"):
+            text = getattr(self, "_pending_peer_steer", None)
+            self._pending_peer_steer = None
         return text

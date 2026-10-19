@@ -105,7 +105,8 @@ class CLIInitMixin:
 
     def _init_model_and_provider(self, model, provider, api_key, base_url):
         """Priority: CLI args > env vars > config file."""
-        from cli import CLI_CONFIG, _normalize_moa_model, _split_model_config_default
+        from cli import CLI_CONFIG, _split_model_config_default
+        from hermes_cli.agent_build_options import resolve_startup_model_selection
         # LLM_MODEL/OPENAI_MODEL env vars are deliberately NOT checked (multi-agent setups
         # would stomp each other through the environment).
         _model_config = CLI_CONFIG["model"]
@@ -116,29 +117,11 @@ class CLIInitMixin:
         )
         # resume must not clobber an explicit -m with the session's stored model.
         self._explicit_model_override = bool(model)
-        self.model = model or _config_model or ""
         _cfg_provider = _model_config.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER")
-        _startup_provider_override = _startup_base_url_override = _startup_api_key_override = ""
-        if self.model:
-            from hermes_cli.model_switch import resolve_startup_model_route
-
-            _startup_route = resolve_startup_model_route(
-                self.model,
-                explicit_provider=provider or "",
-                current_provider=(provider or _nested_provider or _cfg_provider or ""),
-                user_providers=CLI_CONFIG.get("providers"),
-                custom_providers=CLI_CONFIG.get("custom_providers"),
-            )
-            if _startup_route is not None:
-                self.model = _startup_route.model
-                _startup_provider_override = _startup_route.provider
-                _startup_base_url_override = _startup_route.base_url
-                _startup_api_key_override = _startup_route.api_key
-        # ``moa:<preset>`` selects the MoA virtual provider before provider resolution so the
-        # real provider never sees the unknown model; the prefix wins over --provider.
-        # A ``moa:<preset>`` model string selects the MoA virtual provider in one shot (parity with
-        # interactive ``/moa`` and the model picker). See #56828.
-        _moa_provider_override, self.model = _normalize_moa_model(self.model)
+        # Aliases, ``provider:model``, moa:<preset>, static-catalog provider detection and
+        # ``--provider <custom>`` default_model (#86978) — one owner shared with the TUI gateway.
+        _selection = resolve_startup_model_selection(CLI_CONFIG, model=model or "", provider=provider or "")
+        self.model = _selection.model
 
         if self.model == "":  # auto-detect from a local server
             _base_url = _model_config.get("base_url") or ""
@@ -147,43 +130,22 @@ class CLIInitMixin:
                 self.model = _auto_detect_local_model(_base_url) or self.model
         # Provider normalisation may silently override the default but must warn for an
         # explicit choice (a config model equal to the global fallback is NOT explicit).
-        self._model_is_default = not model and not _config_model
+        self._model_is_default = not model and not _config_model and not _selection.model
 
         # --api-key wins; otherwise a URL-bearing startup alias carries its own credential.
         # See #28660.
-        self._explicit_api_key = api_key or _startup_api_key_override or None
-        self._explicit_base_url = base_url or _startup_base_url_override or None
+        self._explicit_api_key = api_key or _selection.api_key or None
+        self._explicit_base_url = base_url or _selection.base_url or None
 
         # Resolved lazily at use-time via _ensure_runtime_credentials().
-        self.requested_provider = (
-            _moa_provider_override or provider or _startup_provider_override or _nested_provider
-            or _cfg_provider or "auto"
-        )
-        # `--provider <custom>` without `-m` uses that entry's default_model, else the global
-        # default goes to the custom endpoint and the compressor gets the wrong context length.
-        # Explicit `-m` still wins. See #86978.
-        if not model and provider:
-            try:
-                from hermes_cli.runtime_provider import _get_named_custom_provider
-
-                _named_custom = _get_named_custom_provider(provider)
-            except Exception as exc:
-                logger.warning(
-                    "Could not resolve --provider %s default model; keeping global model.default (%s)",
-                    provider, exc,
-                )
-                _named_custom = None
-            _provider_default = str((_named_custom or {}).get("model") or "").strip()
-            if _provider_default:
-                self.model = _provider_default
-                self._model_is_default = False
+        self.requested_provider = _selection.provider or _nested_provider or _cfg_provider or "auto"
         self._provider_source: Optional[str] = None
         self.provider = self.requested_provider
         self.api_mode = "chat_completions"
         self.acp_command: Optional[str] = None
         self.acp_args: list[str] = []
         self.base_url = (
-            base_url or _startup_base_url_override or _model_config.get("base_url", "")
+            base_url or _selection.base_url or _model_config.get("base_url", "")
             or os.getenv("OPENROUTER_BASE_URL", "")
         ) or None
         # Key matches the resolved base_url; re-resolved by _ensure_runtime_credentials().
@@ -234,24 +196,25 @@ class CLIInitMixin:
 
     def _init_checkpoints_and_rules(self, checkpoints, pass_session_id, ignore_rules):
         from cli import CLI_CONFIG
-        cp_cfg = CLI_CONFIG.get("checkpoints", {})
-        if isinstance(cp_cfg, bool):
-            cp_cfg = {"enabled": cp_cfg}
-        self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
-        self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 20)
-        self.checkpoint_max_total_size_mb = cp_cfg.get("max_total_size_mb", 500)
-        self.checkpoint_max_file_size_mb = cp_cfg.get("max_file_size_mb", 10)
+        from hermes_cli.agent_build_options import checkpoint_settings
+        cp = checkpoint_settings(CLI_CONFIG, enabled_flag=bool(checkpoints))
+        self.checkpoints_enabled = cp["checkpoints_enabled"]
+        self.checkpoint_max_snapshots = cp["checkpoint_max_snapshots"]
+        self.checkpoint_max_total_size_mb = cp["checkpoint_max_total_size_mb"]
+        self.checkpoint_max_file_size_mb = cp["checkpoint_max_file_size_mb"]
+        self.checkpoint_interval = cp["checkpoint_interval"]
         self.pass_session_id = pass_session_id
         # --ignore-rules: AIAgent skips context files (AGENTS.md/SOUL.md/...) and memory.
         self.ignore_rules = ignore_rules or is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
 
     def _init_prompt_and_reasoning(self, reasoning):
         """Ephemeral system prompt/prefill, reasoning + service tier, OpenRouter routing knobs, fallback chain."""
-        from cli import CLI_CONFIG, _load_prefill_messages, _parse_reasoning_config, _parse_service_tier_config, _resolve_prefill_messages_file
+        from cli import CLI_CONFIG, _load_prefill_messages, _parse_reasoning_config, _resolve_prefill_messages_file
+        from hermes_cli.agent_build_options import ephemeral_system_prompt, openrouter_min_coding_score, service_tier
         # Env var wins, then hermes_cli.personality (single owner of overlay resolution).
-        from hermes_cli.personality import available_personalities, resolve_ephemeral_system_prompt
+        from hermes_cli.personality import available_personalities
 
-        self.system_prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "") or resolve_ephemeral_system_prompt(CLI_CONFIG)
+        self.system_prompt = ephemeral_system_prompt(CLI_CONFIG)
         self.personalities = available_personalities(CLI_CONFIG)
 
         self.prefill_messages = _load_prefill_messages(_resolve_prefill_messages_file(CLI_CONFIG))
@@ -270,7 +233,7 @@ class CLIInitMixin:
             else:
                 self.reasoning_config = _cli_reasoning
                 self._explicit_reasoning_config = _cli_reasoning
-        self.service_tier = _parse_service_tier_config(CLI_CONFIG["agent"].get("service_tier", ""))
+        self.service_tier = service_tier(CLI_CONFIG)
 
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
         self._provider_sort = pr.get("sort")
@@ -281,15 +244,7 @@ class CLIInitMixin:
         self._provider_data_collection = pr.get("data_collection")
 
         # OpenRouter Pareto Code router coding-score floor; out-of-range = unset.
-        _raw_score = (CLI_CONFIG.get("openrouter", {}) or {}).get("min_coding_score")
-        self._openrouter_min_coding_score: Optional[float] = None
-        if _raw_score not in {None, ""}:
-            try:
-                _f = float(_raw_score)
-                if 0.0 <= _f <= 1.0:
-                    self._openrouter_min_coding_score = _f
-            except (TypeError, ValueError):
-                pass
+        self._openrouter_min_coding_score: Optional[float] = openrouter_min_coding_score(CLI_CONFIG)
 
         self._fallback_model = get_fallback_chain(CLI_CONFIG)
 

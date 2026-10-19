@@ -533,6 +533,8 @@ _CONTROL_STATE: Dict[str, Any] = {
     # /steer: the drain hook appends the note to the last tool result after the current
     # batch — no interrupt, no new user turn (role alternation preserved).
     "_pending_steer": None,
+    # Cross-session peer message (already framed with the PEER marker); same lock/timing as _pending_steer.
+    "_pending_peer_steer": None,
     "_pending_steer_lock": threading.Lock,
     # Pending /yolo toggle — (session_key, enable: bool) queued to fire after the next tool call,
     # same timing contract as _pending_steer.

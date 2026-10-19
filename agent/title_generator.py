@@ -141,6 +141,8 @@ _MACHINE_PREFIXES = (
     # message titled the session "[System: The active model for this chat has…" instead of the user's actual
     # question.
     "[System: The active model for this chat has changed to ",
+    # agent.prompt_builder.PEER_MARKER_PREFIX: a cross-session peer message is not the user's opening question.
+    "[MESSAGE FROM HERMES SESSION",
 )
 
 

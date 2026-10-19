@@ -2341,23 +2341,10 @@ class CLICommandsMixin:
         """Dispatch /refine — run the memory/skill review fork on demand (same machinery as the
         automatic post-turn ``_spawn_background_review``), with optional focus text. Background
         fork; the live conversation and prompt cache are never touched."""
-        focus = _command_arg(cmd)
-        agent = getattr(self, "agent", None)
-        if agent is None:
-            return _cp(_dim_line('Nothing to refine yet — send a message first.'))
-        snapshot = list(getattr(self, "conversation_history", None) or [])
-        if not snapshot:
-            return _cp(_dim_line('Nothing to refine yet — the conversation is empty.'))
-        try:
-            agent._spawn_background_review(
-                messages_snapshot=snapshot, review_memory=True,
-                review_skills="skill_manage" in getattr(agent, "valid_tool_names", set()),
-                focus=focus or None, explicit=True)
-        except Exception as exc:
-            return _cp(f"  /refine failed to start: {exc}")
-        tail = f" (focus: {focus})" if focus else ""
-        _cp(f"  ⚗ Reviewing this conversation in the background{tail} — "
-            f"any memory/skill updates will be reported when done.")
+        from hermes_cli.live_slash_core import EMPTY_REFINE, NOTHING_TO_REFINE, start_refine
+        started, msg = start_refine(  # shared with the TUI's live-session /refine
+            getattr(self, "agent", None), getattr(self, "conversation_history", None), _command_arg(cmd))
+        _cp(_dim_line(msg) if msg in {NOTHING_TO_REFINE, EMPTY_REFINE} else f"  {msg}")
 
     def _handle_review_command(self, cmd: str) -> None:
         """Dispatch /review — snapshot the last N messages (+ argument text as instructions) and

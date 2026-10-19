@@ -455,13 +455,11 @@ def _prepare_deferred_agent_startup() -> None:
     except Exception:
         logger.debug("MCP tool discovery failed at deferred CLI startup", exc_info=True)
     try:
-        from agent.shell_hooks import register_from_config
-        from agent.outbound_webhooks import register_from_config as register_outbound_webhooks
+        from hermes_cli.agent_build_options import register_config_hooks
         from hermes_cli.config import load_config
 
-        _hooks_cfg = load_config()
-        register_from_config(_hooks_cfg, accept_hooks=_accept_hooks)
-        register_outbound_webhooks(_hooks_cfg)
+        # Shell hooks + outbound webhooks: same owner the TUI gateway's _make_agent calls.
+        register_config_hooks(load_config(), accept_hooks=_accept_hooks)
     except Exception:
         logger.debug("shell-hook registration failed at deferred CLI startup", exc_info=True)
 
@@ -795,22 +793,6 @@ def save_config_value(key_path: str, value: any) -> bool:
         logger.error("Failed to save config: %s", e)
         return False
 
-
-def _normalize_moa_model(model: Optional[str]) -> tuple[Optional[str], Optional[str]]:
-    """``moa:<preset>`` -> ``("moa", preset)`` (same routing as ``/moa``); anything else -> ``(None, model)``.
-
-    Returns ``("moa", "<preset>")`` when *model* selects the MoA virtual provider, otherwise ``(None,
-    model)`` unchanged. This gives non-interactive ``hermes chat -Q -m moa:<preset>`` the same routing the
-    interactive ``/moa`` command and the model picker already use: ``resolve_runtime_provider`` handles
-    ``requested_provider == "moa"`` and ``agent_init`` builds the MoAClient off ``provider == "moa"``.
-    Without this the raw ``moa:<preset>`` string is sent to the real provider and rejected with a 401/400
-    "model not supported" (#56828).
-    """
-    if isinstance(model, str) and model.strip().lower().startswith("moa:"):
-        preset = model.strip().split(":", 1)[1].strip()
-        if preset:
-            return "moa", preset
-    return None, model
 
 _split_model_config_default = _lazy_shim("hermes_cli.config", "split_model_config_default", "_split_model_config_default")
 
@@ -1396,6 +1378,10 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
 
         self._tui_print_startup()
         self._tui_init_run_state()
+        # Cross-session peer messages: start after the lease (registry identity) and the fresh
+        # _pending_input queue exist; the thread exits on _should_exit and clears presence.
+        from hermes_cli.cli_peer_inbox import start_cli_peer_inbox_poller
+        self._peer_inbox_poller = start_cli_peer_inbox_poller(self)
         kb = self._tui_build_key_bindings()
         layout, style = self._tui_build_layout(kb)
 

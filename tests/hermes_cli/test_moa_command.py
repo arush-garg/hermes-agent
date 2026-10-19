@@ -76,15 +76,15 @@ class TestNormalizeMoaModel:
     """
 
     def test_moa_prefix_maps_to_provider_and_preset(self):
-        from cli import _normalize_moa_model
+        from hermes_cli.agent_build_options import normalize_moa_model as _normalize_moa_model
         assert _normalize_moa_model("moa:strategy") == ("moa", "strategy")
 
     def test_none_model_unchanged(self):
-        from cli import _normalize_moa_model
+        from hermes_cli.agent_build_options import normalize_moa_model as _normalize_moa_model
         assert _normalize_moa_model(None) == (None, None)
 
     def test_colon_model_that_is_not_moa_unchanged(self):
-        from cli import _normalize_moa_model
+        from hermes_cli.agent_build_options import normalize_moa_model as _normalize_moa_model
         # A provider:model form for a real provider must not be hijacked.
         assert _normalize_moa_model("openrouter:deepseek/deepseek-v4") == (
             None,

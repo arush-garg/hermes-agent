@@ -303,15 +303,34 @@ def _npx_cached_bin(args: list) -> Optional[tuple]:
     return None
 
 
+def _split_env_default(expr: str) -> Tuple[str, Optional[str]]:
+    """Split a shell-style ``VAR:-default`` / ``VAR-default`` placeholder body into
+    ``(name, default)``; ``(expr, None)`` when no default is present. Claude Code / Cursor
+    ``.mcp.json`` files commonly carry ``${KEY:-fallback}``; without this the whole body was
+    looked up as one variable name and the literal ``${...}`` reached the server (401s)."""
+    for sep in (":-", "-"):
+        idx = expr.find(sep)
+        if idx > 0:
+            return expr[:idx], expr[idx + len(sep):]
+    return expr, None
+
+
 def _interpolate_env_vars(value):
-    """Recursively resolve ``${VAR}`` / Cursor ``${env:VAR}`` placeholders and context vars. Env
-    refs resolve from the active profile's secret scope when multiplexing (the routed profile's
-    value, not another profile's in ``os.environ``). Unset vars keep the literal placeholder."""
+    """Recursively resolve ``${VAR}`` / Cursor ``${env:VAR}`` / shell ``${VAR:-default}``
+    placeholders and context vars. Env refs resolve from the active profile's secret scope when
+    multiplexing (the routed profile's value, not another profile's in ``os.environ``). Unset vars
+    fall back to their inline default when one is given, else keep the literal placeholder."""
     from agent.secret_scope import get_secret as _get_secret
     if isinstance(value, str):
         def _replace(m):
             resolver = _CONTEXT_VAR_RESOLVERS.get(m.group(1).strip())
-            return resolver() if resolver is not None else (_get_secret(_env_ref_name(m.group(1)), m.group(0)) or m.group(0))
+            if resolver is not None:
+                return resolver()
+            name, default = _split_env_default(m.group(1))
+            resolved = _get_secret(_env_ref_name(name), "")
+            if resolved:
+                return resolved
+            return default if default is not None else m.group(0)
         return _ENV_VAR_PATTERN.sub(_replace, value)
     if isinstance(value, dict):
         return {k: _interpolate_env_vars(v) for k, v in value.items()}

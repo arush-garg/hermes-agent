@@ -170,17 +170,12 @@ class CLISessionMixin:
         says so — the in-memory ``tools.approval._session_yolo`` set starts empty in a fresh
         process. No-op when already active or when the process was launched with ``--yolo``."""
         try:
-            from hermes_state import SessionDB
-            from tools.approval import (
-                _YOLO_MODE_FROZEN, enable_session_yolo, is_session_yolo_enabled)
+            from hermes_cli.agent_build_options import restore_persisted_session_yolo
+            restored = restore_persisted_session_yolo(session_meta, self.session_id or "default")
         except Exception:
             return
-        if _YOLO_MODE_FROZEN or not SessionDB.session_yolo_enabled(session_meta):
+        if not restored:
             return
-        session_key = self.session_id or "default"
-        if is_session_yolo_enabled(session_key):
-            return
-        enable_session_yolo(session_key)
         _dim_notice(self,
             "⚡ YOLO mode restored from session — all commands auto-approved. /yolo to turn off.",
             quiet)
@@ -921,11 +916,8 @@ class CLISessionMixin:
         """Persist the YOLO flag to the session row so --resume restores it. Best-effort; the
         in-memory toggle is authoritative. Skipped without a store or before the row exists
         (rows are created lazily on the first turn)."""
-        db = getattr(self, "_session_db", None)
-        if db is None or not session_key or session_key == "default":
-            return
-        with contextlib.suppress(Exception):
-            db.set_session_yolo(session_key, enabled)
+        from hermes_cli.agent_build_options import persist_session_yolo
+        persist_session_yolo(getattr(self, "_session_db", None), session_key, enabled)
 
     def _manual_compress(self, cmd_original: str = ""):
         """Manually trigger context compression.

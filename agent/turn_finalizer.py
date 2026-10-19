@@ -506,6 +506,20 @@ def apply_llm_output_transform(
     return final_response, transformed, pre_transform
 
 
+def _handoff_leftover_steer(agent, result: dict) -> None:
+    """Move an undelivered /steer (and any undelivered cross-session peer message) into
+    ``result["pending_steer"]`` so the surface re-enqueues it as the next user turn. The peer text is
+    already framed with the PEER marker, so the next-turn prompt keeps its no-user-authority provenance."""
+    _leftover_steer = agent._drain_pending_steer()
+    if _leftover_steer:
+        result["pending_steer"] = _leftover_steer
+    _drain_peer = getattr(agent, "_drain_pending_peer_steer", None)
+    _leftover_peer = _drain_peer() if callable(_drain_peer) else None
+    if _leftover_peer:
+        _existing = result.get("pending_steer")
+        result["pending_steer"] = f"{_existing}\n\n{_leftover_peer}" if _existing else _leftover_peer
+
+
 def finalize_turn(
     agent, *, final_response, api_call_count, interrupted, failed, messages, conversation_history,
     effective_task_id, turn_id, user_message, original_user_message, _should_review_memory,
@@ -722,9 +736,7 @@ def finalize_turn(
         result["cleanup_errors"] = _cleanup_errors
     # A /steer landing after the final assistant turn has no tool batch to drain into;
     # hand it back so it becomes the next user turn instead of being lost.
-    _leftover_steer = agent._drain_pending_steer()
-    if _leftover_steer:
-        result["pending_steer"] = _leftover_steer
+    _handoff_leftover_steer(agent, result)
     agent._response_was_previewed = False
     if interrupted and agent._interrupt_message:
         result["interrupt_message"] = agent._interrupt_message

@@ -669,39 +669,18 @@ class CLIInfoMixin:
         """`/context [all]` — 5×20 glyph grid (cell ≈ 1% of the window) plus an estimated
         per-category table; `all` appends per-skill / per-toolset costs. Read-only: same chars/4
         engine as the desktop popover (agent.context_breakdown) — no provider calls, no cache impact."""
+        from hermes_cli.live_slash_core import NO_AGENT_CONTEXT, context_breakdown_lines
         if not self.agent:
-            print("  (._.) No active agent -- send a message first.")
+            print(f"  {NO_AGENT_CONTEXT}")
             return
-
-        args = cmd_original.split(maxsplit=1)[1].strip().lower() if " " in cmd_original else ""
-        expanded = args in {"all", "full", "details"}
-
-        from agent.context_breakdown import (
-            compute_context_details, compute_session_context_breakdown,
-            render_context_breakdown_lines)
-        try:
-            payload = compute_session_context_breakdown(self.agent, self.conversation_history)
+        args = cmd_original.split(maxsplit=1)[1].strip() if " " in cmd_original else ""
+        try:  # shared with the TUI's live-session /context (tui_gateway/methods_slash.py)
+            lines = context_breakdown_lines(self.agent, self.conversation_history, args, model=self.model)
         except Exception as e:
             print(f"  (._.) Could not compute context breakdown: {e}")
             return
-
-        details = None
-        if expanded:
-            try:
-                details = compute_context_details(self.agent)
-            except Exception:
-                details = {"skills": [], "toolsets": []}
-
-        from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
-        try:
-            file_lines = render_context_file_lines(context_file_sources_for_agent(self.agent))
-        except Exception:
-            file_lines = []
-
         print()
-        print(f"  🧠 Context Usage — {payload.get('model') or self.model}")
-        print()
-        for line in render_context_breakdown_lines(payload, details=details, grid=True) + ([""] + file_lines if file_lines else []):
+        for line in lines:
             print(f"  {line}")
         print()
 

@@ -311,6 +311,12 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   // hermes_cli/banner.py) and the "connected" label on the collapse toggle.
   const mcpServers = info.mcp_servers ?? []
   const mcpConnected = mcpServers.filter(s => s.connected).length
+  // A failed server (e.g. a project .mcp.json entry that 401'd) must be visible from the collapsed
+  // headline, like the CLI banner's red line — otherwise "not configured" and "failed" look identical.
+  const mcpFailed = mcpServers.filter(
+    s => !s.connected && !s.disabled && !['disabled', 'connecting', 'configured', 'lazy'].includes(s.status ?? ''),
+  ).length
+  const mcpSuffix = mcpFailed ? `connected · ${mcpFailed} failed` : 'connected'
 
   const toolsBody = () => {
     if (info.lazy && toolEntries.length === 0) {
@@ -479,7 +485,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             count={mcpConnected}
             onToggle={() => setMcpOpen(v => !v)}
             open={mcpOpen}
-            suffix="connected"
+            suffix={mcpSuffix}
             t={t}
             title="MCP Servers"
           >
@@ -495,6 +501,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         {info.lazy && !toolsTotal ? '… ' : `${toolsTotal} `}tools{' · '}
         {info.lazy && !skillsTotal ? '… ' : `${skillsTotal} `}skills
         {mcpConnected ? ` · ${mcpConnected} MCP` : ''}
+        {mcpFailed ? <Text color={t.color.error}>{` · ${mcpFailed} MCP failed`}</Text> : ''}
         {' · '}
         <Text color={t.color.muted}>/help for commands</Text>
       </Text>

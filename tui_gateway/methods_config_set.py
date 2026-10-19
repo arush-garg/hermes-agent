@@ -277,6 +277,11 @@ def _set_yolo(rid, params, key, value, session):
         skey = session["session_key"]
         enable = _BOOL_WORDS.get(raw, not is_session_yolo_enabled(skey))
         (enable_session_yolo if enable else disable_session_yolo)(skey)
+        # Persist onto the row like the CLI's /yolo so a resume on either surface restores it.
+        import contextlib
+        from hermes_cli.agent_build_options import persist_session_yolo
+        with contextlib.suppress(Exception), _session_db(session) as db:
+            persist_session_yolo(db, skey, enable)
         _emit_session_info(params.get("session_id", ""), session)
     else:
         enable = _BOOL_WORDS.get(raw, not is_truthy_value(os.environ.get("HERMES_YOLO_MODE")))

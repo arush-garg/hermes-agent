@@ -301,6 +301,28 @@ def test_portable_only_mcp_configuration_opens_startup_gate(monkeypatch):
 
 
 
+@pytest.mark.parametrize("project_json, expected", [
+    ('{"mcpServers": {"demo": {"type": "http", "url": "https://example.com/mcp"}}}', True),
+    ('{"mcpServers": {"broken": {"type": "http"}}}', False),
+    ('{"mcpServers": {}}', False),
+    ('not json', False),
+    (None, False),
+])
+def test_project_only_configuration_opens_shared_startup_gate(monkeypatch, tmp_path, project_json, expected):
+    from tools import mcp_tool_config
+    from tui_gateway import entry
+
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", types.SimpleNamespace(read_raw_config=lambda: {}))
+    monkeypatch.setitem(sys.modules, "hermes_cli.agent_plugins", types.SimpleNamespace(
+        has_enabled_agent_plugin_mcp=lambda _config: False))
+    monkeypatch.setattr(mcp_tool_config, "_workspace_folder", lambda: str(tmp_path))
+    if project_json is not None:
+        (tmp_path / ".mcp.json").write_text(project_json)
+
+    assert mcp_startup._has_configured_mcp_servers() is expected
+    assert entry._has_configured_mcp_servers() is expected
+
+
 def _retry_logger():
     return types.SimpleNamespace(
         debug=lambda *_a, **_k: None,

@@ -85,6 +85,26 @@ def resolve_turn_liveness_settings(
     return timeout_s, poll_s
 
 
+def _idle_seconds(activity_ts: Optional[float], clock_pair: Any) -> float:
+    """Awake idle time since the last activity stamp.
+
+    Prefers the monotonic half of ``_last_activity_clock_pair`` because
+    ``time.monotonic()`` pauses while the host is suspended: a laptop that
+    slept through a connectivity pause must not have the sleep counted as a
+    stalled turn (the pause loop's own 30s touches cannot run while asleep).
+    Falls back to wall-clock when the pair is missing or stale, i.e. when
+    something wrote ``_last_activity_ts`` directly without ``_touch_activity``.
+    """
+    if activity_ts is None:
+        return 0.0
+    if isinstance(clock_pair, tuple) and len(clock_pair) == 2 and clock_pair[0] == activity_ts:
+        try:
+            return max(0.0, time.monotonic() - float(clock_pair[1]))
+        except (TypeError, ValueError):
+            pass
+    return max(0.0, time.time() - activity_ts)
+
+
 class TurnLivenessWatchdog:
     """Sampled-idle watchdog bound to one conversation turn (via the shared
     periodic scheduler; timer thread orders, body runs on its own worker).
@@ -147,8 +167,8 @@ class TurnLivenessWatchdog:
                 return None
             generation = getattr(self._agent, "_turn_liveness_activity_generation", 0)
             activity_ts = getattr(self._agent, "_last_activity_ts", None)
-        idle_seconds = 0.0 if activity_ts is None else max(0.0, time.time() - activity_ts)
-        return ActivitySnapshot(generation, activity_ts, idle_seconds)
+            clock_pair = getattr(self._agent, "_last_activity_clock_pair", None)
+        return ActivitySnapshot(generation, activity_ts, _idle_seconds(activity_ts, clock_pair))
 
     def _emit_warning(self, text: str, debug_msg: str) -> None:
         emit_warning = getattr(self._agent, "_emit_warning", None)

@@ -372,6 +372,27 @@ class TestEnvVarInterpolation:
         assert _env_ref_name("API_KEY") == "API_KEY"
         assert _env_ref_name(" env:API_KEY ") == "API_KEY"
 
+    def test_shell_default_used_when_unset(self, monkeypatch):
+        """Claude Code-style ``${VAR:-default}`` falls back to the inline default."""
+        monkeypatch.delenv("HERMES_TEST_UNSET_KEY", raising=False)
+        from tools.mcp_tool_config import _interpolate_env_vars
+
+        assert _interpolate_env_vars("Bearer ${HERMES_TEST_UNSET_KEY:-fallback}") == "Bearer fallback"
+        assert _interpolate_env_vars("Bearer ${HERMES_TEST_UNSET_KEY-fallback}") == "Bearer fallback"
+
+    def test_shell_default_ignored_when_set(self, monkeypatch):
+        monkeypatch.setenv("MY_KEY", "secret123")
+        from tools.mcp_tool_config import _interpolate_env_vars
+
+        assert _interpolate_env_vars("Bearer ${MY_KEY:-fallback}") == "Bearer secret123"
+        assert _interpolate_env_vars("Bearer ${env:MY_KEY:-fallback}") == "Bearer secret123"
+
+    def test_unset_without_default_keeps_placeholder(self, monkeypatch):
+        monkeypatch.delenv("HERMES_TEST_UNSET_KEY", raising=False)
+        from tools.mcp_tool_config import _interpolate_env_vars
+
+        assert _interpolate_env_vars("${HERMES_TEST_UNSET_KEY}") == "${HERMES_TEST_UNSET_KEY}"
+
 
 class TestContextVarInterpolation:
     """Cursor-style context variables: ${userHome}, ${workspaceFolder},
