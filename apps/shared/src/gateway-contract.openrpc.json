@@ -17046,7 +17046,8 @@
       "McpServerSource": {
         "enum": [
           "config",
-          "plugin"
+          "plugin",
+          "project"
         ],
         "title": "McpServerSource",
         "type": "string"

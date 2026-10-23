@@ -267,7 +267,30 @@ def _write_or_exit(payload: dict, reason: str) -> None:
         sys.exit(0)
 
 
+def _pin_launch_terminal_cwd() -> None:
+    """Anchor ``TERMINAL_CWD`` to the folder ``hermes --tui`` was launched in (local backend only).
+
+    The classic CLI exports ``TERMINAL_CWD=os.getcwd()`` at startup (``cli_config_load``); the TUI
+    gateway did not, so the first prompt turn's lazy ``import gateway.run`` resolved the ``cwd: .``
+    placeholder to ``$HOME`` and every later workspace read (project ``.mcp.json``, the MCP
+    allowlist, parked-server self-probes) silently moved to ``~``.
+    """
+    if os.environ.get("TERMINAL_CWD", "").strip() not in {"", ".", "auto", "cwd"}:
+        return
+    if (os.environ.get("TERMINAL_ENV") or "local").strip().lower() != "local":
+        return
+    launch = os.environ.get("HERMES_CWD", "").strip()
+    if not (launch and os.path.isdir(launch)):
+        try:
+            launch = os.getcwd()
+        except OSError:
+            return
+    os.environ["TERMINAL_CWD"] = os.path.abspath(launch)
+
+
 def main():
+    # Before anything can lazily import gateway.run (which would pin $HOME instead).
+    _pin_launch_terminal_cwd()
     # stdout is this process's JSON-RPC client channel: peer-less global broadcasts belong on it.
     server._stdio_is_rpc_channel = True
     try:

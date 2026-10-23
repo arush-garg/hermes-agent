@@ -112,8 +112,10 @@ def _mcp_rpc(name: str, required=_NAME):
 
 
 def _mcp_server_rows():
+    """``(servers, origins)``: every server the runtime connects (config.yaml + plugin + workspace
+    ``.mcp.json``) and ``name -> (source, plugin)``; see ``mcp_rpc_helpers.server_configs_with_origins``."""
     config_servers = _tools_mod("hermes_cli.mcp_config")._get_mcp_servers()
-    return _tools_mod("tui_gateway.mcp_rpc_helpers").server_configs_with_sources(config_servers)
+    return _tools_mod("tui_gateway.mcp_rpc_helpers").server_configs_with_origins(config_servers)
 
 
 def _mcp_named_server(rid, params):
@@ -122,11 +124,10 @@ def _mcp_named_server(rid, params):
     return name, servers, None if name in servers else _err(rid, 4064, f"server '{name}' not found")
 
 
-def _mcp_plugin_write_error(rid, name: str, plugins: dict):
-    plugin = plugins.get(name)
-    if plugin is not None:
-        return _err(rid, 4090, f"server '{name}' is provided by plugin '{plugin}' and cannot be modified")
-    return None
+def _mcp_plugin_write_error(rid, name: str, origins: dict):
+    """4090 when ``name`` is owned by a plugin or the workspace ``.mcp.json`` (neither lives in config.yaml)."""
+    reason = _tools_mod("tui_gateway.mcp_rpc_helpers").server_write_error(name, origins)
+    return _err(rid, 4090, reason) if reason else None
 
 
 def _mcp_config_server_or_error(rid, params):
@@ -1217,10 +1218,10 @@ def _configure_session_tools(rid, params: dict, sid: str, session) -> dict:
     toolset_targets = [name for name in targets if ":" not in name and name in valid_toolsets]
     if toolset_targets:
         tc._apply_toolset_change(cfg, "cli", toolset_targets, action)
-    plugins = _mcp_server_rows()[1]
+    origins = _mcp_server_rows()[1]
     for target in mcp_targets:
         server_name = target.split(":", 1)[0]
-        if err := _mcp_plugin_write_error(rid, server_name, plugins):
+        if err := _mcp_plugin_write_error(rid, server_name, origins):
             return err
     missing_servers = tc._apply_mcp_change(cfg, mcp_targets, action) if mcp_targets else set()
     hc.save_config(cfg)
@@ -1376,9 +1377,9 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """``{servers: [{name, transport, url, command, args, env (key names), auth, oauth_tokens_present,
     enabled, tools}]}``"""
-    servers, plugins = _mcp_server_rows()
+    servers, origins = _mcp_server_rows()
     return _ok(rid, {"servers": [
-        _mcp_summarize_server(name, cfg, plugins[name]) for name, cfg in sorted(servers.items())
+        _mcp_summarize_server(name, cfg, origins[name][1], origins[name][0]) for name, cfg in sorted(servers.items())
     ]})
 
 
@@ -1389,14 +1390,14 @@ def _(rid, params: dict) -> dict:
     scoped profile's; otherwise it is shown only when ``profile`` is the launch profile."""
     import time
     hc = _tools_mod("hermes_constants")
-    configured, plugins = _mcp_server_rows()
+    configured, origins = _mcp_server_rows()
     include_runtime = (_tools_mod("agent.secret_scope").is_multiplex_active()
                        or hc.hermes_home_key() == hc.hermes_home_key(hc.get_process_hermes_home()))
     safe = ("name", "transport", "tools", "connected", "disabled", "status")
     servers = _tools_mod("tools.mcp_tool_discovery").get_mcp_status(configured, include_runtime=include_runtime)
     return _ok(rid, {"servers": [
-        {**{k: e[k] for k in safe if k in e}, "source": "plugin" if plugins[e["name"]] is not None else "config",
-         "plugin": plugins[e["name"]]} for e in servers
+        {**{k: e[k] for k in safe if k in e}, "source": origins[e["name"]][0],
+         "plugin": origins[e["name"]][1]} for e in servers
     ], "checked_at": int(time.time() * 1000)})
 
 
@@ -1406,8 +1407,8 @@ def _(rid, params: dict) -> dict:
     tools); ``bearer_token`` goes to the profile's .env (only the header template persists). Dup → 4090."""
     mc = _tools_mod("hermes_cli.mcp_config")
     name, preset = _str_arg(params, "name"), _str_arg(params, "preset")
-    servers, plugins = _mcp_server_rows()
-    if err := _mcp_plugin_write_error(rid, name, plugins):
+    servers, origins = _mcp_server_rows()
+    if err := _mcp_plugin_write_error(rid, name, origins):
         return err
     if name in servers:
         return _err(rid, 4090, f"server '{name}' already exists")

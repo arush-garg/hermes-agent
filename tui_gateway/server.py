@@ -2202,8 +2202,9 @@ def _resolve_explicit_toolsets(explicit: list[str], validate_toolset) -> list[st
         return None
     if not unresolved:
         return built_in
-    try:  # (enabled, disabled) MCP server names from raw config; both empty on any failure
+    try:  # (enabled, disabled) MCP server names from raw config + project .mcp.json; both empty on any failure
         from hermes_cli.config import read_raw_config
+        from hermes_cli.tools_config import enabled_mcp_server_names
         from tools.mcp_tool_common import mcp_server_enabled
         raw_cfg = read_raw_config()
         mcp_servers = raw_cfg.get("mcp_servers") if isinstance(raw_cfg.get("mcp_servers"), dict) else {}
@@ -2212,6 +2213,7 @@ def _resolve_explicit_toolsets(explicit: list[str], validate_toolset) -> list[st
             if isinstance(server_cfg, dict):
                 on = mcp_server_enabled(server_cfg)
                 (mcp_names if on else mcp_disabled).add(str(name))
+        mcp_names |= enabled_mcp_server_names(raw_cfg) - mcp_disabled  # plugin + workspace .mcp.json servers
     except Exception:
         mcp_names, mcp_disabled = set(), set()
     mcp_valid = [name for name in unresolved if name in mcp_names]
@@ -11057,8 +11059,8 @@ def _mcp_resolve_profile(rid, params):  # noqa: E402
     return _rp(rid, params, _err)
 
 
-def _mcp_summarize_server(name, cfg):  # noqa: E402
-    return _mcp_summarize_server_impl(name, cfg)
+def _mcp_summarize_server(name, cfg, plugin=None, source=None):  # noqa: E402
+    return _mcp_summarize_server_impl(name, cfg, plugin, source)
 
 
 # ── Split @method handler modules (see method_ctx.py) ────────────────

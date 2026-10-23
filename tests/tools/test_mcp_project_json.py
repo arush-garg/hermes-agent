@@ -140,3 +140,39 @@ def test_project_servers_pass_suspicious_filter(tmp_path, monkeypatch):
     _write_mcp_json(tmp_path, {"proj": {"command": "proj-cmd"}})
     real = _load_project_mcp_json(str(tmp_path))
     assert "proj" in real
+
+
+# ─── toolset allowlist (enabled_mcp_server_names) ────────────────────────────
+#
+# Project servers connect via _load_mcp_config, but the CLI/cron/ACP toolset allowlist is built
+# from enabled_mcp_server_names. If that only reads config.yaml, a project server registers its
+# tools and then has every one of them filtered out before the model sees them.
+
+def _allowlist(global_servers, project):
+    from hermes_cli.tools_config import enabled_mcp_server_names
+    with mock_patch("tools.mcp_tool_config._load_project_mcp_json", return_value=project), \
+         mock_patch("hermes_cli.plugins.get_portable_mcp_server_names_nowait", return_value=set()):
+        return enabled_mcp_server_names({"mcp_servers": global_servers})
+
+
+def test_project_servers_are_on_toolset_allowlist():
+    names = _allowlist({"glob": {"command": "g"}}, {"proj-only": {"url": "https://example.com/mcp"}})
+    assert names == {"glob", "proj-only"}
+
+
+def test_project_server_disabled_flag_respected():
+    names = _allowlist({}, {"off": {"command": "x", "enabled": False}, "on": {"command": "y"}})
+    assert names == {"on"}
+
+
+def test_project_server_name_collision_does_not_resurrect_disabled_global():
+    """Global config wins on collision, even when the global entry is disabled."""
+    names = _allowlist({"shared": {"command": "g", "enabled": False}}, {"shared": {"command": "p"}})
+    assert names == set()
+
+
+def test_project_loader_failure_leaves_global_allowlist_intact():
+    from hermes_cli.tools_config import enabled_mcp_server_names
+    with mock_patch("tools.mcp_tool_config._load_project_mcp_json", side_effect=OSError("boom")), \
+         mock_patch("hermes_cli.plugins.get_portable_mcp_server_names_nowait", return_value=set()):
+        assert enabled_mcp_server_names({"mcp_servers": {"glob": {"command": "g"}}}) == {"glob"}

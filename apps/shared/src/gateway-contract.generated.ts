@@ -3874,7 +3874,7 @@ export interface McpServerSummary {
   source: McpServerSource
   plugin?: string | null
 }
-export type McpServerSource = 'config' | 'plugin'
+export type McpServerSource = 'config' | 'plugin' | 'project'
 export interface McpServersStatusResult {
   servers: McpServerRuntimeRow[]
   checked_at: number

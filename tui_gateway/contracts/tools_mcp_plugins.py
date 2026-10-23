@@ -360,6 +360,7 @@ method("mcp.catalog", params=ProfileParams, result=McpCatalogResult,
 class McpServerSource(WireEnum):
     config = "config"
     plugin = "plugin"
+    project = "project"  # workspace ``.mcp.json``; connects like config, not editable through config.yaml
 
 
 class McpServerSummary(Result):

@@ -10,8 +10,19 @@ from typing import Any, Dict, Mapping
 
 
 def server_configs_with_sources(config_servers: Mapping[str, dict]) -> tuple[Dict[str, dict], Dict[str, str | None]]:
+    servers, origins = server_configs_with_origins(config_servers)
+    return servers, {name: plugin for name, (_source, plugin) in origins.items()}
+
+
+def server_configs_with_origins(
+    config_servers: Mapping[str, dict],
+) -> tuple[Dict[str, dict], Dict[str, tuple[str, str | None]]]:
+    """``(servers, origins)`` for every server the runtime would connect: config.yaml, portable plugins,
+    then the workspace ``.mcp.json`` (additive-only, same precedence as ``_load_mcp_config``). ``origins``
+    maps name → ``(source, plugin)`` with source ``config`` / ``plugin`` / ``project``. Project servers live
+    outside config.yaml, so they are listed but — like plugin servers — never written through it."""
     servers = {name: dict(cfg) for name, cfg in config_servers.items() if isinstance(cfg, dict)}
-    plugins: Dict[str, str | None] = {name: None for name in servers}
+    origins: Dict[str, tuple[str, str | None]] = {name: ("config", None) for name in servers}
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
         from tools.mcp_tool_config import _filter_suspicious_mcp_servers
@@ -23,13 +34,32 @@ def server_configs_with_sources(config_servers: Mapping[str, dict]) -> tuple[Dic
         for name, cfg in portable.items():
             if name not in servers:
                 servers[name] = dict(cfg)
-                plugins[name] = owners.get(name)
+                origins[name] = ("plugin", owners.get(name))
     except Exception:
         pass
-    return servers, plugins
+    try:
+        from tools.mcp_tool_config import _filter_suspicious_mcp_servers, _load_project_mcp_json
+
+        for name, cfg in _filter_suspicious_mcp_servers(_load_project_mcp_json()).items():
+            if name not in servers:
+                servers[name] = dict(cfg)
+                origins[name] = ("project", None)
+    except Exception:
+        pass
+    return servers, origins
 
 
-def summarize_server(name: str, cfg: dict, plugin: str | None = None) -> Dict[str, Any]:
+def server_write_error(name: str, origins: Mapping[str, tuple[str, str | None]]) -> str | None:
+    """Reason a server cannot be edited through config.yaml, or None when it can."""
+    source, plugin = origins.get(name, ("config", None))
+    if source == "plugin":
+        return f"server '{name}' is provided by plugin '{plugin}' and cannot be modified"
+    if source == "project":
+        return f"server '{name}' comes from the workspace .mcp.json; edit that file instead"
+    return None
+
+
+def summarize_server(name: str, cfg: dict, plugin: str | None = None, source: str | None = None) -> Dict[str, Any]:
     from hermes_cli.mcp_config import _oauth_tokens_present
     from tools.mcp_tool_common import mcp_server_enabled
 
@@ -50,7 +80,7 @@ def summarize_server(name: str, cfg: dict, plugin: str | None = None) -> Dict[st
         "oauth_tokens_present": _oauth_tokens_present(name) if auth == "oauth" else None,
         "enabled": mcp_server_enabled(cfg),
         "tools": cfg.get("tools"),
-        "source": "plugin" if plugin is not None else "config",
+        "source": source or ("plugin" if plugin is not None else "config"),
         "plugin": plugin}
 
 

@@ -716,8 +716,17 @@ def cmd_mcp_remove(args):
 
 
 def cmd_mcp_list(args=None):
-    """List all configured MCP servers."""
-    servers = _get_mcp_servers()
+    """List every MCP server the runtime connects: config.yaml plus the workspace ``.mcp.json``."""
+    servers = dict(_get_mcp_servers())
+    project_names: set = set()
+    try:
+        from tools.mcp_tool_config import _load_project_mcp_json
+        for name, cfg in _load_project_mcp_json().items():
+            if name not in servers:
+                servers[name] = cfg
+                project_names.add(name)
+    except Exception:
+        pass
     if not servers:
         print()
         _info("No MCP servers configured.")
@@ -731,8 +740,8 @@ def cmd_mcp_list(args=None):
     print()
     print(color("  MCP Servers:", Colors.CYAN + Colors.BOLD))
     print()
-    print(f"  {'Name':<16} {'Transport':<30} {'Tools':<12} {'Status':<10}")
-    print(f"  {'─' * 16} {'─' * 30} {'─' * 12} {'─' * 10}")
+    print(f"  {'Name':<16} {'Transport':<30} {'Tools':<12} {'Status':<12} {'Source'}")
+    print(f"  {'─' * 16} {'─' * 30} {'─' * 12} {'─' * 12} {'─' * 10}")
 
     for name, cfg in servers.items():
         if "url" in cfg:
@@ -756,8 +765,9 @@ def cmd_mcp_list(args=None):
             tools_str = "all"
 
         enabled = mcp_server_enabled(cfg)
-        status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
-        print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")
+        status = color(f"{'✓ enabled':<12}", Colors.GREEN) if enabled else color(f"{'✗ disabled':<12}", Colors.DIM)
+        source = ".mcp.json" if name in project_names else "config.yaml"
+        print(f"  {name:<16} {transport:<30} {tools_str:<12} {status} {color(source, Colors.DIM)}")
     print()
 
 

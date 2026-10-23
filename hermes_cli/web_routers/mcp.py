@@ -97,13 +97,13 @@ async def list_mcp_servers(profile: Optional[str] = None):
 
     def _read():
         config_servers = _get_mcp_servers()
-        from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+        from tui_gateway.mcp_rpc_helpers import server_configs_with_origins
 
-        return server_configs_with_sources(config_servers)
+        return server_configs_with_origins(config_servers)
 
-    servers, plugins = await asyncio.to_thread(_secret_scoped(profile, _read))
+    servers, origins = await asyncio.to_thread(_secret_scoped(profile, _read))
     return {"servers": [
-        _mcp_server_summary(name, cfg, plugins[name]) for name, cfg in sorted(servers.items())
+        _mcp_server_summary(name, cfg, origins[name][1], origins[name][0]) for name, cfg in sorted(servers.items())
     ]}
 
 
@@ -122,13 +122,11 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
         # between check and save.
         with config_write_scope(body.profile or profile):
             config_servers = _get_mcp_servers()
-            from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+            from tui_gateway.mcp_rpc_helpers import server_configs_with_origins, server_write_error
 
-            servers, plugins = server_configs_with_sources(config_servers)
-            if plugin := plugins.get(name):
-                raise HTTPException(
-                    status_code=409, detail=f"Server '{name}' is provided by plugin '{plugin}' and cannot be modified",
-                )
+            servers, origins = server_configs_with_origins(config_servers)
+            if reason := server_write_error(name, origins):
+                raise HTTPException(status_code=409, detail=reason[0].upper() + reason[1:])
             if name in servers:
                 raise HTTPException(status_code=409, detail=f"Server '{name}' already exists")
             if bearer_token is not None:
@@ -157,12 +155,12 @@ async def replace_mcp_servers(body: MCPServersReplace, profile: Optional[str] = 
 
     def _run():
         with config_write_scope(body.profile or profile):
-            from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+            from tui_gateway.mcp_rpc_helpers import server_configs_with_origins, server_write_error
 
-            _servers, plugins = server_configs_with_sources({})
+            _servers, origins = server_configs_with_origins({})
             for name in body.servers:
-                if plugin := plugins.get(name):
-                    return False, [f"Server '{name}' is provided by plugin '{plugin}' and cannot be modified"]
+                if reason := server_write_error(name, origins):
+                    return False, [reason[0].upper() + reason[1:]]
             return _replace_mcp_servers(body.servers)
 
     ok, issues = await asyncio.to_thread(_run)
@@ -178,13 +176,11 @@ async def remove_mcp_server(name: str, profile: Optional[str] = None):
     def _run():
         with config_write_scope(profile):
             config_servers = _get_mcp_servers()
-            from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+            from tui_gateway.mcp_rpc_helpers import server_configs_with_origins, server_write_error
 
-            _servers, plugins = server_configs_with_sources(config_servers)
-            if plugin := plugins.get(name):
-                raise HTTPException(
-                    status_code=409, detail=f"Server '{name}' is provided by plugin '{plugin}' and cannot be modified",
-                )
+            _servers, origins = server_configs_with_origins(config_servers)
+            if reason := server_write_error(name, origins):
+                raise HTTPException(status_code=409, detail=reason[0].upper() + reason[1:])
             return _remove_mcp_server(name)
 
     if not await asyncio.to_thread(_run):
@@ -260,16 +256,17 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
     def _read():
         with _profile_secret_scope(profile):
             config_servers = _get_mcp_servers()
-            from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+            from tui_gateway.mcp_rpc_helpers import server_configs_with_origins
 
-            servers, plugins = server_configs_with_sources(config_servers)
-            return servers, plugins, _home()
+            servers, origins = server_configs_with_origins(config_servers)
+            return servers, origins, _home()
 
-    servers, plugins, flow_home = await asyncio.to_thread(_read)
+    servers, origins, flow_home = await asyncio.to_thread(_read)
     if name not in servers:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
-    if plugin := plugins.get(name):
-        raise HTTPException(status_code=409, detail=f"Server '{name}' is provided by plugin '{plugin}' and cannot be modified")
+    from tui_gateway.mcp_rpc_helpers import server_write_error
+    if reason := server_write_error(name, origins):
+        raise HTTPException(status_code=409, detail=reason[0].upper() + reason[1:])
     cfg = dict(servers[name])
     if not cfg.get("url"):
         raise HTTPException(status_code=400, detail="stdio servers authenticate via env keys, not OAuth")
@@ -367,13 +364,11 @@ async def set_mcp_server_enabled(name: str, body: MCPEnabledToggle, profile: Opt
     def _run():
         with config_write_scope(body.profile or profile):
             cfg = load_config()
-            from tui_gateway.mcp_rpc_helpers import server_configs_with_sources
+            from tui_gateway.mcp_rpc_helpers import server_configs_with_origins, server_write_error
 
-            _servers, plugins = server_configs_with_sources(cfg.get("mcp_servers") or {})
-            if plugin := plugins.get(name):
-                raise HTTPException(
-                    status_code=409, detail=f"Server '{name}' is provided by plugin '{plugin}' and cannot be modified",
-                )
+            _servers, origins = server_configs_with_origins(cfg.get("mcp_servers") or {})
+            if reason := server_write_error(name, origins):
+                raise HTTPException(status_code=409, detail=reason[0].upper() + reason[1:])
             servers = cfg.get("mcp_servers")
             if not isinstance(servers, dict) or name not in servers:
                 raise HTTPException(status_code=404, detail=f"Server '{name}' not found")

@@ -423,9 +423,10 @@ def _parse_enabled_flag(value, default: bool = True) -> bool:
 
 
 def enabled_mcp_server_names(config: dict) -> Set[str]:
-    """MCP servers globally enabled in config.yaml or by a plugin (shared by platform + cron resolvers). Enabled
-    unless ``enabled`` is explicitly falsey; portable-plugin servers (in-memory) count — enabling the plugin is
-    the opt-in."""
+    """MCP servers globally enabled in config.yaml, by a plugin, or by the project's ``.mcp.json`` (shared by
+    platform + cron resolvers). Enabled unless ``enabled`` is explicitly falsey; portable-plugin servers
+    (in-memory) count — enabling the plugin is the opt-in. Project-local servers are additive-only, mirroring
+    ``_load_mcp_config``: they connect, so they must also be on the allowlist or their tools stay invisible."""
     from tools.mcp_tool_common import mcp_server_enabled
 
     mcp_servers = (config or {}).get("mcp_servers") or {}
@@ -439,6 +440,15 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
         names |= portable - set(mcp_servers)  # native config wins on a name collision (mirrors _load_mcp_config)
     except Exception:
         logger.debug("Failed to include portable MCP servers", exc_info=True)
+    try:
+        from tools.mcp_tool_config import _load_project_mcp_json
+        project = {
+            str(name) for name, server_cfg in _load_project_mcp_json().items()
+            if isinstance(server_cfg, dict) and mcp_server_enabled(server_cfg)
+        }
+        names |= project - set(mcp_servers)  # global/plugin names win on collision (mirrors _load_mcp_config)
+    except Exception:
+        logger.debug("Failed to include project .mcp.json MCP servers", exc_info=True)
     return names
 
 

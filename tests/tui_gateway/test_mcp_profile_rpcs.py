@@ -32,6 +32,9 @@ def hermes_root(tmp_path, monkeypatch):
     (root / "profiles" / "work").mkdir(parents=True)
     (root / "profiles" / "other").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(root))
+    # Server lists also read the workspace .mcp.json; pin the workspace to an empty dir so the
+    # developer's real project file never leaks into these assertions.
+    monkeypatch.setattr("tools.mcp_tool_config._workspace_folder", lambda: str(tmp_path / "ws"))
     # Make sure no stale process-wide home override leaks in from another test.
     from hermes_constants import get_hermes_home_override
 
@@ -522,3 +525,51 @@ def test_test_resolves_env_refs_from_requested_profile_secret_scope(hermes_root,
     assert result["ok"] is True
     assert resolved["Authorization"] == "Bearer work-token"
     assert os.environ["ALPHA_ONLY_TOKEN"] == "default-process-token"
+
+
+# ── workspace .mcp.json servers ──────────────────────────────────────────────
+#
+# A project .mcp.json server connects at runtime (``_load_mcp_config`` merges it), so the TUI /
+# desktop server lists must show it; and since it does not live in config.yaml, config writes
+# (add / remove / tools.configure) must refuse it the way they refuse plugin servers.
+
+@pytest.fixture
+def project_server(monkeypatch):
+    monkeypatch.setattr(
+        "tools.mcp_tool_config._load_project_mcp_json",
+        lambda workspace_root=None: {"odoo": {"url": "https://odoo.example.com/mcp",
+                                              "headers": {"Authorization": "Bearer x"}}},
+    )
+
+
+def test_list_includes_workspace_mcp_json_servers(hermes_root, project_server):
+    _result(_call("mcp.servers.add", {"profile": "work", "name": "svc-a", "config": {"command": "svc-a-bin"}}))
+
+    rows = {s["name"]: s for s in _result(_call("mcp.servers.list", {"profile": "work"}))["servers"]}
+    assert set(rows) == {"svc-a", "odoo"}
+    assert rows["svc-a"]["source"] == "config"
+    assert rows["odoo"] == {**rows["odoo"], "source": "project", "plugin": None, "transport": "http",
+                            "url": "https://odoo.example.com/mcp", "auth": "header", "enabled": True}
+
+    status = {s["name"]: s for s in _result(_call("mcp.servers.status", {"profile": "work"}))["servers"]}
+    assert status["odoo"]["source"] == "project"
+    assert status["odoo"]["status"] in {"configured", "connecting", "failed", "connected"}
+
+
+def test_workspace_server_is_not_writable_through_config(hermes_root, project_server):
+    add = _call("mcp.servers.add", {"profile": "work", "name": "odoo", "config": {"url": "https://x/mcp"}})
+    assert add["error"]["code"] == 4090 and ".mcp.json" in add["error"]["message"]
+
+    remove = _call("mcp.servers.remove", {"profile": "work", "name": "odoo"})
+    assert remove["error"]["code"] == 4090
+    assert "odoo" not in _read_yaml(hermes_root / "profiles" / "work" / "config.yaml").get("mcp_servers", {})
+
+
+def test_config_server_shadows_same_named_workspace_server(hermes_root, project_server):
+    """Global config wins on a name collision (additive-only project file, as in _load_mcp_config)."""
+    (hermes_root / "profiles" / "work" / "config.yaml").write_text(
+        "mcp_servers:\n  odoo:\n    command: local-odoo\n", encoding="utf-8")
+    rows = {s["name"]: s for s in _result(_call("mcp.servers.list", {"profile": "work"}))["servers"]}
+    assert rows["odoo"]["source"] == "config" and rows["odoo"]["command"] == "local-odoo"
+    # ...and once it is config-owned it is editable again.
+    assert _result(_call("mcp.servers.remove", {"profile": "work", "name": "odoo"}))["removed"] is True
