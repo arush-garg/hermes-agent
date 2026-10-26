@@ -371,24 +371,24 @@ DANGEROUS_PATTERNS = [
      "dynamic shell word may expand to arbitrary program execution flag"),
     # Gateway lifecycle: stopping/restarting the gateway kills all running agents. Global flags
     # between `hermes` and `gateway` (`hermes -p ade gateway restart`) are allowed so a profile flag can't slip past.
-    (r'\bhermes\s+(?:-{1,2}\S+(?:\s+\S+)?\s+)*gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
+    (r'\bhermes\s+' + _GLOBAL_FLAGS + r'gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
     # Docker/Podman daemon redirect — global flags or env that point the CLI at a DIFFERENT (often remote) daemon:
     # `docker -H ssh://prod stop app` looks local but operates on remote infra, so any redirect requires approval
     # regardless of subcommand. The flag must be in global position (before the subcommand) and -H/--host/--context
     # must carry a value, keeping `docker -h` and `docker run -h <hostname>` out. Listed BEFORE the lifecycle rules so
     # a redirected lifecycle command surfaces the more specific reason.
-    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:-h|--host)[=\s]+\S+', "docker with remote daemon redirect (-H/--host)"),
-    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:-c|--context)[=\s]+\S+', "docker with daemon redirect (--context: alternate daemon)"),
+    (r'\bdocker\s+' + _CONTAINER_GLOBAL_FLAGS + r'(?:-h|--host)[=\s]+\S+', "docker with remote daemon redirect (-H/--host)"),
+    (r'\bdocker\s+' + _CONTAINER_GLOBAL_FLAGS + r'(?:-c|--context)[=\s]+\S+', "docker with daemon redirect (--context: alternate daemon)"),
     (r'\bdocker\s+context\s+use\b', "docker context use (switches default daemon for future commands)"),
-    (r'\bpodman\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:--url|--connection|--identity)[=\s]+\S+', "podman with remote daemon redirect (--url/--connection/--identity)"),
-    (r'\bpodman\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(?:-r\b|--remote\b)', "podman remote mode (-r/--remote: remote daemon)"),
+    (r'\bpodman\s+' + _CONTAINER_GLOBAL_FLAGS + r'(?:--url|--connection|--identity)[=\s]+\S+', "podman with remote daemon redirect (--url/--connection/--identity)"),
+    (r'\bpodman\s+' + _CONTAINER_GLOBAL_FLAGS + r'(?:-r\b|--remote\b)', "podman remote mode (-r/--remote: remote daemon)"),
     (r'\b(?:docker_host|docker_context|container_host|container_connection)=\S+', "docker/podman daemon redirect via environment (DOCKER_HOST/CONTAINER_HOST)"),
     # Container lifecycle (docker.sock mounts let the agent stop/kill containers) always needs
     # consent. Global flags between docker/compose and the verb and the legacy `docker-compose`
     # binary are allowed so a flag can't slip past.
-    (r'\bdocker(?:-compose|\s+compose)\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(restart|stop|kill|down)\b', "docker compose restart/stop/kill/down (container lifecycle)"),
-    (r'\bdocker\s+(?:-{1,2}\S+(?:[=\s]\S+)?\s+)*(restart|stop|kill)\b', "docker restart/stop/kill (container lifecycle)"),
+    (r'\bdocker(?:-compose|\s+compose)\s+' + _CONTAINER_GLOBAL_FLAGS + r'(restart|stop|kill|down)\b', "docker compose restart/stop/kill/down (container lifecycle)"),
+    (r'\bdocker\s+' + _CONTAINER_GLOBAL_FLAGS + r'(restart|stop|kill)\b', "docker restart/stop/kill (container lifecycle)"),
     # Gateway protection: never start gateway outside systemd management
     (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),

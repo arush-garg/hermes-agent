@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
@@ -25,9 +26,8 @@ HEARTBEAT_PROMPT_TEMPLATE = (
     "right now, reply briefly that nothing has changed and stop — do not invent work."
 )
 
-_DURATION_RE = re.compile(
-    r"^\s*(\d+(?:\.\d+)?)\s*(s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?|d|days?)\s*$", re.IGNORECASE)
-_EVERY_PREFIX_RE = re.compile(r"^\s*every\s+", re.IGNORECASE)
+_INTERVAL_RE = re.compile(
+    r"^\s*(?:every\s+)?(\d+(?:\.\d+)?)\s*(s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?|d|days?)\s*$", re.IGNORECASE)
 
 _UNIT_SECONDS = {
     **dict.fromkeys(("s", "sec", "secs", "second", "seconds"), 1),
@@ -43,23 +43,15 @@ _STATE_FIELDS = {
 }
 
 
-def parse_duration(text: str) -> Optional[int]:
-    """Parse ``30s`` / ``10m`` / ``2h`` / ``90 minutes`` / ``1.5d`` into whole seconds; None when not a duration.
-
-    The shared grammar behind ``/heartbeat every <interval>`` and ``/wait <duration>``; no floor applied.
-    """
-    m = _DURATION_RE.match(text) if text else None
-    return int(float(m.group(1)) * _UNIT_SECONDS[m.group(2).lower()]) if m else None
-
-
 def parse_interval(text: str) -> Optional[int]:
     """Parse ``10m`` / ``every 2h`` / ``every 90 minutes`` into seconds.
 
     None when not an interval; below ``MIN_INTERVAL_SECONDS`` returns -1 so callers can tell "too small" apart.
     """
-    seconds = parse_duration(_EVERY_PREFIX_RE.sub("", text, count=1)) if text else None
-    if seconds is None:
+    m = _INTERVAL_RE.match(text) if text else None
+    if not m:
         return None
+    seconds = int(float(m.group(1)) * _UNIT_SECONDS[m.group(2).lower()])
     return -1 if seconds < MIN_INTERVAL_SECONDS else seconds
 
 
@@ -85,7 +77,7 @@ class HeartbeatState:
         return json.dumps(asdict(self), ensure_ascii=False)
 
     @classmethod
-    def from_json(cls, raw: str) -> "HeartbeatState":
+    def from_json(cls, raw: str) -> HeartbeatState:
         data = json.loads(raw)
         return cls(**{name: coerce(data.get(name) or default) for name, (coerce, default) in _STATE_FIELDS.items()})
 
@@ -109,6 +101,7 @@ def _get_session_db() -> Optional[Any]:
 
 
 _META_PREFIX = "heartbeat:"
+_CLAIM_LOCK = threading.Lock()  # every driver of a session's heartbeat runs in its owning gateway process
 
 
 def load_heartbeat(session_id: str) -> Optional[HeartbeatState]:
@@ -204,10 +197,11 @@ class HeartbeatManager:
     def _set_status(self, status: str, *, reanchor: bool = False) -> Optional[HeartbeatState]:
         if not self._state:
             return None
-        self._state.status = status
-        if reanchor:
-            self._state.last_fired_at = time.time()
-        save_heartbeat(self.session_id, self._state)
+        with _CLAIM_LOCK:  # a stop landing inside a claim's reread-then-write would be overwritten by it
+            self._state.status = status
+            if reanchor:
+                self._state.last_fired_at = time.time()
+            save_heartbeat(self.session_id, self._state)
         return self._state
 
     def pause(self) -> Optional[HeartbeatState]:
@@ -229,14 +223,22 @@ class HeartbeatManager:
         double-fire the same tick. Missed ticks coalesce: the anchor resets to NOW, not the theoretical
         schedule.
         """
-        s = self._state
-        if s is None or not s.is_due(now):
-            return None
-        self._last_claim = (s.last_fired_at, s.fire_count)
-        s.last_fired_at = now if now is not None else time.time()
-        s.fire_count += 1
-        save_heartbeat(self.session_id, s)
-        return s.render_prompt()
+        with _CLAIM_LOCK:
+            s = self._state
+            if s is None or not s.is_due(now):
+                return None
+            # Compare-and-set on the stored row: the gateway poller and a viewer's due_prompt RPC each hold
+            # their own manager over it, and only one may take the tick. A row cleared or paused since is lost too.
+            stored = load_heartbeat(self.session_id)
+            if stored is None or stored.status != "active" or (
+                    stored.last_fired_at, stored.fire_count) != (s.last_fired_at, s.fire_count):
+                self._state = stored
+                return None
+            self._last_claim = (s.last_fired_at, s.fire_count)
+            s.last_fired_at = now if now is not None else time.time()
+            s.fire_count += 1
+            save_heartbeat(self.session_id, s)
+            return s.render_prompt()
 
     def abandon_fire(self) -> bool:
         """Rewind the fire recorded by the last :meth:`due_prompt` whose turn never started, so the tick stays
@@ -276,15 +278,14 @@ def migrate_heartbeat_to_session(old_session_id: str, new_session_id: str) -> bo
 
 
 __all__ = [
-    "HeartbeatState", "HeartbeatManager", "parse_duration", "parse_interval", "format_interval", "load_heartbeat",
-    "save_heartbeat", "migrate_heartbeat_to_session", "HEARTBEAT_PROMPT_TEMPLATE", "MIN_INTERVAL_SECONDS",
+    "HEARTBEAT_PROMPT_TEMPLATE",
+    "MIN_INTERVAL_SECONDS",
     "POLL_SECONDS",
+    "HeartbeatManager",
+    "HeartbeatState",
+    "format_interval",
+    "load_heartbeat",
+    "migrate_heartbeat_to_session",
+    "parse_interval",
+    "save_heartbeat",
 ]
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Dict  # noqa: F401,E402
-# ---- END PLUGIN-COMPAT ----

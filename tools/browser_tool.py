@@ -1,45 +1,13 @@
-#!/usr/bin/env python3
-"""Browser automation tools driven by the agent-browser CLI.
+"""Frozen old-updater compatibility stub (tests/compat/old_updater_surface.json, ``bare`` list).
 
-Backends — local headless Chromium, Browser Use / Browserbase / Firecrawl cloud
-(auto-detected from config + credentials), a user-supplied CDP endpoint, or Camofox —
-share one agent-facing behaviour: per-task sessions, accessibility-tree snapshots with
-``@eN`` refs, automatic cleanup. Settings live under ``browser.*`` in config.yaml.
-Sibling ``browser_tool_*`` modules hold extracted clusters.
+The built-in browser_* tools and agent-browser are gone; ``browser_exec`` (``tools/browser_use_cli.py``)
+is the browser. A pre-PM ``hermes update`` still running mid-swap imports this module and the name below
+from the NEW tree, so both must keep existing. Nothing else belongs here.
 """
-
-import atexit
-import json
-import logging
-import os
-import subprocess
-import sys
-import tempfile
-import threading
-import time
-from typing import Dict, Any, Optional, Union
-from pathlib import Path
-from agent.redact import redact_cdp_url
-from hermes_constants import get_hermes_home, hermes_home_key
-from utils import env_int
-from hermes_cli.config import DEFAULT_CONFIG, cfg_get
-
-
-# Env keys re-added to the agent-browser subprocess AFTER credential stripping.
-# agent-browser is a Node process loading npm deps: a compromised transitive
-# dependency could read every Hermes secret from process.env.
-# Strip by default, then re-add only the browser-backend keys the worker legitimately needs. See #29157.
-_BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
-    "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "BROWSER_USE_API_KEY",
-    "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "FIRECRAWL_BROWSER_TTL",
-)
 
 
 def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
-    """Frozen old-updater surface (tests/compat/old_updater_surface.json): a pre-PM ``hermes update``
-    still running mid-swap imports this from the NEW tree. Nothing is warmed — PM owns the browser
-    runtime — and the permanent definition must live here, not behind the revert-scheduled compat
-    pointer."""
+    """Frozen old-updater surface: nothing is warmed (there is no agent-browser to warm); always False."""
     return False
 
 

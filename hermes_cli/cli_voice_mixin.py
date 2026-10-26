@@ -9,13 +9,12 @@ from __future__ import annotations
 
 import json
 import os
-import queue
 import re
-import sys
 import tempfile
 import threading
 import time
 
+from agent.i18n import t
 from hermes_constants import is_termux as _is_termux_environment
 from typing import Optional
 
@@ -70,23 +69,15 @@ class CLIVoiceMixin:
         reqs = check_voice_requirements()
         if not reqs["audio_available"]:
             if _is_termux_environment():
+                # These RuntimeErrors are human copy: callers print ``{e}`` straight to the terminal.
                 if "Termux:API Android app is not installed" in reqs.get("details", ""):
-                    raise RuntimeError(
-                        "Termux:API command package detected, but the Android app is missing.\n"
-                        "Install/update the Termux:API Android app, then retry /voice on."
-                    )
-                raise RuntimeError(
-                    "Voice mode needs microphone access.\n"
-                    "Run pkg install termux-api and install the Termux:API Android app, "
-                    "then retry /voice on."
-                )
+                    raise RuntimeError(t("cli.voice.err_termux_app_missing"))
+                raise RuntimeError(t("cli.voice.err_mic_access"))
             # check_voice_requirements already asked PM to enable audio-io; its detail line
             # says why that did not happen (lazy installs off, needs restart, platform gate).
-            raise RuntimeError("Voice mode requires audio capture.\n" + reqs.get("details", ""))
+            raise RuntimeError(t("cli.voice.err_audio_capture") + "\n" + reqs.get("details", ""))
         if not reqs.get("stt_available", reqs.get("stt_key_set")):
-            raise RuntimeError(
-                "Voice mode requires an STT provider for transcription.\n"
-                "Run hermes tools and configure Speech-to-Text, then restart Hermes.")
+            raise RuntimeError(t("cli.voice.err_stt_provider"))
 
         # Prevent double-start from concurrent threads (atomic check-and-set)
         with self._voice_lock:
@@ -108,6 +99,8 @@ class CLIVoiceMixin:
 
         # Config-driven silence params, numeric-guarded against YAML scalar corruption.
         rec = self._voice_recorder
+        self._voice_live_text = ""
+        rec.on_live_partial = self._voice_on_live_partial
         rec._silence_threshold = _numeric_or(voice_cfg.get("silence_threshold"), 200)
         rec._silence_duration = _numeric_or(voice_cfg.get("silence_duration"), 3.0)
         # voice.max_recording_seconds — hard cap on one recording; explicit <= 0 disables it.
@@ -119,7 +112,7 @@ class CLIVoiceMixin:
             with self._voice_lock:
                 if not self._voice_recording:
                     return
-            _cprint(f"\n{_DIM}Silence detected, auto-stopping...{_RST}")
+            _cprint(f"\n{_DIM}{t('cli.voice.silence_autostop')}{_RST}")
             self._voice_invalidate()
             self._voice_stop_and_transcribe()
 
@@ -134,12 +127,12 @@ class CLIVoiceMixin:
             raise
         _label = self._voice_record_key_label()
         if getattr(self._voice_recorder, "supports_silence_autostop", True):
-            _recording_hint = f"auto-stops on silence | {_label} to stop & exit continuous"
+            _recording_hint = t("cli.voice.hint_continuous", shortcut=_label)
         elif _is_termux_environment():
-            _recording_hint = f"Termux:API capture | {_label} to stop"
+            _recording_hint = t("cli.voice.hint_termux", shortcut=_label)
         else:
-            _recording_hint = f"{_label} to stop"
-        _cprint(f"\n{_ACCENT}● Recording...{_RST} {_DIM}({_recording_hint}){_RST}")
+            _recording_hint = t("cli.voice.hint_stop", shortcut=_label)
+        _cprint(f"\n{_ACCENT}{t('cli.voice.recording')}{_RST} {_DIM}({_recording_hint}){_RST}")
 
         # Periodically refresh prompt to update audio level indicator
         def _refresh_level():
@@ -187,8 +180,13 @@ class CLIVoiceMixin:
                 self._voice_start_recording()
                 self._voice_invalidate()
             except Exception as e:
-                _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
+                _cprint(f"{_DIM}{t('cli.voice.autorestart_failed', error=e)}{_RST}")
         threading.Thread(target=_restart_recording, daemon=True).start()
+
+    def _voice_on_live_partial(self, text: str) -> None:
+        """Live STT partial (``stt.streaming``): shown in the input placeholder while recording."""
+        self._voice_live_text = text
+        self._voice_invalidate()
 
     def _voice_stop_and_transcribe(self):
         """Stop recording, transcribe via STT, and queue the transcript as input."""
@@ -211,16 +209,14 @@ class CLIVoiceMixin:
             # Audio cue: double beep after stream stopped (no CoreAudio conflict)
             self._voice_beep(frequency=660, count=2)
             if wav_path is None:
-                _cprint(f"{_DIM}No speech detected.{_RST}")
+                _cprint(f"{_DIM}{t('cli.voice.no_speech')}{_RST}")
                 return
             self._voice_invalidate()
             stt_model = self._voice_stt_model()
             if self._voice_stt_provider() == "local":
-                _cprint(
-                    f"{_DIM}Preparing local STT model '{stt_model}' "
-                    f"(first use may download it from Hugging Face)...{_RST}")
+                _cprint(f"{_DIM}{t('cli.voice.preparing_stt', model=stt_model)}{_RST}")
             else:
-                _cprint(f"{_DIM}Transcribing...{_RST}")
+                _cprint(f"{_DIM}{t('cli.voice.transcribing')}{_RST}")
             from tools.voice_mode_transcript import is_voice_stop_phrase
             from tools.voice_mode import transcribe_recording
             result = transcribe_recording(wav_path, model=stt_model)
@@ -228,7 +224,7 @@ class CLIVoiceMixin:
                 transcript = result["transcript"].strip()
                 if is_voice_stop_phrase(transcript):
                     # Bare "stop" (or configured phrase) ends the voice chat, not a turn.
-                    _cprint(f"{_DIM}Stop phrase detected — ending voice chat.{_RST}")
+                    _cprint(f"{_DIM}{t('cli.voice.stop_phrase')}{_RST}")
                     self._disable_voice_mode()
                     return
                 self._attached_images.clear()
@@ -236,22 +232,23 @@ class CLIVoiceMixin:
                 self._pending_input.put(_VoiceInputMessage(transcript))
                 submitted = True
             elif result.get("success"):
-                _cprint(f"{_DIM}No speech detected.{_RST}")
+                _cprint(f"{_DIM}{t('cli.voice.no_speech')}{_RST}")
             else:
-                _cprint(f"\n{_DIM}Transcription failed: {result.get('error', 'Unknown error')}{_RST}")
+                _cprint(f"\n{_DIM}{t('cli.voice.transcription_failed', error=result.get('error') or t('cli.shared.unknown_error'))}{_RST}")
                 transcription_failed = True
         except Exception as e:
-            _cprint(f"\n{_DIM}Voice processing error: {e}{_RST}")
+            _cprint(f"\n{_DIM}{t('cli.voice.processing_error', error=e)}{_RST}")
             transcription_failed = wav_path is not None
         finally:
             with self._voice_lock:
                 self._voice_processing = False
+            self._voice_live_text = ""
             self._voice_invalidate()
             # On failure keep the source recording so long dictation is not lost.
             try:
                 if wav_path and os.path.isfile(wav_path):
                     if transcription_failed:
-                        _cprint(f"{_DIM}Recording preserved at: {wav_path}{_RST}")
+                        _cprint(f"{_DIM}{t('cli.voice.recording_preserved', path=wav_path)}{_RST}")
                     else:
                         os.unlink(wav_path)
             except Exception:
@@ -273,7 +270,7 @@ class CLIVoiceMixin:
                 if self._no_speech_count >= 3:
                     self._voice_continuous = False
                     self._no_speech_count = 0
-                    _cprint(f"{_DIM}No speech detected 3 times, continuous mode stopped.{_RST}")
+                    _cprint(f"{_DIM}{t('cli.voice.no_speech_stop')}{_RST}")
                     stop_continuous_restart = True
             # No transcript but continuous mode active: restart so the user can keep talking
             # (when a transcript IS submitted, process_loop restarts after chat()).
@@ -285,58 +282,17 @@ class CLIVoiceMixin:
                 self._voice_restart_recording_async()
 
     def _voice_speak_response_async(self, text: str) -> None:
-        """Queue final speech after any intermediate response segments."""
+        """Schedule TTS and mark it pending before continuous recording can restart."""
         if not self._voice_tts or not text:
             return
-        self._voice_tts_enqueue(text, transition_word="also")
+        self._voice_tts_done.clear()
+        threading.Thread(target=self._voice_speak_response, args=(text,), daemon=True).start()
         # Barge-in safety net for speak calls outside a chat turn (the agent-turn listener
         # armed in chat() normally covers playback); idempotent via _voice_fd_active.
-        if (self._voice_mode and self._voice_continuous
-                and not getattr(self, "_voice_push_to_talk_only", False)):
+        if self._voice_continuous:
             threading.Thread(target=self._voice_full_duplex_listener, daemon=True).start()
 
-    def _voice_tts_enqueue(self, text: str, transition_word: str = "") -> None:
-        """Serialize speech so intermediate and final segments play in their original order."""
-        if not self._voice_tts or not text.strip():
-            return
-        with self._voice_lock:
-            self._voice_tts_queue.put((text, transition_word))
-            thread = self._voice_tts_worker_thread
-            if thread is None or not thread.is_alive():
-                thread = threading.Thread(target=self._voice_tts_worker, daemon=True,
-                                          name="hermes-tts-worker")
-                self._voice_tts_worker_thread = thread
-                thread.start()
-
-    def _voice_tts_worker(self) -> None:
-        """Play queued speech and signal completion only once the queue drains."""
-        played = False
-        while True:
-            try:
-                speech, transition = self._voice_tts_queue.get(timeout=0.2)
-            except queue.Empty:
-                with self._voice_lock:
-                    if not self._voice_tts_queue.empty():
-                        continue
-                    self._voice_tts_worker_thread = None
-                    self._voice_tts_done.set()
-                return
-            try:
-                if not self._voice_tts:
-                    continue
-                while self._voice_recording and self._voice_tts:
-                    time.sleep(0.2)
-                if self._voice_tts:
-                    self._voice_speak_response(
-                        f"{transition} {speech}" if played and transition else speech,
-                        _queue_item=True)
-                    played = True
-            finally:
-                self._voice_tts_queue.task_done()
-                if not self._voice_tts_queue.empty():
-                    self._voice_tts_done.clear()
-
-    def _voice_speak_response(self, text: str, *, _queue_item: bool = False):
+    def _voice_speak_response(self, text: str):
         """Speak the agent's response aloud using TTS (runs in background thread)."""
         from cli import _DIM, _RST, _cprint, logger
         if not self._voice_tts:
@@ -387,10 +343,9 @@ class CLIVoiceMixin:
                 _unlink_quietly(path)
         except Exception as e:
             logger.warning("Voice TTS playback failed: %s", e)
-            _cprint(f"{_DIM}TTS playback failed: {e}{_RST}")
+            _cprint(f"{_DIM}{t('cli.voice.tts_failed', error=e)}{_RST}")
         finally:
-            if not _queue_item:
-                self._voice_tts_done.set()
+            self._voice_tts_done.set()
 
     def _voice_full_duplex_listener(self) -> None:
         """Full-duplex agent-turn listener: mic live for the WHOLE turn.
@@ -401,7 +356,7 @@ class CLIVoiceMixin:
         Ctrl+C); playback phase: speech cuts TTS. Either way the captured utterance is
         submitted as the next message; the stop phrase ends the voice chat in BOTH phases.
         """
-        from cli import logger
+        from cli import _DIM, _RST, _cprint, logger
         fd_active = getattr(self, "_voice_fd_active", None)
         if fd_active is None:
             fd_active = threading.Event()
@@ -438,20 +393,31 @@ class CLIVoiceMixin:
                 return not is_audio_output_active()
 
             def _on_trigger(phase: str) -> None:
-                # During generation, voice input is explicit via the record key. A background
-                # detection must not interrupt the model or create a second user turn.
-                if phase != "playback":
-                    logger.debug("Ignoring full-duplex trigger during generation")
-                    return
+                # Latch BEFORE cutting anything: suppresses process_loop's auto-restart until
+                # the capture is submitted.
                 self._voice_barge_capture.set()
                 self._voice_barge_phase = phase
-                logger.debug("TTS CUT: full-duplex listener tripped during playback")
-                from tools.tts_streaming import mark_speech_interrupted
-                mark_speech_interrupted()
-                pipe_stop = getattr(self, "_voice_tts_stop", None)
-                if pipe_stop is not None:
-                    pipe_stop.set()
-                stop_playback()
+                _pipe_stop = getattr(self, "_voice_tts_stop", None)
+                if phase == "playback":
+                    logger.debug("TTS CUT: full-duplex listener tripped during playback")
+                    from tools.tts_streaming import mark_speech_interrupted
+                    mark_speech_interrupted()
+                    if _pipe_stop is not None:
+                        _pipe_stop.set()
+                    stop_playback()
+                else:
+                    # Generation phase: no audio to cut — interrupt the in-flight agent turn.
+                    logger.debug(
+                        "full-duplex listener tripped during generation — "
+                        "interrupting agent turn")
+                    if _pipe_stop is not None:
+                        _pipe_stop.set()  # never let the stale reply speak
+                    try:
+                        if self.agent is not None and getattr(self, "_agent_running", False):
+                            _cprint(f"\n{_DIM}{t('cli.voice.interjection')}{_RST}")
+                            self.agent.interrupt()
+                    except Exception as e:
+                        logger.debug("voice interjection interrupt failed: %s", e)
 
             wav_path = full_duplex_listen(
                 _should_stop, is_playing=is_audio_output_active, on_trigger=_on_trigger,
@@ -477,7 +443,7 @@ class CLIVoiceMixin:
             if transcript:
                 from tools.voice_mode_transcript import is_voice_stop_phrase
                 if is_voice_stop_phrase(transcript):
-                    _cprint(f"\n{_DIM}Stop phrase detected — ending voice chat.{_RST}")
+                    _cprint(f"\n{_DIM}{t('cli.voice.stop_phrase')}{_RST}")
                     self._disable_voice_mode()
                     return
                 # Fail-closed echo guard: playback-phase capture has no echo cancellation, so
@@ -487,14 +453,14 @@ class CLIVoiceMixin:
                     if is_tts_echo(transcript, getattr(self, "_voice_last_tts_text", "")):
                         logger.debug(
                             "Dropping playback-phase barge transcript as TTS echo: %r", transcript)
-                        _cprint(f"\n{_DIM}Ignored likely TTS echo (not queued).{_RST}")
+                        _cprint(f"\n{_DIM}{t('cli.voice.echo_ignored')}{_RST}")
                         return
                 self._pending_input.put(_VoiceInputMessage(transcript))
                 submitted = True
             elif not result.get("success"):
-                _cprint(f"\n{_DIM}Transcription failed: {result.get('error', 'Unknown error')}{_RST}")
+                _cprint(f"\n{_DIM}{t('cli.voice.transcription_failed', error=result.get('error') or t('cli.shared.unknown_error'))}{_RST}")
         except Exception as e:
-            _cprint(f"\n{_DIM}Voice processing error: {e}{_RST}")
+            _cprint(f"\n{_DIM}{t('cli.voice.processing_error', error=e)}{_RST}")
         finally:
             _unlink_quietly(wav_path)
             self._voice_barge_capture.clear()
@@ -512,56 +478,47 @@ class CLIVoiceMixin:
             return True
 
     def _enable_voice_mode(self):
-        """Enable voice mode immediately and report audio availability in the background."""
+        """Enable voice mode after checking requirements."""
         from cli import _ACCENT, _BOLD, _DIM, _RST, _cprint
         if self._voice_mode:
-            _cprint(f"{_DIM}Voice mode is already enabled.{_RST}")
+            _cprint(f"{_DIM}{t('cli.voice.already_enabled')}{_RST}")
             return
 
         from tools.voice_mode import check_voice_requirements, detect_audio_environment
+        env_check = detect_audio_environment()
+        if not env_check["available"]:
+            _cprint(f"\n{_ACCENT}{t('cli.voice.unavailable_header')}{_RST}")
+            for warning in env_check["warnings"]:
+                _cprint(f"  {_DIM}{warning}{_RST}")
+            return
+
+        reqs = check_voice_requirements()
+        if not reqs["available"]:
+            _cprint(f"\n{_ACCENT}{t('cli.voice.requirements_header')}{_RST}")
+            for line in reqs["details"].split("\n"):
+                _cprint(f"  {_DIM}{line}{_RST}")
+            if reqs["missing_packages"]:
+                if _is_termux_environment():
+                    _cprint(f"\n  {_BOLD}{t('cli.voice.termux_install_cmd')}{_RST}")
+                    _cprint(f"  {_DIM}{t('cli.voice.termux_install_hint')}{_RST}")
+            return
 
         with self._voice_lock:
             self._voice_mode = True
-
-        def _check_audio():
-            try:
-                env_check = detect_audio_environment()
-                if not env_check.get("available", False):
-                    _cprint(f"\n{_ACCENT}Voice mode unavailable in this environment:{_RST}")
-                    for warning in env_check.get("warnings", []):
-                        _cprint(f"  {_DIM}{warning}{_RST}")
-                reqs = check_voice_requirements()
-                if not reqs.get("available", False):
-                    _cprint(f"\n{_ACCENT}Voice mode requirements not met:{_RST}")
-                    for line in str(reqs.get("details", "")).split("\n"):
-                        if line:
-                            _cprint(f"  {_DIM}{line}{_RST}")
-                    missing = reqs.get("missing_packages") or []
-                    if missing:
-                        if _is_termux_environment():
-                            _cprint(f"  {_BOLD}Install Termux:API or sounddevice for microphone capture{_RST}")
-                        else:
-                            _cprint(f"  {_BOLD}Install: {sys.executable} -m pip install {' '.join(missing)}{_RST}")
-            except Exception:
-                pass
-
-        threading.Thread(target=_check_audio, daemon=True, name="voice-audio-check").start()
-        voice_config = _config_section("voice")
-        self._voice_push_to_talk_only = voice_config.get("push_to_talk_only") is True
-        if voice_config.get("auto_tts", False):
+        if _config_section("voice").get("auto_tts", False):
             with self._voice_lock:
                 self._voice_tts = True
 
         # The voice-mode instruction is injected as a user message prefix (not a system
         # prompt change) to avoid invalidating the prompt cache — see _voice_message_prefix.
-        tts_status = " (TTS enabled)" if self._voice_tts else ""
+        tts_status = t("cli.voice.tts_enabled_suffix") if self._voice_tts else ""
         if self._voice_tts:
             self._tts_lease_async(True)  # warm the engine so the first reply isn't dead air
         # Startup-pinned label so the advertised shortcut always matches the live
         # prompt_toolkit binding (live config would drift after a mid-session edit).
         # See #19835.
-        _cprint(f"\n{_ACCENT}Voice mode enabled{tts_status}{_RST}")
-        _cprint(f"  {_DIM}{self._voice_record_key_label()} to start/stop recording{_RST}")
+        _cprint(f"\n{_ACCENT}{t('cli.voice.enabled', tts_status=tts_status)}{_RST}")
+        _cprint(f"  {_DIM}{t('cli.voice.record_key_hint', shortcut=self._voice_record_key_label())}{_RST}")
         # Spoken-stop hint from voice.stop_phrases (first entry); "" when disabled.
         try:
             from tools.voice_mode_transcript import voice_stop_hint
@@ -570,8 +527,8 @@ class CLIVoiceMixin:
             _stop_hint = ""
         if _stop_hint:
             _cprint(f"  {_DIM}{_stop_hint}{_RST}")
-        _cprint(f"  {_DIM}/voice tts  to toggle speech output{_RST}")
-        _cprint(f"  {_DIM}/voice off  to disable voice mode{_RST}")
+        _cprint(f"  {_DIM}{t('cli.voice.tts_toggle_hint')}{_RST}")
+        _cprint(f"  {_DIM}{t('cli.voice.disable_hint')}{_RST}")
 
     def _typed_voice_stop(self, user_input) -> bool:
         """Typed bare stop phrase during an active voice chat ends the chat (mirrors the spoken
@@ -594,7 +551,7 @@ class CLIVoiceMixin:
                 return False
         except Exception:
             return False
-        _cprint(f"\n{_DIM}Stop phrase typed — ending voice chat.{_RST}")
+        _cprint(f"\n{_DIM}{t('cli.voice.stop_phrase_typed')}{_RST}")
         self._disable_voice_mode()
         return True
 
@@ -631,7 +588,7 @@ class CLIVoiceMixin:
         except Exception:
             pass
         self._voice_tts_done.set()
-        _cprint(f"\n{_DIM}Voice mode disabled.{_RST}")
+        _cprint(f"\n{_DIM}{t('cli.voice.disabled')}{_RST}")
 
     def _maybe_start_wake_word(self):
         """Start the wake-word listener at CLI startup if this surface is eligible."""
@@ -651,31 +608,31 @@ class CLIVoiceMixin:
             from tools.wake_word import (
                 check_wake_word_requirements, load_wake_word_config, owns_listener, start_listening)
         except Exception as e:
-            say(f"{_DIM}Wake word unavailable: {e}{_RST}")
+            say(f"{_DIM}{t('cli.voice.wake_unavailable', error=e)}{_RST}")
             return False
 
         if getattr(self, "_wake_word_active", False) and owns_listener(self):
-            say(f"{_DIM}Wake word is already listening.{_RST}")
+            say(f"{_DIM}{t('cli.voice.wake_already')}{_RST}")
             return True
         self._wake_word_active = False
 
         cfg = load_wake_word_config()
         reqs = check_wake_word_requirements(cfg)
         if not reqs["available"]:
-            say(f"\n{_ACCENT}Wake word requirements not met:{_RST}")
+            say(f"\n{_ACCENT}{t('cli.voice.wake_requirements_header')}{_RST}")
             if reqs.get("hint"):
                 say(f"  {_DIM}{reqs['hint']}{_RST}")
             return False
         if not reqs.get("deps_available", True):
             # Fresh install: the engine constructor lazy-installs its deps (onnxruntime is
             # a large wheel) — tell the user why this is slow.
-            say(f"{_DIM}Installing wake word engine (first use — this may take a minute)...{_RST}")
+            say(f"{_DIM}{t('cli.voice.wake_installing')}{_RST}")
 
         self._wake_start_new_session = bool(cfg.get("start_new_session", True))
         try:
             start_listening(self._on_wake_word, owner=self, config=cfg)
         except Exception as e:
-            say(f"\n{_DIM}Failed to start wake word: {e}{_RST}")
+            say(f"\n{_DIM}{t('cli.voice.wake_start_failed', error=e)}{_RST}")
             return False
 
         self._wake_word_active = True
@@ -683,8 +640,8 @@ class CLIVoiceMixin:
         import cli as _cli
         _cli._cli_wake_owner = self
         self._start_wake_watchdog()
-        say(f"\n{_ACCENT}Wake word listening{_RST} "
-            f"{_DIM}(say \"{reqs['phrase']}\" — /wake off to stop){_RST}")
+        say(f"\n{_ACCENT}{t('cli.voice.wake_listening')}{_RST} "
+            f"{_DIM}{t('cli.voice.wake_listening_hint', phrase=reqs['phrase'])}{_RST}")
         return True
 
     def _stop_wake_word_listener(self, announce: bool = False):
@@ -702,7 +659,7 @@ class CLIVoiceMixin:
         if _cli._cli_wake_owner is self:
             _cli._cli_wake_owner = None
         if announce:
-            _cprint(f"{_DIM}Wake word {'stopped' if was_active else 'is not running'}.{_RST}")
+            _cprint(f"{_DIM}{t('cli.voice.wake_stopped' if was_active else 'cli.voice.wake_not_running')}{_RST}")
 
     def _on_wake_word(self):
         """Fired after the detector hears the wake phrase."""
@@ -734,12 +691,11 @@ class CLIVoiceMixin:
         if _match and _match[1]:
             from tools.wake_word import _active_profile_name
             if _match[1] != _active_profile_name():
-                _cprint(f"\n{_DIM}Wake phrase for profile '{_match[1]}' — "
-                        f"run: hermes -p {_match[1]}{_RST}")
+                _cprint(f"\n{_DIM}{t('cli.voice.wake_profile_hint', profile=_match[1])}{_RST}")
                 self._wake_suspended = True  # watchdog resumes the listener
                 return
 
-        _cprint(f"\n{_ACCENT}✦ Wake word detected — listening...{_RST}")
+        _cprint(f"\n{_ACCENT}{t('cli.voice.wake_detected')}{_RST}")
         if getattr(self, "_app", None):
             try:
                 self._app.invalidate()
@@ -759,7 +715,7 @@ class CLIVoiceMixin:
         try:
             self._voice_start_recording()
         except Exception as e:
-            _cprint(f"{_DIM}Wake capture failed: {e}{_RST}")
+            _cprint(f"{_DIM}{t('cli.voice.wake_capture_failed', error=e)}{_RST}")
 
     def _start_wake_watchdog(self):
         """Resume the paused detector when the CLI returns to a stable idle."""
@@ -812,21 +768,22 @@ class CLIVoiceMixin:
         cfg = load_wake_word_config()
         reqs = check_wake_word_requirements(cfg)
         owned = owns_listener(self)
-        state = "LISTENING" if owned and is_listening() else "PAUSED" if owned else "OFF"
-        _cprint(f"\n{_BOLD}Wake Word Status{_RST}")
-        _cprint(f"  State:       {state}")
-        _cprint(f"  Phrase:      \"{reqs['phrase']}\"")
-        _cprint(f"  Provider:    {reqs['provider']}")
-        _cprint(f"  Surface:     {cfg.get('surface', 'auto')}")
-        _cprint(f"  New session: {'yes' if cfg.get('start_new_session', True) else 'no'}")
-        if state == "LISTENING" and audio_is_silent():
-            _cprint(f"  {_ACCENT}⚠ Microphone delivers only silence — the listener can't hear anything.{_RST}")
-            _cprint(f"  {_DIM}On macOS: System Settings > Privacy & Security > Microphone — allow your"
-                    f" terminal/Hermes, then /wake off + /wake on.{_RST}")
+        # ``state`` is the internal id; only its display label is localized.
+        state = "listening" if owned and is_listening() else "paused" if owned else "off"
+        _cprint(f"\n{_BOLD}{t('cli.voice.wake_status_title')}{_RST}")
+        _cprint(t("cli.voice.label_state", state=t(f"cli.voice.state_{state}")))
+        _cprint(t("cli.voice.label_phrase", phrase=reqs['phrase']))
+        _cprint(t("cli.voice.label_provider", provider=reqs['provider']))
+        _cprint(t("cli.voice.label_surface", surface=cfg.get('surface', 'auto')))
+        _cprint(t("cli.voice.label_new_session",
+                  value=t("cli.shared.label_yes" if cfg.get('start_new_session', True) else "cli.shared.label_no")))
+        if state == "listening" and audio_is_silent():
+            _cprint(f"  {_ACCENT}{t('cli.voice.mic_silent_warning')}{_RST}")
+            _cprint(f"  {_DIM}{t('cli.voice.mic_silent_macos_hint')}{_RST}")
         if not reqs["available"] and reqs.get("hint"):
             _cprint(f"  {_DIM}{reqs['hint']}{_RST}")
         if not owned:
-            _cprint(f"  {_DIM}Enable with /wake on{_RST}")
+            _cprint(f"  {_DIM}{t('cli.voice.wake_enable_hint')}{_RST}")
 
     def _tts_lease_async(self, active: bool) -> None:
         """Acquire/release this CLI's TTS engine lease in the background.
@@ -852,18 +809,18 @@ class CLIVoiceMixin:
         """Toggle TTS output for voice mode."""
         from cli import _ACCENT, _DIM, _RST, _cprint
         if not self._voice_mode:
-            _cprint(f"{_DIM}Enable voice mode first: /voice on{_RST}")
+            _cprint(f"{_DIM}{t('cli.voice.enable_first_hint')}{_RST}")
             return
 
         with self._voice_lock:
             self._voice_tts = not self._voice_tts
-        status = "enabled" if self._voice_tts else "disabled"
+        status = t("cli.shared.label_enabled" if self._voice_tts else "cli.shared.label_disabled")
         if self._voice_tts:
             from tools.tts_tool import check_tts_requirements
             if not check_tts_requirements():
-                _cprint(f"{_DIM}Warning: No TTS provider available. Install edge-tts or set API keys.{_RST}")
+                _cprint(f"{_DIM}{t('cli.voice.tts_no_provider')}{_RST}")
         self._tts_lease_async(self._voice_tts)  # warm-up / release signal for the TTS engine
-        _cprint(f"{_ACCENT}Voice TTS {status}.{_RST}")
+        _cprint(f"{_ACCENT}{t('cli.voice.tts_status', status=status)}{_RST}")
 
     def _show_voice_status(self):
         """Show current voice mode status."""
@@ -871,14 +828,16 @@ class CLIVoiceMixin:
         from tools.voice_mode import check_voice_requirements
 
         reqs = check_voice_requirements()
-        _cprint(f"\n{_BOLD}Voice Mode Status{_RST}")
-        _cprint(f"  Mode:      {'ON' if self._voice_mode else 'OFF'}")
-        _cprint(f"  TTS:       {'ON' if self._voice_tts else 'OFF'}")
-        _cprint(f"  Recording: {'YES' if self._voice_recording else 'no'}")
+        _on, _off = t("cli.voice.state_on"), t("cli.voice.state_off")
+        _cprint(f"\n{_BOLD}{t('cli.voice.status_title')}{_RST}")
+        _cprint(t("cli.voice.label_mode", value=_on if self._voice_mode else _off))
+        _cprint(t("cli.voice.label_tts", value=_on if self._voice_tts else _off))
+        _cprint(t("cli.voice.label_recording",
+                  value=t("cli.voice.state_yes") if self._voice_recording else t("cli.shared.label_no")))
         # Startup-pinned label so /voice status always matches the live prompt_toolkit
         # binding (live config would drift after a mid-session config edit).
         # See #19835.
-        _cprint(f"  Record key: {self._voice_record_key_label()}")
-        _cprint(f"\n  {_BOLD}Requirements:{_RST}")
+        _cprint(t("cli.voice.label_record_key", shortcut=self._voice_record_key_label()))
+        _cprint(f"\n  {_BOLD}{t('cli.voice.label_requirements')}{_RST}")
         for line in reqs["details"].split("\n"):
             _cprint(f"    {line}")

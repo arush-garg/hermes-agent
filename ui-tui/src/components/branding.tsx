@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
+import { useT } from '../i18n/useT.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
@@ -54,8 +55,8 @@ export function ArtLines({ lines }: { lines: [string, string][] }) {
 // Terminals can't scale glyphs, so "responsive" means picking a layout that
 // fits the available columns. Thresholds are picked so each tier reads
 // comfortably without forcing wrap or truncation drift on box-drawing edges.
-const TAG_FULL = 'Nous Research · Messenger of the Digital Gods'
-const TAG_MID = 'Messenger of the Digital Gods'
+// Taglines live in the catalog (chatBits.branding.tagFull/tagMid); the tiny
+// tier is the bare brand name and stays untranslated.
 const TAG_TINY = 'Nous Research'
 const HIDE_BELOW = 34
 const COMPACT_FROM = 58
@@ -79,6 +80,7 @@ const ruleIn = (label: string, w: number) => {
 }
 
 function CompactBanner({ cols, t }: { cols: number; t: Theme }) {
+  const T = useT().chatBits.branding
   // -4 keeps a margin so exact-edge rows don't trip terminal pending-wrap.
   const w = Math.max(28, cols - 4)
 
@@ -94,13 +96,14 @@ function CompactBanner({ cols, t }: { cols: number; t: Theme }) {
   return (
     <Box flexDirection="column" height={3} marginBottom={1} width={w}>
       <Text color={t.color.primary}>{ruleIn(t.brand.name, w)}</Text>
-      <Text color={t.color.muted}>{centerIn(TAG_FULL, w)}</Text>
+      <Text color={t.color.muted}>{centerIn(T.tagFull, w)}</Text>
       <Text color={t.color.primary}>{'─'.repeat(w)}</Text>
     </Box>
   )
 }
 
 export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
+  const T = useT().chatBits.branding
   const term = useStdout().stdout?.columns ?? 80
   const cols = Math.max(1, Math.min(term, maxWidth ?? term))
 
@@ -130,7 +133,7 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
             {
               children: (
                 <Text color={t.color.muted} wrap="truncate-end">
-                  {t.brand.icon} {TAG_FULL}
+                  {t.brand.icon} {T.tagFull}
                 </Text>
               ),
               id: 'banner-tagline'
@@ -156,7 +159,7 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
   }
 
   const name = cols >= 52 ? t.brand.name : (t.brand.name.split(' ')[0] ?? t.brand.name)
-  const tag = cols >= 64 ? TAG_FULL : cols >= 46 ? TAG_MID : TAG_TINY
+  const tag = cols >= 64 ? T.tagFull : cols >= 46 ? T.tagMid : TAG_TINY
 
   return (
     <Box flexDirection="column" marginBottom={1}>
@@ -190,31 +193,6 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
   )
 }
 
-// ── YOLO indicator ─────────────────────────────────────────────────────
-//
-// Mirrors the classic CLI banner (`_banner_left_lines` in hermes_cli/banner.py):
-// "⚠ YOLO mode — all approval prompts bypassed" under the model line whenever
-// the session runs with approval bypass. `info.yolo` is the same OR the
-// backend reports (approvals.mode=off, --yolo/HERMES_YOLO_MODE, the per-session
-// /yolo toggle), so the banner also flips live when yolo is toggled mid-session.
-function YoloLine({ t, yolo }: { t: Theme; yolo?: boolean }) {
-  if (!yolo) {
-    return null
-  }
-
-  // wrap (not truncate-end): the hero column in the wide layout is only as
-  // wide as the caduceus art, so the full classic line wraps to two rows
-  // instead of losing "bypassed" to an ellipsis.
-  return (
-    <Text wrap="wrap">
-      <Text bold color={t.color.error}>
-        ⚠ YOLO mode
-      </Text>
-      <Text color={t.color.muted}> — all approval prompts bypassed</Text>
-    </Text>
-  )
-}
-
 // ── Skeleton ─────────────────────────────────────────────────────────
 //
 // Lazy sections render shimmer rows shaped like the real content (label
@@ -235,6 +213,7 @@ const SKILLS_MAX = 8
 const TOOLSETS_MAX = 8
 
 export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
+  const T = useT().chatBits.branding
   const term = useStdout().stdout?.columns ?? 100
   const cols = Math.max(20, Math.min(term, maxWidth ?? term))
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
@@ -282,7 +261,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
   const skillsBody = () => {
     if (info.lazy && skillEntries.length === 0) {
-      return <InlineLoader label="scanning skills" t={t} />
+      return <InlineLoader label={T.scanningSkills} t={t} />
     }
 
     const shown = skillEntries.slice(0, SKILLS_MAX)
@@ -296,7 +275,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             <Text color={listFade}>{truncLine(strip(k) + ': ', vs)}</Text>
           </Text>
         ))}
-        {overflow > 0 && <Text color={t.color.muted}>(and {overflow} more categories…)</Text>}
+        {overflow > 0 && <Text color={t.color.muted}>{T.moreCategories(overflow)}</Text>}
       </>
     )
   }
@@ -311,12 +290,6 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   // hermes_cli/banner.py) and the "connected" label on the collapse toggle.
   const mcpServers = info.mcp_servers ?? []
   const mcpConnected = mcpServers.filter(s => s.connected).length
-  // A failed server (e.g. a project .mcp.json entry that 401'd) must be visible from the collapsed
-  // headline, like the CLI banner's red line — otherwise "not configured" and "failed" look identical.
-  const mcpFailed = mcpServers.filter(
-    s => !s.connected && !s.disabled && !['disabled', 'connecting', 'configured', 'lazy'].includes(s.status ?? ''),
-  ).length
-  const mcpSuffix = mcpFailed ? `connected · ${mcpFailed} failed` : 'connected'
 
   const toolsBody = () => {
     if (info.lazy && toolEntries.length === 0) {
@@ -334,12 +307,19 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             <Text color={listFade}>{truncLine(strip(k) + ': ', vs)}</Text>
           </Text>
         ))}
-        {overflow > 0 && <Text color={t.color.muted}>(and {overflow} more toolsets…)</Text>}
+        {overflow > 0 && <Text color={t.color.muted}>{T.moreToolsets(overflow)}</Text>}
       </>
     )
   }
 
   // ── Collapsible MCP section ──
+  // `tools` is untyped on the generated info contract; coerce for the plural pick.
+  const toolCount = (raw: unknown) => {
+    const n = Number(raw ?? 0)
+
+    return n === 1 ? T.toolsOne(n) : T.toolsOther(n)
+  }
+
   const mcpBody = () => (
     <>
       {(info.mcp_servers ?? []).map(s => (
@@ -348,22 +328,20 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           <Text color={t.color.muted}>{`[${s.transport}]`}</Text>
           <Text color={t.color.muted}>: </Text>
           {s.connected ? (
-            <Text color={t.color.text}>
-              {s.tools} tool{s.tools === 1 ? '' : 's'}
-            </Text>
+            <Text color={t.color.text}>{toolCount(s.tools)}</Text>
           ) : s.disabled || s.status === 'disabled' ? (
-            <Text color={t.color.muted}>disabled</Text>
+            <Text color={t.color.muted}>{T.disabled}</Text>
           ) : s.status === 'connecting' ? (
-            <Text color={t.color.warn}>connecting</Text>
+            <Text color={t.color.warn}>{T.connecting}</Text>
           ) : s.status === 'lazy' ? (
             // Registered from the schema cache, process not spawned yet: its tools are callable.
             <Text color={t.color.text}>
-              {s.tools} tool{s.tools === 1 ? '' : 's'} <Text color={t.color.muted}>(lazy)</Text>
+              {toolCount(s.tools)} <Text color={t.color.muted}>{T.lazy}</Text>
             </Text>
           ) : s.status === 'configured' ? (
-            <Text color={t.color.muted}>configured</Text>
+            <Text color={t.color.muted}>{T.configured}</Text>
           ) : (
-            <Text color={t.color.error}>failed</Text>
+            <Text color={t.color.error}>{T.failed}</Text>
           )}
         </Text>
       ))}
@@ -375,7 +353,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
   const systemBody = () => {
     if (sysPromptLen === 0) {
-      return <Text color={t.color.muted}>No system prompt loaded.</Text>
+      return <Text color={t.color.muted}>{T.noSystemPrompt}</Text>
     }
 
     return <Text color={t.color.muted}>{info.system_prompt}</Text>
@@ -396,15 +374,13 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         <Text color={t.color.muted}> · Nous Research</Text>
       </Text>
 
-      <YoloLine t={t} yolo={info.yolo} />
-
       <Text color={t.color.muted} wrap="truncate-end">
         {info.cwd || process.cwd()}
       </Text>
 
       {sid && (
         <Text>
-          <Text color={t.color.sessionLabel}>Session: </Text>
+          <Text color={t.color.sessionLabel}>{T.sessionLabel}</Text>
           <Text color={t.color.sessionBorder}>{sid}</Text>
         </Text>
       )}
@@ -429,13 +405,12 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             {(info.model ?? '').split('/').pop()}
             <Text color={t.color.muted}> · Nous Research</Text>
           </Text>
-          <YoloLine t={t} yolo={info.yolo} />
           <Text color={t.color.muted} wrap="truncate-end">
             {info.cwd || process.cwd()}
           </Text>
           {sid && (
             <Text wrap="truncate-end">
-              <Text color={t.color.sessionLabel}>Session: </Text>
+              <Text color={t.color.sessionLabel}>{T.sessionLabel}</Text>
               <Text color={t.color.sessionBorder}>{sid}</Text>
             </Text>
           )}
@@ -444,7 +419,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
       {/* ── Tools (expanded by default) ── */}
       <Box flexDirection="column" marginTop={1}>
-        <Accordion onToggle={() => setToolsOpen(v => !v)} open={toolsOpen} t={t} title="Available Tools">
+        <Accordion onToggle={() => setToolsOpen(v => !v)} open={toolsOpen} t={t} title={T.availableTools}>
           {toolsBody()}
         </Accordion>
       </Box>
@@ -455,9 +430,15 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           count={skillsTotal}
           onToggle={() => setSkillsOpen(v => !v)}
           open={skillsOpen}
-          suffix={skillsCatCount > 0 ? `in ${skillsCatCount} categor${skillsCatCount === 1 ? 'y' : 'ies'}` : undefined}
+          suffix={
+            skillsCatCount > 0
+              ? skillsCatCount === 1
+                ? T.inCategoriesOne(skillsCatCount)
+                : T.inCategoriesOther(skillsCatCount)
+              : undefined
+          }
           t={t}
-          title="Available Skills"
+          title={T.availableSkills}
         >
           {skillsBody()}
         </Accordion>
@@ -469,9 +450,9 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           <Accordion
             onToggle={() => setSystemOpen(v => !v)}
             open={systemOpen}
-            suffix={`— ${sysPromptLen.toLocaleString()} chars`}
+            suffix={T.charsSuffix(sysPromptLen.toLocaleString())}
             t={t}
-            title="System Prompt"
+            title={T.systemPrompt}
           >
             {systemBody()}
           </Accordion>
@@ -485,9 +466,9 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             count={mcpConnected}
             onToggle={() => setMcpOpen(v => !v)}
             open={mcpOpen}
-            suffix={mcpSuffix}
+            suffix={T.connected}
             t={t}
-            title="MCP Servers"
+            title={T.mcpServers}
           >
             {mcpBody()}
           </Accordion>
@@ -498,27 +479,25 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
       <Text color={t.color.text}>
         {/* Lazy boot: never print "0 tools · 0 skills" while counts load. */}
-        {info.lazy && !toolsTotal ? '… ' : `${toolsTotal} `}tools{' · '}
-        {info.lazy && !skillsTotal ? '… ' : `${skillsTotal} `}skills
-        {mcpConnected ? ` · ${mcpConnected} MCP` : ''}
-        {mcpFailed ? <Text color={t.color.error}>{` · ${mcpFailed} MCP failed`}</Text> : ''}
+        {T.toolsSummary(info.lazy && !toolsTotal ? '…' : toolsTotal)}
         {' · '}
-        <Text color={t.color.muted}>/help for commands</Text>
+        {T.skillsSummary(info.lazy && !skillsTotal ? '…' : skillsTotal)}
+        {mcpConnected ? ` · ${T.mcpSummary(mcpConnected)}` : ''}
+        {' · '}
+        <Text color={t.color.muted}>{T.helpHint}</Text>
       </Text>
 
       {typeof info.update_behind === 'number' && info.update_behind > 0 && (
         <Text bold color={t.color.warn}>
-          ! {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind
+          {info.update_behind === 1 ? T.commitsBehindOne(info.update_behind) : T.commitsBehindOther(info.update_behind)}
           <Text bold={false} color={t.color.warn} dimColor>
-            {' '}
-            - run{' '}
+            {T.runPrefix}
           </Text>
           <Text bold color={t.color.warn}>
             {info.update_command || 'hermes update'}
           </Text>
           <Text bold={false} color={t.color.warn} dimColor>
-            {' '}
-            to update
+            {T.toUpdate}
           </Text>
         </Text>
       )}

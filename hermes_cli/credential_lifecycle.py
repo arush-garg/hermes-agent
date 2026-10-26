@@ -12,20 +12,21 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 __all__ = [
-    "save_provider_env_credential",
-    "propagate_provider_env_credential_to_profiles",
+    "purge_env_credential_references",
     "remove_provider_env_credential",
-    "purge_env_credential_references"]
+    "save_provider_env_credential",
+]
 
 
-def _providers_for_env_var(env_var: str) -> List[str]:
+def _providers_for_env_var(env_var: str) -> list[str]:
     """Provider ids whose registered api_key_env_vars include ``env_var``."""
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.auth_plugin_providers import canonical_registry_rows
+        rows = canonical_registry_rows()
     except Exception:
         return []
-    hits: List[str] = []
-    for pid, cfg in PROVIDER_REGISTRY.items():
+    hits: list[str] = []
+    for pid, cfg in rows:
         try:
             if env_var in (cfg.api_key_env_vars or ()):
                 hits.append(pid)
@@ -34,7 +35,7 @@ def _providers_for_env_var(env_var: str) -> List[str]:
     return hits
 
 
-def _for_each_provider(providers: List[str], import_path: str, *args: Any) -> None:
+def _for_each_provider(providers: list[str], import_path: str, *args: Any) -> None:
     """Best-effort ``module.fn(provider, *args)`` for every provider; failures never propagate."""
     try:
         import importlib
@@ -47,7 +48,7 @@ def _for_each_provider(providers: List[str], import_path: str, *args: Any) -> No
         pass
 
 
-def _prune_env_pool_entries(env_var: str) -> List[str]:
+def _prune_env_pool_entries(env_var: str) -> list[str]:
     """Drop ``credential_pool`` entries seeded from ``env:<env_var>``; return providers pruned.
 
     Spans ALL providers (shared vars like GITHUB_TOKEN seed several). Entries with any other
@@ -56,7 +57,7 @@ def _prune_env_pool_entries(env_var: str) -> List[str]:
     from hermes_cli.auth import _auth_store_lock, _load_auth_store, _save_auth_store
 
     source = f"env:{env_var}"
-    pruned: List[str] = []
+    pruned: list[str] = []
     with _auth_store_lock():
         auth_store = _load_auth_store()
         pool = auth_store.get("credential_pool")
@@ -79,19 +80,20 @@ def _prune_env_pool_entries(env_var: str) -> List[str]:
     return pruned
 
 
-def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[str]:
+def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> list[str]:
     """Reconcile config.yaml api_key mirrors holding ``old_value``; return dotted paths touched.
 
     Value-matched on purpose: only an entry holding the SAME credential that just changed in
     ``.env`` is touched. ``new_value=None`` removes the field. Operates on the RAW user config
     so defaults are never baked into the user's file.
     """
+    from hermes_cli.config_backend import config_exists
     if not old_value:
         return []
-    from hermes_cli.config import atomic_config_write, get_config_path, read_user_config_raw
+    from hermes_cli.config import atomic_config_replace, get_config_path, read_user_config_raw
 
     config_path = get_config_path()
-    if not config_path.exists():
+    if not config_exists(config_path):
         return []
     try:
         user_config = read_user_config_raw(config_path)
@@ -100,7 +102,7 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
     if not user_config:
         return []
 
-    touched: List[str] = []
+    touched: list[str] = []
 
     def _fix(section: Any, key_path: str, fields: tuple[str, ...] = ("api_key", "api")) -> None:
         # "api" is the legacy alias for model.api_key in older configs. In the keyed ``providers``
@@ -136,12 +138,12 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
         _fix(entry, f"providers.{provider_id}", fields=("api_key",))
 
     if touched:
-        atomic_config_write(config_path, user_config)
+        atomic_config_replace(config_path, user_config)
     return touched
 
 
 def purge_env_credential_references(
-    env_var: str, *, clear_models_cache: bool = True) -> Dict[str, Any]:
+    env_var: str, *, clear_models_cache: bool = True) -> dict[str, Any]:
     """Remove non-.env references to an env-var credential.
 
     Prunes env-seeded pool entries and (optionally) the affected ``provider_models_cache.json`` rows
@@ -161,7 +163,7 @@ def purge_env_credential_references(
     return {"pool_pruned": pruned, "providers": providers}
 
 
-def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
+def save_provider_env_credential(env_var: str, value: str) -> dict[str, Any]:
     """Save/update a credential in ``.env`` and reconcile every mirror.
 
     config.yaml mirrors of the PREVIOUS value are updated so a stale higher-precedence copy cannot
@@ -177,12 +179,15 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
     kept 401'ing until the user ran ``hermes auth add <provider> --type api-key`` separately. This makes the
     Desktop save's effect on disk match what ``hermes auth add`` does.
     """
-    from hermes_cli.config import load_env, save_env_value
+    from hermes_cli.config import load_env, require_env_writable, save_env_value
 
+    # A locked key must fail here: save_env_value's refusal returns like a success, and the mirror
+    # scrub below would still move the new value into config.yaml.
+    require_env_writable(env_var, "set")
     old_value = load_env().get(env_var)
     save_env_value(env_var, value)
 
-    config_updates: List[str] = []
+    config_updates: list[str] = []
     if value and old_value and old_value != value:
         config_updates = _scrub_config_yaml_mirrors(old_value, value)
 
@@ -197,129 +202,13 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
     return {"ok": True, "key": env_var, "config_updates": config_updates}
 
 
-def _iter_profile_env_paths() -> List[tuple]:
-    """(name, path) for every profile-scoped ``.env`` besides the active home.
-
-    Enumerates the SAME homes ``hermes profile list`` shows: the default home
-    (``~/.hermes/.env`` when running inside ``~/.hermes/profiles/<name>``) and
-    every sibling profile under the shared ``profiles/`` root. The ACTIVE home
-    is excluded — the caller just saved the key there and it is the source of
-    truth. Homes without a ``.env`` are skipped: propagation must never
-    introduce a credential into a profile that deliberately keeps the var
-    unset (an isolated test/staging profile must stay keyless).
-    """
-    from hermes_constants import (
-        get_default_hermes_root,
-        get_hermes_home,
-    )
-
-    active = get_hermes_home().resolve()
-    root = get_default_hermes_root()
-
-    candidates: List[tuple] = []
-    if root == active:
-        # Running in the default home — profiles live under root/profiles/.
-        profiles_root = root / "profiles"
-    else:
-        # Running inside a profile — include the default home as a candidate.
-        candidates.append(("default", root / ".env"))
-        profiles_root = root / "profiles"
-    if profiles_root.is_dir():
-        for entry in sorted(profiles_root.iterdir()):
-            if not entry.is_dir() or entry.name.startswith("."):
-                # Skip tombstones like ``profiles/.deleted`` (see
-                # ``named_profile_home``) and other hidden entries.
-                continue
-            candidates.append((entry.name, entry / ".env"))
-
-    out: List[tuple] = []
-    seen = {str(active)}
-    for name, env_path in candidates:
-        resolved_parent = env_path.parent.resolve()
-        if str(resolved_parent) in seen:
-            continue
-        if not env_path.exists():
-            continue
-        seen.add(str(resolved_parent))
-        out.append((name, env_path))
-    return out
-
-
-def propagate_provider_env_credential_to_profiles(
-    env_var: str, value: str, *, apply: bool = True
-) -> Dict[str, Any]:
-    """Copy a just-saved credential to every OTHER profile that defines the var.
-
-    A rotated provider key is one credential for the whole machine, but the
-    ``hermes model`` / ``hermes setup`` flows only write the ACTIVE profile's
-    ``.env``. Every sibling profile that shares the provider keeps running on
-    the dead key (401s, stalled cron jobs) until the user re-runs the wizard
-    N times. This is the explicit multi-profile propagation step the save
-    flows now offer after a key rotation.
-
-    Only profiles whose ``.env`` ALREADY defines ``env_var`` are updated:
-    propagation mirrors an existing credential, it must not provision one
-    into a profile that intentionally keeps the var unset. Profiles with a
-    DIFFERENT value are updated too — a rotation replaces the machine-wide
-    credential, and the old value is by definition dead. (A profile with a
-    deliberately different key is rare; if it exists, the user simply
-    re-runs the wizard inside that profile after propagation.)
-
-    ``apply=False`` is a dry run for the caller's prompt: it reports which
-    profiles WOULD be updated, without writing anything.
-
-    ``config.yaml`` mirrors (``model.api_key``) holding the OLD value are
-    scrubbed per target profile too, mirroring
-    :func:`save_provider_env_credential`'s #62269 fix across homes.
-
-    Secrecy contract holds: returns per-profile key NAMES and status only,
-    never credential material.
-    """
-    from hermes_constants import (
-        reset_hermes_home_override,
-        set_hermes_home_override,
-    )
-    from hermes_cli.config import load_env, save_env_value
-
-    updated: List[str] = []
-    in_sync: List[str] = []
-    skipped: List[str] = []
-    for name, env_path in _iter_profile_env_paths():
-        token = set_hermes_home_override(str(env_path.parent))
-        try:
-            target_env = load_env()
-            old_value = target_env.get(env_var)
-            if old_value is None:
-                # Profile never configured this credential — leave it alone.
-                skipped.append(name)
-                continue
-            if old_value == value:
-                # Already holds the new key — nothing to propagate.
-                in_sync.append(name)
-                continue
-            if apply:
-                save_env_value(env_var, value)
-                # save_env_value can silently no-op (managed-scope guard).
-                # Verify the write landed before reporting the profile as
-                # updated — a false "updated" would hide a stale key.
-                if load_env().get(env_var) != value:
-                    skipped.append(name)
-                    continue
-                _scrub_config_yaml_mirrors(old_value, value)
-        except Exception:
-            skipped.append(name)
-            continue
-        finally:
-            reset_hermes_home_override(token)
-        updated.append(name)
-    return {"updated": updated, "in_sync": in_sync, "skipped": skipped}
-
-
-def remove_provider_env_credential(env_var: str) -> Dict[str, Any]:
+def remove_provider_env_credential(env_var: str) -> dict[str, Any]:
     """Remove a credential from EVERY store: ``.env`` (and process env), env-seeded
     ``credential_pool`` entries, model-cache rows, config.yaml mirrors of the same value."""
-    from hermes_cli.config import load_env, remove_env_value
+    from hermes_cli.config import load_env, remove_env_value, require_env_writable
 
+    # Before the pool prune and mirror scrub: a refused remove must not strip the other stores.
+    require_env_writable(env_var, "remove")
     old_value = load_env().get(env_var)
     removed_from_env = remove_env_value(env_var)
     refs = purge_env_credential_references(env_var)

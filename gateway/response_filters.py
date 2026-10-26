@@ -28,10 +28,17 @@ _BRACKETED_SILENCE_MARKERS = tuple(
     sorted(m for m in LIVE_GATEWAY_SILENT_MARKERS if m.startswith("["))
 )
 
-# The persisted user-row kind of a self-injected MessageEvent(internal=True) turn — the only
-# machinery kind the gateway produces; only these may vanish on a bare silence marker.
+# The persisted user-row kind of a self-injected MessageEvent(internal=True) turn; only these
+# machinery kinds may vanish on a bare silence marker.
 INTERNAL_NOTIFICATION_DISPLAY_KIND = "internal_notification"
-MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND})
+# Async-result cards the in-process TUI persisted: a producer's internal event naming one (with a
+# display_text) persists as that row kind instead of internal_notification.
+PRODUCER_NOTICE_DISPLAY_KINDS = frozenset({"process_complete", "async_delegation_complete"})
+MACHINERY_DISPLAY_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUCER_NOTICE_DISPLAY_KINDS})
+# What a gateway producer's card may name (a liveness tick names internal_notification for its CLI
+# receipt). Closed, and kept apart from the silence set above so a kind added there never becomes
+# nameable; never a client-chosen presentation such as ``hidden``.
+PRODUCER_CARD_KINDS = frozenset({INTERNAL_NOTIFICATION_DISPLAY_KIND, *PRODUCER_NOTICE_DISPLAY_KINDS})
 
 # Longer than any marker could plausibly be, even with stray punctuation.
 _MARKER_LENGTH_CAP = 64
@@ -101,26 +108,39 @@ def is_intentional_silence_agent_result(agent_result: dict | None, response: Any
     return isinstance(agent_result, dict) and not agent_result.get("failed") and is_intentional_silence_response(response)
 
 
-def is_scheduled_heartbeat_event(event: Any) -> bool:
-    """A heartbeat tick injected by the gateway poller: quiet surfaces, machinery user row.
-
-    The poller stamps ``_heartbeat_session_id`` (owner lineage + refund accounting) on every event
-    it injects, never inferred from inbound text. A due /wait rides that same accounting but is the
-    user's own deferred message (``_scheduled_user_message``), so it runs and persists like a typed one.
-    """
-    return bool(getattr(event, "_heartbeat_session_id", None)) and not getattr(
-        event, "_scheduled_user_message", False)
-
-
 def display_kind_for_event(event: Any) -> str | None:
     """The persisted user-row kind for a gateway turn: only self-injected events are machinery.
 
-    A scheduled heartbeat prompt is self-injected too, but it deliberately stays non-internal so
-    authorization and the emergency stop still apply to it.
+    A scheduled heartbeat prompt is self-injected too (``_heartbeat_session_id`` is stamped only
+    by the gateway poller, never inferred from inbound text), but it deliberately stays
+    non-internal so authorization and the emergency stop still apply to it.
     """
-    if getattr(event, "internal", False) or is_scheduled_heartbeat_event(event):
+    from gateway.session_display import admission_display
+    if kind := admission_display(event).get("kind"):
+        # A canonical admission committed hidden (Desktop widget intent): never a user bubble.
+        return kind
+    if getattr(event, "internal", False) and _producer_card(event):
+        return event.metadata["display_kind"]
+    if getattr(event, "internal", False) or getattr(event, "_heartbeat_session_id", None):
         return INTERNAL_NOTIFICATION_DISPLAY_KIND
     return None
+
+
+def _producer_card(event: Any) -> dict:
+    metadata = getattr(event, "metadata", None) or {}
+    text = metadata.get("display_text")
+    if (getattr(event, "internal", False) and metadata.get("display_kind") in PRODUCER_NOTICE_DISPLAY_KINDS
+            and isinstance(text, str) and text.strip()):
+        return {"display_text": text}
+    return {}
+
+
+def display_metadata_for_event(event: Any) -> dict:
+    """``{"display_text": ...}`` for an internal event whose producer named an async-result card, plus the
+    ``title_preview`` (titler-only) a canonical admission committed for this exact event."""
+    from gateway.session_display import admission_display
+    preview = admission_display(event).get("title_preview")
+    return {**_producer_card(event), **({"title_preview": preview} if preview else {})}
 
 
 def is_machinery_display_kind(display_kind: Any) -> bool:
@@ -156,12 +176,3 @@ def is_partial_silence_marker(text: Any) -> bool:
         c and any(marker.startswith(c) for marker in LIVE_GATEWAY_SILENT_MARKERS)
         for c in _canonical_silence_candidates(text)
     )
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-
-SILENT_REPLY_TOKEN = "NO_REPLY"
-# ---- END PLUGIN-COMPAT ----

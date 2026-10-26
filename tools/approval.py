@@ -20,6 +20,7 @@ import threading
 from typing import Optional
 
 from utils import env_var_enabled, is_truthy_value
+from agent.i18n import t
 from tools import approval_context
 from tools.approval_context import (
     _get_session_platform, _is_cron_approval_context,
@@ -51,6 +52,9 @@ _lock = threading.Lock()
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
+# Session keys whose launch YOLO (`hermes chat --yolo` session policy) was already seeded by
+# ``tools.approval_yolo.apply_launch_yolo``: once per boundary, so a later `/yolo` off sticks.
+_launch_yolo_applied: set[str] = set()
 _permanent_approved: set = set()
 # Routed multiplex profiles: one permanent allowlist per profile home (see ``_permanent_set``).
 _permanent_approved_by_home: dict[str, set] = {}
@@ -289,6 +293,7 @@ def clear_session(session_key: str) -> None:
     with _lock:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
+        _launch_yolo_applied.discard(session_key)
         _pending.pop(session_key, None)
         for entry in _gateway_queues.pop(session_key, []):
             # Cancel blocked waits now so the old run unwinds instead of idling until timeout;
@@ -322,7 +327,10 @@ def is_current_session_yolo_enabled() -> bool:
 def _yolo_active() -> bool:
     """CLI ``--yolo`` (process-scoped, frozen at import) or gateway ``/yolo``
     (session-scoped). Hardline / deny-rule floors run BEFORE this everywhere."""
-    return _YOLO_MODE_FROZEN or is_current_session_yolo_enabled()
+    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
+        return True
+    from gateway.session_finite import unattended_turn
+    return unattended_turn()
 
 
 def _permanent_set() -> set:
@@ -334,17 +342,30 @@ def _permanent_set() -> set:
     """
     from hermes_constants import get_hermes_home_override, hermes_home_key
     if get_hermes_home_override() is None:
-        return _permanent_approved
-    home_key = hermes_home_key()
-    approved = _permanent_approved_by_home.get(home_key)
-    if approved is None:
-        try:
-            approved = _read_permanent_allowlist()
-        except Exception as e:
-            logger.warning("Failed to load permanent allowlist: %s", e)
-            approved = set()
-        _permanent_approved_by_home[home_key] = approved
+        approved, key = _permanent_approved, ""
+    else:
+        key = hermes_home_key()
+        approved = _permanent_approved_by_home.setdefault(key, set())
+    _sync_permanent_from_disk(approved, key)
     return approved
+
+
+def _sync_permanent_from_disk(approved: set, key: str) -> None:
+    """Apply hand edits to ``command_allowlist`` made since the last sync. The gateway daemon
+    outlives any one session, so an entry the operator removed must stop being honoured now, not
+    at restart. Only the on-disk delta is applied: approvals this process made but could not save
+    survive. The config read is cached on the file signature. Callers hold ``_lock``."""
+    try:
+        on_disk = _read_permanent_allowlist()
+    except Exception as e:
+        logger.warning("Failed to load permanent allowlist: %s", e, exc_info=True)
+        return
+    baseline = _permanent_baseline_by_home.get(key, set())
+    if on_disk == baseline:
+        return
+    approved.difference_update(baseline - on_disk)
+    approved.update(on_disk - baseline)
+    _permanent_baseline_by_home[key] = on_disk
 
 
 def is_approved(session_key: str, pattern_key: str) -> bool:
@@ -385,9 +406,12 @@ def _persist_choice(session_key: str, choice: str, keys: list[str]) -> None:
         approve_session(session_key, key)
         if choice == "always":
             approve_permanent(key)
+            # Pass only this process's grants, taken against the baseline of the same snapshot. A
+            # check that syncs a hand removal before the save runs advances the baseline, so a
+            # removed entry left in a full snapshot would pass for a new grant and be written back.
             with _lock:
-                snapshot = set(_permanent_set())
-            save_permanent_allowlist(snapshot)
+                grants = _permanent_set() - _permanent_baseline_by_home.get(_baseline_key(), set())
+            save_permanent_allowlist(grants)
 
 
 # --- Config persistence for permanent allowlist ---------------------------------------------------------------------
@@ -453,7 +477,7 @@ def save_permanent_allowlist(patterns: set):
     resurrected the ones removed. The result written is ``what is on disk now``
     plus ``what this process approved since its own baseline``; revoked entries are
     also dropped from the governing permanent set so ``is_approved()`` stops
-    honouring them. Nothing re-reads the file on the approval hot path.
+    honouring them (``_sync_permanent_from_disk`` does the same on every check).
 
     ``patterns`` may only ADD: an entry left out of it is not removed, because the
     on-disk list wins for anything this process did not approve itself. Remove
@@ -497,28 +521,27 @@ def _approved() -> dict:
     return {"approved": True, "message": None}
 
 
-# ``outcome`` -> one plain sentence for the person who just answered (or did not). ``message`` is
+# ``outcome`` -> one plain sentence for the person who just answered (or did not), keyed as
+# ``approval.summary.<outcome>`` (``approval.summary.default`` for unknown outcomes). ``message`` is
 # addressed to the model ("Do NOT retry ..."); surfaces render ``user_summary`` first and fold the
 # model text away, so a Reject click does not read like an error the user caused.
-_USER_SUMMARIES = {
-    "denied": "You denied this {noun} — it did not run.",
-    "timeout": "No answer within {minutes} — the {noun} did not run.",
-    "notify_failed": "The approval request could not be delivered — the {noun} did not run.",
-    "cancelled": "The approval prompt was withdrawn or never reached you — the {noun} did not run.",
-    "blocked": "This {noun} is not allowed in an unattended session — it did not run.",
-}
+_USER_SUMMARY_OUTCOMES = frozenset({"denied", "timeout", "notify_failed", "cancelled", "blocked"})
+# ``_GateSpec.noun`` values (identifiers) -> ``approval.noun.<noun>`` for the human sentence.
+_USER_SUMMARY_NOUNS = frozenset({"command", "code", "action"})
 
 
 def _user_summary(outcome: str, noun: str = "command") -> str:
     from tools.approval_context import _get_approval_timeout, format_approval_window
     window = format_approval_window(_get_approval_timeout())
-    return _USER_SUMMARIES.get(outcome, "This {noun} did not run.").format(noun=noun, minutes=window)
+    key = f"approval.summary.{outcome}" if outcome in _USER_SUMMARY_OUTCOMES else "approval.summary.default"
+    noun_text = t(f"approval.noun.{noun}") if noun in _USER_SUMMARY_NOUNS else noun
+    return t(key, noun=noun_text, window=window)
 
 
 def _denied(message: str, *, pattern_key: str, description: str, outcome: str, noun: str = "command",
             **extra) -> dict:
     """Standard non-consent result: the agent must not retry or rephrase. ``user_summary`` is the
-    one-line human reading of the same outcome (see ``_USER_SUMMARIES``)."""
+    one-line human reading of the same outcome (see ``_user_summary``)."""
     return {"approved": False, "message": message, "pattern_key": pattern_key,
             "description": description, "outcome": outcome, "user_consent": False,
             "user_summary": _user_summary(outcome, noun), **extra}
@@ -812,8 +835,8 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
     if spec.transport:
         attempt = _present_with_selected_transport(
             command=command, description=description, pattern_key=pattern_key, pattern_keys=pattern_keys,
-            session_key=session_key, surface="gateway" if (is_gateway or is_ask) else "cli",
-            allow_session=not smart_denied, allow_permanent=allow_permanent,
+            session_key=session_key, allow_session=not smart_denied, allow_permanent=allow_permanent,
+            surface=approval_context.gateway_approval_surface() if (is_gateway or is_ask) else "cli",
         )
         choice, denied = _transport_choice(attempt, pattern_key=pattern_key, description=description)
         if denied is not None:
@@ -914,13 +937,31 @@ def _presence(approval_callback=None) -> tuple:
     HERMES_INTERACTIVE=1 for sudo prompts, and a gateway sets HERMES_EXEC_ASK=1 at startup and
     passes its environ to every external cron worker (#110932) — in neither can a human answer
     the card, so the gate must resolve from ``approvals.<ctx>_mode`` instead of parking on a
-    pending approval. Unattended *platforms* keep ``is_ask``: api_server relies on it for the
-    ``/v1/runs`` approval bridge (``approval.request`` → ``POST /v1/runs/{id}/approval``)."""
+    pending approval. Unattended *platforms* keep ``is_ask`` only while a client on the session
+    could actually answer: ``/v1/runs`` and streaming chat completions bridge an approval
+    notifier (``approval.request`` → ``POST /v1/runs/{id}/approval``), so on api_server a
+    registered notifier is the discriminator. webhook/msgraph_webhook turns run through the
+    generic TurnRunner lane, which registers a notifier for *every* turn — but those adapters
+    render no approval surface and the inbound lane has no reader, so there ``is_ask`` drops
+    regardless and the unattended branch resolves from ``approvals.unattended_mode`` instead of
+    parking an unanswerable card (#100532)."""
     approval_callback = _resolve_cli_approval_callback(approval_callback)
     is_cli, is_gateway = _is_interactive_cli(), _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
     if _is_single_query_approval_context() or _is_cron_approval_context():
         is_cli = is_gateway = is_ask = False
+    elif is_ask and _is_unattended_platform_approval_context() \
+            and (_gateway_notify_cb(get_current_session_key()) is None
+                 or _get_session_platform() in approval_context._NOTIFIER_BLIND_APPROVAL_PLATFORMS):
+        # start_gateway() sets HERMES_EXEC_ASK process-wide, so an api_server/webhook turn
+        # inside that gateway still reads as "ask" here even though _is_gateway_approval_context()
+        # already excluded the platform. /v1/runs and streaming chat register their notify
+        # callback before the turn runs; a session with none has no surface that can resolve an
+        # approval. webhook/msgraph_webhook are notifier-blind: the generic TurnRunner lane
+        # registers one for every turn while the adapter has no ``send_exec_approval`` and the
+        # POST -> 202 lane has no reader, so a registered callback there answers nothing either
+        # — resolve from approvals.unattended_mode, never a pending no one can answer.
+        is_ask = False
     return approval_callback, is_cli, is_gateway, is_ask
 
 
@@ -1002,7 +1043,7 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
     exception once host paths are bind-mounted: ``rm -rf /workspace`` then reaches host files."""
     if env_type == "docker":
         return not has_host_access
-    if env_type in ("singularity", "modal", "daytona", "vercel_sandbox"):
+    if env_type in ("modal", "daytona", "vercel_sandbox"):
         return True
     # Plugin backends declare the same classification through the provider ABI (#94400);
     # fail-soft to False so an unknown or raising backend — or a raising registry
@@ -1159,6 +1200,19 @@ _EXECUTE_CODE_DESCRIPTION = (
 )
 
 
+def _is_local_viewer_turn() -> bool:
+    """A local session's turn its viewer submitted, with that viewer there to answer: its frozen launch policy is
+    local-interactive, the admission is the viewer's own prompt (not a plugin injection or another producer
+    admission) and a viewer holding ``session:approve`` is attached now, it is not a delegate_task child (sync or
+    async; they inherit the parent's policy), and the turn's approval notifier is registered under the bound
+    session key. The notifier is registered for every session turn, so it only tells side tasks (their own task
+    key, none registered) apart; it does not show anyone is attached."""
+    from agent.delegation_context import is_delegated_child_process_context
+    return (approval_context.is_local_interactive_session() and approval_context.is_viewer_turn_with_approver()
+            and not is_delegated_child_process_context()
+            and _gateway_notify_cb(get_current_session_key()) is not None)
+
+
 def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = False) -> dict:
     """Approve an execute_code script before its child process is spawned.
 
@@ -1204,7 +1258,10 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     # on every execute_code call. Ask-mode still takes this path even with INTERACTIVE set (how gateway/smart tests
     # and messaging ask-mode drive whole-script approval); when that leaks into a CLI with no notify callback, the
     # engine falls through to the CLI Dangerous Command panel instead of a silent pending_approval.
-    if not is_gateway and not is_ask:
+    # A gateway-run local CLI/TUI/Desktop session's own turns keep that interactive-CLI rule: the script's terminal()
+    # calls reach the session's own prompt per call, so no whole-script prompt. Injected and automation turns keep the
+    # gate (cron/-q resolved above; messaging/API unchanged).
+    if (not is_gateway and not is_ask) or _is_local_viewer_turn():
         return _approved()
 
     session_key = get_current_session_key()
@@ -1231,53 +1288,3 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
 
 # Load permanent allowlist from config on module import
 load_permanent_allowlist()
-
-
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-import contextlib  # noqa: F401,E402
-import contextvars  # noqa: F401,E402
-import fnmatch  # noqa: F401,E402
-import functools  # noqa: F401,E402
-import re  # noqa: F401,E402
-import shlex  # noqa: F401,E402
-import sys  # noqa: F401,E402
-import tempfile  # noqa: F401,E402
-import time  # noqa: F401,E402
-import unicodedata  # noqa: F401,E402
-import uuid  # noqa: F401,E402
-
-
-_PLUGIN_COMPAT_LAZY = {
-    'DANGEROUS_PATTERNS': ('tools.approval_detection', 'DANGEROUS_PATTERNS'),
-    'DANGEROUS_PATTERNS_COMPILED': ('tools.approval_detection', 'DANGEROUS_PATTERNS_COMPILED'),
-    'HARDLINE_PATTERNS': ('tools.approval_detection', 'HARDLINE_PATTERNS'),
-    'HARDLINE_PATTERNS_COMPILED': ('tools.approval_detection', 'HARDLINE_PATTERNS_COMPILED'),
-    'HUMAN_WAIT_MARGIN_S': ('tools.approval_human_wait', 'HUMAN_WAIT_MARGIN_S'),
-    'cfg_get': ('hermes_cli.config', 'cfg_get'),
-    'get_plugin_manager': ('tools.approval_prompt', 'get_plugin_manager'),
-    'human_wait_ceiling': ('tools.approval_human_wait', 'human_wait_ceiling'),
-    'human_wait_seconds': ('tools.approval_human_wait', 'human_wait_seconds'),
-    'human_wait_window': ('tools.approval_human_wait', 'human_wait_window'),
-    'is_interrupted': ('tools.interrupt', 'is_interrupted'),
-    'request_elicitation_consent': ('tools.approval_prompt', 'request_elicitation_consent'),
-    'reset_current_observability_context': ('tools.approval_context', 'reset_current_observability_context'),
-    'reset_current_session_key': ('tools.approval_context', 'reset_current_session_key'),
-    'reset_hermes_interactive_context': ('tools.approval_context', 'reset_hermes_interactive_context'),
-    'set_current_observability_context': ('tools.approval_context', 'set_current_observability_context'),
-    'set_current_session_key': ('tools.approval_context', 'set_current_session_key'),
-    'set_hermes_interactive_context': ('tools.approval_context', 'set_hermes_interactive_context'),
-}
-
-
-def __getattr__(name):  # PEP 562 — lazy so no import cycles
-    target = _PLUGIN_COMPAT_LAZY.get(name)
-    if target is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
-    return getattr(importlib.import_module(target[0]), target[1])
-# ---- END PLUGIN-COMPAT ----

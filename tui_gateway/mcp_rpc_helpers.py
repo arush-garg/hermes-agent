@@ -9,20 +9,15 @@ from __future__ import annotations
 from typing import Any, Dict, Mapping
 
 
-def server_configs_with_sources(config_servers: Mapping[str, dict]) -> tuple[Dict[str, dict], Dict[str, str | None]]:
+def server_configs_with_sources(config_servers: Mapping[str, dict]) -> tuple[dict[str, dict], dict[str, str | None]]:
     servers, origins = server_configs_with_origins(config_servers)
     return servers, {name: plugin for name, (_source, plugin) in origins.items()}
 
 
-def server_configs_with_origins(
-    config_servers: Mapping[str, dict],
-) -> tuple[Dict[str, dict], Dict[str, tuple[str, str | None]]]:
-    """``(servers, origins)`` for every server the runtime would connect: config.yaml, portable plugins,
-    then the workspace ``.mcp.json`` (additive-only, same precedence as ``_load_mcp_config``). ``origins``
-    maps name → ``(source, plugin)`` with source ``config`` / ``plugin`` / ``project``. Project servers live
-    outside config.yaml, so they are listed but — like plugin servers — never written through it."""
+def server_configs_with_origins(config_servers: Mapping[str, dict]) -> tuple[dict[str, dict], dict[str, tuple[str, str | None]]]:
+    """Merge config, portable plugin and project MCP servers without writing project entries."""
     servers = {name: dict(cfg) for name, cfg in config_servers.items() if isinstance(cfg, dict)}
-    origins: Dict[str, tuple[str, str | None]] = {name: ("config", None) for name in servers}
+    origins: dict[str, tuple[str, str | None]] = {name: ("config", None) for name in servers}
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_manager
         from tools.mcp_tool_config import _filter_suspicious_mcp_servers
@@ -39,7 +34,6 @@ def server_configs_with_origins(
         pass
     try:
         from tools.mcp_tool_config import _filter_suspicious_mcp_servers, _load_project_mcp_json
-
         for name, cfg in _filter_suspicious_mcp_servers(_load_project_mcp_json()).items():
             if name not in servers:
                 servers[name] = dict(cfg)
@@ -50,7 +44,6 @@ def server_configs_with_origins(
 
 
 def server_write_error(name: str, origins: Mapping[str, tuple[str, str | None]]) -> str | None:
-    """Reason a server cannot be edited through config.yaml, or None when it can."""
     source, plugin = origins.get(name, ("config", None))
     if source == "plugin":
         return f"server '{name}' is provided by plugin '{plugin}' and cannot be modified"
@@ -59,7 +52,7 @@ def server_write_error(name: str, origins: Mapping[str, tuple[str, str | None]])
     return None
 
 
-def summarize_server(name: str, cfg: dict, plugin: str | None = None, source: str | None = None) -> Dict[str, Any]:
+def summarize_server(name: str, cfg: dict, plugin: str | None = None) -> dict[str, Any]:
     from hermes_cli.mcp_config import _oauth_tokens_present
     from tools.mcp_tool_common import mcp_server_enabled
 
@@ -80,48 +73,15 @@ def summarize_server(name: str, cfg: dict, plugin: str | None = None, source: st
         "oauth_tokens_present": _oauth_tokens_present(name) if auth == "oauth" else None,
         "enabled": mcp_server_enabled(cfg),
         "tools": cfg.get("tools"),
-        "source": source or ("plugin" if plugin is not None else "config"),
+        "source": "plugin" if plugin is not None else "config",
         "plugin": plugin}
 
 
-# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
-# Names external plugins imported from this module before the Sep 2026 decomposition.
-# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
-# The whole block is removed by reverting the commit that added it.
-from typing import Optional  # noqa: F401,E402
-from typing import Tuple  # noqa: F401,E402
+def record_mcp_add(entry: Any, server_config: Mapping[str, Any], saved: bool) -> None:
+    """Count an ``mcp.servers.add`` as an MCP extension install. A save fails only on a suspicious
+    command/args configuration (``_save_mcp_server`` returns False)."""
+    from hermes_cli.mcp_catalog import record_mcp_install
 
-def resolve_profile(rid, params, err_fn) -> Tuple[Optional[Any], Optional[dict]]:
-    """Resolve the optional ``profile`` param to a HERMES_HOME override token.
-
-    Returns ``(token, error)``: ``token`` is None for the launch profile (no
-    override) or an opaque reset token; ``error`` is a JSON-RPC error dict
-    (built via ``err_fn``) when the named profile doesn't exist. Callers reset
-    ``token`` in a finally via :func:`reset_profile`.
-    """
-    profile = str(params.get("profile") or "").strip()
-    if not profile:
-        return None, None
-    from hermes_cli.profiles import get_profile_dir
-    from hermes_constants import set_hermes_home_override
-
-    try:
-        profile_dir = get_profile_dir(profile)
-    except ValueError:
-        return None, err_fn(rid, 4064, f"profile '{profile}' not found")
-    if not profile_dir or not profile_dir.is_dir():
-        return None, err_fn(rid, 4064, f"profile '{profile}' not found")
-    return set_hermes_home_override(str(profile_dir)), None
-
-
-def reset_profile(token) -> None:
-    """Restore the profile override established by :func:`resolve_profile`."""
-    if token is None:
-        return
-    try:
-        from hermes_constants import reset_hermes_home_override
-
-        reset_hermes_home_override(token)
-    except Exception:
-        pass
-# ---- END PLUGIN-COMPAT ----
+    source = "catalog" if entry is not None else ("url" if server_config.get("url") else "local")
+    record_mcp_install(source, entry.name if entry is not None else None, "success" if saved else "failed",
+                       failure_class=None if saved else "config_rejected")

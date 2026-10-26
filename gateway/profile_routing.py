@@ -15,8 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from functools import lru_cache
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -49,19 +48,15 @@ def _whatsapp_user_chat_ids_match(platform: str, left: Optional[str], right: Opt
     return bool(left_aliases and left_aliases & expand_whatsapp_aliases(str(right)))
 
 
-# ── Perf: route-match cache for isolated runtimes (#99986) ───────────────
-# Hot path: every inbound message (Telegram/Discord/etc.) calls
-# match_profile_route, which previously linear-scanned all routes. With
-# isolated runtimes behind gateway.profile_routes, this scan happens
-# under the TenantSupervisor's per-profile worker handoff and must stay
-# cheap at high message rates. Cache is keyed by the routes' identity
-# (frozen ProfileRoute is hashable) plus the source discriminators.
-# Invalidation is implicit: a new routes list (new tuple object) misses.
-
-
-
 class ProfileRouteRejected(RuntimeError):
-    """An explicit route matched a profile this gateway does not serve."""
+    """An explicit route matched a profile this gateway does not serve (``profile``, when known)."""
+
+    @property
+    def profile(self):
+        return self.args[1] if len(self.args) > 1 else None
+
+    def __str__(self):
+        return str(self.args[0]) if self.args else ''
 
 
 @dataclass(frozen=True)
@@ -142,31 +137,11 @@ def _coerce_route_id(value: Any) -> Optional[str]:
     return str(value)
 
 
-@lru_cache(maxsize=512)
-def _cached_match(
-    routes_key: Tuple[ProfileRoute, ...],
-    platform: str,
-    guild_id: Optional[str],
-    chat_id: Optional[str],
-    thread_id: Optional[str],
-    parent_chat_id: Optional[str],
-    adapter_profile: Optional[str] = None,
-    user_id: Optional[str] = None,
-) -> Optional[ProfileRoute]:
-    """Cached linear scan (most-specific-first). Routes are frozen & hashable."""
-    for route in routes_key:
-        if route.matches(platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id,
-                         parent_chat_id=parent_chat_id, adapter_profile=adapter_profile,
-                         user_id=user_id):
-            return route
-    return None
-
-
-def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRoute]:
+def parse_profile_routes(raw: Optional[list[dict[str, Any]]]) -> list[ProfileRoute]:
     """Parse profile_routes from config.yaml, sorted most-specific-first."""
     if not raw:
         return []
-    routes: List[ProfileRoute] = []
+    routes: list[ProfileRoute] = []
     for entry in raw:
         if not isinstance(entry, dict):
             continue
@@ -204,35 +179,14 @@ def parse_profile_routes(raw: Optional[List[Dict[str, Any]]]) -> List[ProfileRou
 
 
 def match_profile_route(
-    routes: List[ProfileRoute], platform: str, guild_id: Optional[str] = None, chat_id: Optional[str] = None,
+    routes: list[ProfileRoute], platform: str, guild_id: Optional[str] = None, chat_id: Optional[str] = None,
     thread_id: Optional[str] = None, parent_chat_id: Optional[str] = None,
     adapter_profile: Optional[str] = None, user_id: Optional[str] = None,
 ) -> Optional[ProfileRoute]:
-    """Return the best-matching route, or None for no match."""
-    if not routes:
-        return None
-    # Fast path: cached scan. Tuple conversion is cheap for the typical
-    # small route table (2-10 entries) and the LRU avoids re-scanning
-    # the same (platform, guild, chat, thread) on every message in a
-    # busy chat (perf, #99986). Falls back to direct scan on any
-    # hashing/type error so a malformed route never breaks delivery.
-    try:
-        # Routes are already sorted most-specific-first by parse_profile_routes
-        key = tuple(routes)  # ProfileRoute is frozen+hashable
-        return _cached_match(key, platform, guild_id, chat_id, thread_id, parent_chat_id,
-                             adapter_profile, user_id)
-    except Exception:
-        for route in routes:
-            if route.matches(platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id,
-                             parent_chat_id=parent_chat_id, adapter_profile=adapter_profile,
-                             user_id=user_id):
-                return route
-        return None
-
-
-def clear_profile_route_cache() -> None:
-    """Clear the route-match LRU (for tests and config reload)."""
-    try:
-        _cached_match.cache_clear()
-    except Exception:
-        pass
+    """Return the first (most specific) matching route, or None."""
+    for route in routes:
+        if route.matches(platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id,
+                         parent_chat_id=parent_chat_id, adapter_profile=adapter_profile,
+                         user_id=user_id):
+            return route
+    return None

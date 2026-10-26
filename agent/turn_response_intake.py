@@ -33,7 +33,7 @@ class ResponseIntakeVerdict:
     action: str
     assistant_message: Any
     finish_reason: Any
-    result: Optional[Dict[str, Any]] = None
+    result: Optional[dict[str, Any]] = None
     active_system_prompt: Any = None
 
 
@@ -90,7 +90,7 @@ def _fire_post_api_request_hook(
                     response, assistant_message, finish_reason=finish_reason
                 ),
                 usage=agent._usage_summary_for_api_request_hook(response),
-                rate_limit_state=agent._rate_limit_state_for_hook(),
+                context_length=getattr(getattr(agent, "context_compressor", None), "context_length", None),
                 assistant_message=assistant_message,
                 assistant_content_chars=len(assistant_message.content or ""),
                 assistant_tool_call_count=len(getattr(assistant_message, "tool_calls", None) or []),
@@ -127,7 +127,7 @@ def normalize_model_response(
     assistant_message = normalize_response_for_agent(agent, response)
     finish_reason = assistant_message.finish_reason
 
-    def _verdict(action: str, result: Optional[Dict[str, Any]] = None) -> ResponseIntakeVerdict:
+    def _verdict(action: str, result: Optional[dict[str, Any]] = None) -> ResponseIntakeVerdict:
         return ResponseIntakeVerdict(
             action=action, assistant_message=assistant_message, finish_reason=finish_reason,
             result=result, active_system_prompt=active_system_prompt,
@@ -139,14 +139,14 @@ def normalize_model_response(
     # Agent-as-provider projection: splice the provider-agent's own tool work in as
     # call/result rows before this turn's assistant message; no-op for ordinary providers.
     splice_provider_projection(agent, response, messages)
-    # A recovered transient failure cannot describe a later terminal failure.
-    agent._last_api_error_context = None
 
     _fire_post_api_request_hook(
         agent, response, assistant_message, finish_reason, api_messages=api_messages,
         api_call_count=api_call_count, api_duration=api_duration, api_start_time=api_start_time,
         api_request_id=api_request_id, effective_task_id=effective_task_id, turn_id=turn_id,
     )
+    from hermes_cli.observability.shared_metrics_harness import record_reply_content
+    record_reply_content(agent, response, assistant_message)
 
     content = assistant_message.content
     if content and not agent.quiet_mode:
