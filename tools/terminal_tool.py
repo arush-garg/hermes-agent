@@ -458,6 +458,18 @@ def register_container_alias(child_task_id: str, parent_task_id: Optional[str]) 
         _container_aliases[child_task_id] = str(parent_task_id or "default")
 
 
+def _cwd_record_key(task_id: Optional[str], session_key: str) -> str:
+    """Key for this command's cwd record. A delegated child (it has a container alias) owns
+    the record seeded for it at spawn: its thread inherits the parent's approval session key
+    via copy_context, so keying by session_key would read — and its `cd`s would rewrite —
+    the PARENT's cwd. Everyone else keeps the session key."""
+    if task_id:
+        with _container_alias_lock:
+            if task_id in _container_aliases:
+                return task_id
+    return session_key
+
+
 def _resolve_container_alias(task_id: str) -> str:
     """Follow the child→parent alias chain (cycle-safe) for *task_id*."""
     seen = set()
@@ -1336,9 +1348,11 @@ def _yield_kwargs(command: str, **ctx) -> dict:
 def _run_foreground(
     command: str, env: Any, plan: _ExecPlan, *,
     task_id: Optional[str], session_id: Optional[str], session_key: str,
-    workdir: Optional[str], approval_note: Optional[str], clear_interrupt: bool,
+    workdir: Optional[str], approval_note: Optional[str], clear_interrupt: bool, cwd_key: Optional[str] = None,
 ) -> str:
-    """Execute in the foreground with retry on transient errors, then finalize."""
+    """Execute in the foreground with retry on transient errors, then finalize. ``cwd_key`` keys the
+    cwd record (see ``_cwd_record_key``); ``session_key`` stays the routing key."""
+    cwd_key = cwd_key if cwd_key is not None else session_key
     max_retries = 3
     env_type, eff, effective_timeout = plan.env_type, plan.effective_task_id, plan.effective_timeout
 
@@ -1354,7 +1368,7 @@ def _run_foreground(
     for retry_count in range(max_retries + 1):
         try:
             command_cwd = _resolve_command_cwd(
-                workdir=workdir, default_cwd=plan.cwd, session_key=session_key, env_type=env_type,
+                workdir=workdir, default_cwd=plan.cwd, session_key=cwd_key, env_type=env_type,
                 mounted_host=getattr(env, "host_cwd", None) or plan.host_cwd,
                 env=env,
             )
@@ -1389,7 +1403,7 @@ def _run_foreground(
         }, ensure_ascii=False)
     return finalize_foreground_result(
         command=command, result=result, env=env, env_type=env_type, effective_task_id=eff,
-        task_id=task_id, session_id=session_id, session_key=session_key, workdir=workdir,
+        task_id=task_id, session_id=session_id, session_key=cwd_key, workdir=workdir,
         command_cwd=command_cwd, approval_note=approval_note,
     )
 
@@ -1505,6 +1519,7 @@ def terminal_tool(
         from tools.approval import get_current_session_key
 
         session_key = get_current_session_key(default="") or (task_id or "")
+        cwd_key = _cwd_record_key(task_id, session_key)
 
         # The supervised-gateway identity probe ends in a kernel process query
         # (psutil create_time) that has wedged for the better part of an hour on
@@ -1524,7 +1539,7 @@ def terminal_tool(
         try:
             bounded_guard = run_bounded_sync(
                 lambda: _pre_exec_block(
-                    command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=session_key,
+                    command, env=env, env_type=env_type, cwd=cwd, workdir=workdir, session_key=cwd_key,
                 ),
                 guard_timeout,
                 label="terminal.pre-exec-guard",
@@ -1549,7 +1564,7 @@ def terminal_tool(
         if background:
             result = spawn_background_process(
                 command=command, env=env, env_type=env_type, effective_task_id=effective_task_id,
-                task_id=task_id, session_key=session_key, workdir=workdir, cwd=cwd,
+                task_id=task_id, session_key=session_key, cwd_key=cwd_key, workdir=workdir, cwd=cwd,
                 mounted_host=getattr(env, "host_cwd", None) or plan.host_cwd,
                 effective_pty=pty and not pty_disabled, notify_on_complete=notify_on_complete,
                 watch_patterns=watch_patterns, approval_note=verdict.note,
@@ -1563,7 +1578,7 @@ def terminal_tool(
             return result
         return _run_foreground(
             command, env, plan,
-            task_id=task_id, session_id=session_id, session_key=session_key,
+            task_id=task_id, session_id=session_id, session_key=session_key, cwd_key=cwd_key,
             workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
         )
     except _Rejected as r:

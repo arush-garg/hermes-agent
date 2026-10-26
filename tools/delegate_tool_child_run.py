@@ -408,10 +408,11 @@ def _register_child(
     })
     return _subagent_id
 
-def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_id: Optional[str]):
-    """Opt-in worktree isolation: own git worktree off the parent's HEAD (the
-    child's terminal starts there). Git-only, local-backend-only; failures
-    degrade silently to the shared workspace. Returns the worktree info or None."""
+def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_id: Optional[str], *, base_cwd: Optional[str] = None):
+    """Opt-in worktree isolation: own git worktree off the HEAD of the repo at
+    *base_cwd* (a task's explicit ``cwd``) or the parent's cwd (the child's
+    terminal starts there). Git-only, local-backend-only; failures degrade
+    silently to the shared workspace. Returns the worktree info or None."""
     from tools.delegate_tool import _get_worktree_isolation, _resolve_workspace_hint
     if not _get_worktree_isolation():
         return None
@@ -420,10 +421,11 @@ def _create_isolated_worktree(parent_agent: Any, parent_task_id: Any, subagent_i
         if not subagent_worktree.local_backend_active():
             logger.debug("worktree isolation skipped: non-local terminal backend")
             return None
-        _parent_cwd = None
-        with _quiet(None):
-            from tools.terminal_tool import get_session_cwd as _gsc
-            _parent_cwd = _gsc(parent_task_id)
+        _parent_cwd = base_cwd
+        if not _parent_cwd:
+            with _quiet(None):
+                from tools.terminal_tool import get_session_cwd as _gsc
+                _parent_cwd = _gsc(parent_task_id)
         return subagent_worktree.create_subagent_worktree(
             _parent_cwd or _resolve_workspace_hint(parent_agent), subagent_id=subagent_id,
         )
@@ -746,6 +748,7 @@ class _ChildRun:
     child_start: float = field(default_factory=time.monotonic)
     worktree_info: Optional[Dict[str, str]] = None
     child_task_id: str = ""
+    requested_cwd: Optional[str] = None
     parent_task_id: Optional[str] = None
     wall_start: float = 0.0
     parent_reads_snapshot: list = field(default_factory=list)
@@ -778,6 +781,8 @@ class _ChildRun:
         """Seed cwd/container aliases and optional worktree isolation for the child;
         ``goal`` is extended with the worktree contract note when isolation engaged."""
         import uuid as _uuid
+        _cwd = getattr(self.child, "_delegate_cwd", None)
+        self.requested_cwd = _cwd if isinstance(_cwd, str) and _cwd else None
         self.child_task_id = self.subagent_id or f"subagent-{self.task_index}-{_uuid.uuid4().hex[:8]}"
         self.parent_task_id = getattr(self.parent_agent, "_current_task_id", None)
         # Seed the child's cwd record from the parent's: same starting directory,
@@ -785,10 +790,12 @@ class _ChildRun:
         # isolation keys containers by task_id; the child must share the PARENT's.
         with _quiet("Child cwd seed failed: %s"):
             from tools.terminal_tool import get_session_cwd, record_session_cwd, register_container_alias
-            record_session_cwd(self.child_task_id, get_session_cwd(self.parent_task_id))
+            record_session_cwd(self.child_task_id, self.requested_cwd or get_session_cwd(self.parent_task_id))
             register_container_alias(self.child_task_id, self.parent_task_id)
 
-        self.worktree_info = _create_isolated_worktree(self.parent_agent, self.parent_task_id, self.subagent_id)
+        self.worktree_info = _create_isolated_worktree(
+            self.parent_agent, self.parent_task_id, self.subagent_id, base_cwd=self.requested_cwd,
+        )
         if self.worktree_info is not None:
             with _quiet("worktree cwd seed failed: %s"):
                 from tools.terminal_tool import record_session_cwd as _rsc

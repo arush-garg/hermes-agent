@@ -146,6 +146,35 @@ def _normalize_task_images(task: dict, i: int) -> tuple[Optional[List[str]], Opt
         )
     return (cleaned or None), None
 
+def _coerce_task_cwds(
+    task_list: List[Dict[str, Any]], base_dir: Optional[str], *, local_backend: bool = True,
+) -> tuple[List[Optional[str]], Optional[str]]:
+    """Per-task working directories; a bad ``cwd`` fails the whole call before any child spawns. ``~`` expands;
+    relative paths resolve against *base_dir* (the parent's current directory). On the local backend the result
+    must be an existing directory; remote/container backends only get an absolute-path check (the host can't see
+    their filesystem, and the terminal backend's own cwd guards apply)."""
+    import os
+    cwds: List[Optional[str]] = []
+    for i, task in enumerate(task_list):
+        raw = task.get("cwd")
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            cwds.append(None)
+            continue
+        if not isinstance(raw, str):
+            return [], f"Task {i} 'cwd' must be a directory path string."
+        path = os.path.expanduser(raw.strip())
+        if not os.path.isabs(path):
+            if not base_dir:
+                return [], f"Task {i} 'cwd' {raw!r} is relative but the parent has no known working directory; pass an absolute path."
+            path = os.path.join(base_dir, path)
+        path = os.path.normpath(path)
+        if local_backend:
+            path = os.path.realpath(path)
+            if not os.path.isdir(path):
+                return [], f"Task {i} 'cwd' {raw!r} is not an existing directory (resolved to {path})."
+        cwds.append(path)
+    return cwds, None
+
 def _coerce_task_images(
     task_list: List[Dict[str, Any]], images: Optional[List[str]]
 ) -> tuple[List[Optional[List[str]]], Optional[str]]:

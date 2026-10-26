@@ -276,6 +276,233 @@ def _is_compression_edge(child: dict, parent: dict) -> bool:
         and started_at >= parent_ended_at)
 
 
+@search_router.get("/api/sessions/mission-control")
+def get_mission_control():
+    """List all currently open Hermes sessions across profiles.
+
+    Merges two live-session sources:
+
+    * ``active_session_registry_snapshot`` — file-locked lease entries (may
+      return ``[]`` on machines where the registry file has never been written,
+      e.g. legacy single-session setups).
+    * ``tools.peer_inbox.live_presence_ids`` / ``read_presence`` — every
+      terminal that runs the peer-inbox heartbeat (CLI, TUI, desktop).  These
+      always exist on live machines.  Reuses the existing heartbeat; no new
+      write path.
+
+    The two sources are merged and deduped by session_id (lease entry wins when
+    both exist).  Each row is then enriched with DB ``title`` / ``cwd`` /
+    ``last_active``; presence fields fill in when the DB row is absent.
+
+    ``status`` is one of ``'working'`` / ``'awaiting_input'`` / ``'idle'``::
+
+        working        – relay has an active turn OR presence.busy is True.
+        awaiting_input – not working + surface in {cli, tui, desktop}.
+        idle           – not working + non-interactive or unknown surface.
+
+    ``idle_since`` reflects real activity (``db_row.last_active`` when known,
+    else ``lease.started_at``).  ``presence.updated_at`` is a heartbeat
+    timestamp and is deliberately excluded from ``idle_since`` to avoid
+    marking perpetually-heartbeating sessions as newly active.
+
+    Rows are sorted working-first, then awaiting_input, then idle; within each
+    group they are ordered by ``last_active`` descending.
+    """
+    from hermes_cli.active_sessions import active_session_registry_snapshot
+    from hermes_cli.web_server_cron import _cron_profile_dicts
+
+    now = time.time()
+
+    # ── 1a. Snapshot lease registry ──────────────────────────────────────────
+    try:
+        lease_entries: List[dict] = active_session_registry_snapshot()
+    except Exception:
+        _log.warning("mission-control: active_session_registry_snapshot failed", exc_info=True)
+        lease_entries = []
+
+    lease_ids: set = {
+        str(e.get("session_id") or "") for e in lease_entries if e.get("session_id")
+    }
+
+    # ── 1b. Merge peer-inbox live presence ───────────────────────────────────
+    # Sessions visible via the peer_inbox heartbeat that the lease registry
+    # missed (e.g. registry file absent on this machine).  Synthesise a
+    # minimal lease-like dict so the rest of the pipeline is uniform.
+    # No new heartbeat is added; write_presence is already called by the
+    # existing CLI/TUI/desktop pollers.
+    presence_map: dict = {}  # sid -> presence record
+    try:
+        from tools import peer_inbox as _pi
+        for _pres_sid in _pi.live_presence_ids():
+            _rec = _pi.read_presence(_pres_sid)
+            if _rec:
+                presence_map[_pres_sid] = _rec
+    except Exception:
+        _log.debug("mission-control: peer_inbox unavailable", exc_info=True)
+
+    # Unified entry list: lease entries first, then presence-only extras.
+    unified_entries: List[dict] = list(lease_entries)
+    for _pres_sid, _rec in presence_map.items():
+        if _pres_sid not in lease_ids:
+            unified_entries.append({
+                "session_id": _pres_sid,
+                "lease_id": "",
+                "surface": _rec.get("surface") or "",
+                "pid": _rec.get("pid"),
+                "process_start_time": _rec.get("process_start_time"),
+                "started_at": _rec.get("updated_at") or now,
+                "updated_at": _rec.get("updated_at") or now,
+            })
+
+    if not unified_entries:
+        return {"sessions": []}
+
+    # ── 2. DB enrichment per session_id across all profiles ──────────────────
+    session_db_rows: dict = {}  # sid -> (prof_name, db_row_dict)
+
+    try:
+        profiles = _cron_profile_dicts()
+    except Exception:
+        _log.warning("mission-control: failed to enumerate profiles", exc_info=True)
+        profiles = [{"name": None, "path": None}]
+
+    session_ids_needed = {
+        str(e.get("session_id") or "") for e in unified_entries if e.get("session_id")
+    }
+
+    for prof in profiles:
+        if not session_ids_needed:
+            break
+        prof_name = prof.get("name") or None
+        try:
+            db = _open_session_db_for_profile(prof_name, read_only=True)
+            try:
+                for sid in list(session_ids_needed):
+                    try:
+                        row = db.get_session(sid)
+                    except Exception:
+                        row = None
+                    if row:
+                        session_db_rows[sid] = (prof_name, dict(row))
+                        session_ids_needed.discard(sid)
+            finally:
+                db.close()
+        except Exception:
+            _log.debug("mission-control: could not open DB for profile %r", prof_name, exc_info=True)
+
+    # ── 3. Relay coordinator for working status ───────────────────────────────
+    profile_key_map: dict = {}
+    for prof in profiles:
+        prof_name = prof.get("name") or None
+        prof_path = prof.get("path") or None
+        if prof_path:
+            try:
+                from pathlib import Path as _Path
+                profile_key_map[prof_name] = str(_Path(prof_path).resolve())
+            except Exception:
+                pass
+    try:
+        from hermes_constants import get_hermes_home
+        profile_key_map.setdefault(None, str(get_hermes_home().expanduser().resolve()))
+    except Exception:
+        pass
+
+    try:
+        from agent.relay_runtime import SESSION_COORDINATOR as _SC
+        _relay_available = True
+    except Exception:
+        _SC = None
+        _relay_available = False
+
+    def _relay_working(session_id: str, prof_name) -> bool:
+        if not _relay_available or _SC is None:
+            return False
+        pk = profile_key_map.get(prof_name)
+        if not pk:
+            return False
+        try:
+            return bool(_SC.has_active_turn(profile_key=pk, session_id=session_id))
+        except Exception:
+            return False
+
+    # ── 4. Build rows (dedup by id: first occurrence = lease entry wins) ─────
+    _INTERACTIVE_SURFACES = {"cli", "tui", "desktop"}
+    seen_ids: set = set()
+    rows = []
+
+    for entry in unified_entries:
+        sid = str(entry.get("session_id") or "")
+        if not sid or sid in seen_ids:
+            continue
+        seen_ids.add(sid)
+
+        lease_id = str(entry.get("lease_id") or "")
+        lease_started = float(entry.get("started_at") or now)
+
+        # Presence record for this session (heartbeat data).
+        pres = presence_map.get(sid)
+
+        # Surface: lease entry is authoritative; fall back to presence.
+        surface = str(entry.get("surface") or (pres or {}).get("surface") or "")
+
+        prof_name: Optional[str] = None
+        db_row: Optional[dict] = None
+        if sid in session_db_rows:
+            prof_name, db_row = session_db_rows[sid]
+
+        # title / cwd: DB row → presence → empty string.
+        title = str((db_row or {}).get("title") or (pres or {}).get("title") or "")
+        source = str((db_row or {}).get("source") or surface or "")
+        cwd = str((db_row or {}).get("cwd") or (pres or {}).get("cwd") or "")
+        started_at = float((db_row or {}).get("started_at") or lease_started)
+
+        # last_active from DB only (real turn-completion timestamp).
+        # presence.updated_at is a periodic heartbeat: using it would make
+        # every idle-but-heartbeating session appear "just active".
+        # get_session() returns the raw column ``last_activity_at``; list
+        # endpoints alias it as ``last_active``.  Accept either.
+        db_last_active = (db_row or {}).get("last_active") or (db_row or {}).get("last_activity_at")
+        if db_last_active is not None:
+            last_active = float(db_last_active)
+        elif db_row and db_row.get("started_at"):
+            last_active = float(db_row["started_at"])
+        else:
+            last_active = lease_started
+
+        # working: relay has an active turn OR presence reports busy=True.
+        presence_busy = bool((pres or {}).get("busy", False))
+        working = _relay_working(sid, prof_name) or presence_busy
+
+        if working:
+            status = "working"
+        elif surface.lower() in _INTERACTIVE_SURFACES:
+            status = "awaiting_input"
+        else:
+            status = "idle"
+
+        idle_since: Optional[float] = None if working else last_active
+
+        rows.append({
+            "id": sid,
+            "lease_id": lease_id,
+            "title": title,
+            "source": source,
+            "profile": prof_name or "default",
+            "cwd": cwd,
+            "status": status,
+            "idle_since": idle_since,
+            "last_active": last_active,
+            "started_at": started_at,
+        })
+
+    # ── 5. Sort: working → awaiting_input → idle; within group last_active desc ─
+    _STATUS_ORDER = {"working": 0, "awaiting_input": 1, "idle": 2}
+    rows.sort(key=lambda r: (_STATUS_ORDER.get(r["status"], 9), -(r["last_active"] or 0)))
+
+    return {"sessions": rows}
+
+
+
 @search_router.get("/api/sessions/search")
 async def search_sessions(
     q: str = "", limit: int = 20, profile: Optional[str] = None, source: str = None,

@@ -49,7 +49,8 @@ from tools.delegate_tool_registry import (  # noqa: F401
     steer_subagent,
 )
 from tools.delegate_tool_tasks import (  # noqa: F401
-    _MAX_TASK_IMAGES, _coerce_task_images, _coerce_task_schemas, _normalize_task_images, _normalize_task_list,
+    _MAX_TASK_IMAGES, _coerce_task_cwds, _coerce_task_images, _coerce_task_schemas, _normalize_task_images,
+    _normalize_task_list,
 )
 from tools.delegate_tool_toolsets import (  # noqa: F401
     DELEGATE_BLOCKED_TOOLS, _expand_parent_toolsets, _resolve_child_toolsets, _strip_blocked_tools,
@@ -187,6 +188,8 @@ def _build_child_agent(
     routing_cfg: Optional[Dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    # Parent-chosen starting directory (validated by _coerce_task_cwds); None inherits the parent's.
+    cwd: Optional[str] = None,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
@@ -210,7 +213,10 @@ def _build_child_agent(
     delegation_cfg = _load_config()
     child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
     child_prompt = _build_child_system_prompt(
-        goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
+        goal, context, workspace_path=(
+            # A parent that was itself started in an explicit cwd passes that down, not the process TERMINAL_CWD.
+            cwd or _str_attr(parent_agent, "_delegate_cwd") or _resolve_workspace_hint(parent_agent)
+        ), role=effective_role,
         max_spawn_depth=max_spawn, child_depth=child_depth,
     )
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -273,6 +279,7 @@ def _build_child_agent(
     child._progress_identity_ref = child_session_ref
     child._delegate_depth, child._delegate_role = child_depth, effective_role  # post-degrade role
     child._subagent_id, child._parent_subagent_id = subagent_id, parent_subagent_id
+    child._delegate_cwd = cwd  # read by _ChildRun.seed_workspace
     _apply_child_compression_cap(child, delegation_cfg)
     # Ownership chain for action=list/steer/stop; weakref so a finished parent
     # can be collected while a detached child record lingers in the registry.
@@ -399,6 +406,7 @@ def _build_children(
     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
     live_deleg_id: Optional[str], live_writers: list, task_images: Optional[List[Optional[List[str]]]] = None,
+    task_cwds: Optional[List[Optional[str]]] = None,
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
@@ -425,7 +433,8 @@ def _build_children(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
                 model=task_creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
+                cwd=task_cwds[i] if task_cwds and i < len(task_cwds) else None, **overrides,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -509,6 +518,26 @@ def _resolve_task_routes(task_list, routing_cfg, parent_agent, credentials_cfg, 
     return task_creds, task_routing_cfgs
 
 
+def _str_attr(obj, name: str) -> Optional[str]:
+    value = getattr(obj, name, None)
+    return value if isinstance(value, str) and value else None
+
+
+def _parent_working_dir(parent_agent) -> Optional[str]:
+    """Base for relative task ``cwd``: the parent's live terminal cwd (its ``cd`` state), else the workspace hint."""
+    with _quiet(None):
+        from tools.terminal_tool import get_session_cwd
+        recorded = get_session_cwd(getattr(parent_agent, "_current_task_id", None))
+        if recorded:
+            return recorded
+    return _resolve_workspace_hint(parent_agent)
+
+
+def _local_terminal_backend() -> bool:
+    from tools.subagent_worktree import local_backend_active
+    return local_backend_active()
+
+
 def delegate_task(
     goal: Optional[str] = None, context: Optional[str] = None, tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
@@ -575,6 +604,10 @@ def delegate_task(
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
     if not err:
         task_images, err = _coerce_task_images(task_list, images)
+    if not err:
+        task_cwds, err = _coerce_task_cwds(
+            task_list, _parent_working_dir(parent_agent), local_backend=_local_terminal_backend(),
+        )
     if err:
         return tool_error(err)
     assert task_list is not None
@@ -613,6 +646,7 @@ def delegate_task(
     children, err = _build_children(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
         routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
+        task_cwds=task_cwds,
     )
     if err:
         return tool_error(err)
@@ -770,6 +804,12 @@ DELEGATE_TASK_SCHEMA = {
                             "child up front; parent validates with one bounded correction retry; result gains "
                             "schema_valid, plus schema_errors on failure — the child's raw text is still returned "
                             "as summary, never discarded). Keep it forgiving — require only fields you will read.",
+                        ),
+                        "cwd": _p(
+                            "string",
+                            "Optional working directory this child starts in (absolute, ~, or relative to your current "
+                            "directory). Its terminal, file paths, and project context files (AGENTS.md etc.) resolve "
+                            "from here. Must be an existing directory. Omit to inherit your current directory.",
                         ),
                         "give_compressed_context": _p(
                             "boolean",

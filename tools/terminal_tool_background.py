@@ -148,6 +148,7 @@ def spawn_background_process(
     heartbeat_seconds: int = 0,
     persist_on_release: bool = False,
     mounted_host: Optional[str] = None,
+    cwd_key: Optional[str] = None,
 ) -> str:
     """Spawn *command* as a tracked background process and return the JSON result.
 
@@ -160,8 +161,8 @@ def spawn_background_process(
     )
 
     effective_cwd = _resolve_command_cwd(
-        workdir=workdir, default_cwd=cwd, session_key=session_key, env_type=env_type,
-        mounted_host=mounted_host if mounted_host is not None else getattr(env, "host_cwd", None),
+        workdir=workdir, default_cwd=cwd, session_key=cwd_key if cwd_key is not None else session_key,
+        env_type=env_type, mounted_host=mounted_host if mounted_host is not None else getattr(env, "host_cwd", None),
         env=env,
     )
     try:

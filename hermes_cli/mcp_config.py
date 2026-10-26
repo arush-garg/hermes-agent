@@ -214,6 +214,55 @@ def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
     return servers if servers and isinstance(servers, dict) else {}
 
 
+def _get_mcp_servers_with_origins() -> Tuple[Dict[str, dict], Dict[str, Tuple[str, Optional[str]]]]:
+    """``(servers, origins)`` for every server the runtime connects: config.yaml, then portable
+    plugins, then the workspace ``.mcp.json`` (additive-only; earlier sources win on name conflicts).
+
+    Delegates to ``tui_gateway.mcp_rpc_helpers.server_configs_with_origins`` so the CLI, TUI and
+    runtime share one merge. The workspace root resolves like the runtime's (``TERMINAL_CWD`` /
+    session root, else ``os.getcwd()``), so ``cd project && hermes mcp login <name>`` finds it.
+    ``_get_mcp_servers`` stays config.yaml-only: write paths and origin-labelling callers rely on it.
+    """
+    config_servers = _get_mcp_servers()
+    try:
+        from tui_gateway.mcp_rpc_helpers import server_configs_with_origins
+        servers, origins = server_configs_with_origins(config_servers)
+    except Exception:  # pragma: no cover — never let a merge failure hide config.yaml servers
+        logger.debug("Could not merge plugin/project MCP servers", exc_info=True)
+        return dict(config_servers), {name: ("config", None) for name in config_servers}
+    # A CLI invocation's own cwd is the user's explicit choice of project: when an inherited
+    # TERMINAL_CWD (e.g. running inside a Hermes terminal) points elsewhere, still add the cwd's
+    # .mcp.json — additive-only, after the runtime-resolved workspace.
+    try:
+        from tools.mcp_tool_config import (
+            _filter_suspicious_mcp_servers, _load_project_mcp_json, _workspace_folder)
+        cwd = os.getcwd()
+        if os.path.realpath(cwd) != os.path.realpath(_workspace_folder()):
+            for name, cfg in _filter_suspicious_mcp_servers(_load_project_mcp_json(cwd)).items():
+                if name not in servers:
+                    servers[name] = dict(cfg)
+                    origins[name] = ("project", None)
+    except Exception:
+        logger.debug("Could not merge cwd .mcp.json", exc_info=True)
+    return servers, origins
+
+
+def _get_all_mcp_servers() -> Dict[str, dict]:
+    """Every server the runtime connects (see ``_get_mcp_servers_with_origins``), for read paths."""
+    return _get_mcp_servers_with_origins()[0]
+
+
+def _refuse_non_config_write(name: str) -> bool:
+    """True (after printing why) when ``name`` comes from a plugin or the workspace ``.mcp.json``
+    and so must not be written through config.yaml."""
+    from tui_gateway.mcp_rpc_helpers import server_write_error
+    reason = server_write_error(name, _get_mcp_servers_with_origins()[1])
+    if reason:
+        _error(reason)
+        return True
+    return False
+
+
 def _tool_filters(cfg: dict) -> Tuple[Optional[list], Optional[list]]:
     """Return the ``(include, exclude)`` tool lists from a server config; ``None`` = key absent.
 
@@ -641,6 +690,8 @@ def cmd_mcp_add(args):
         _info('  hermes mcp add myserver --preset mypreset')
         return
 
+    if _refuse_non_config_write(name):
+        return 1
     if name in _get_mcp_servers() and not _confirm(
         f"Server '{name}' already exists. Overwrite?", default=False
     ):
@@ -698,8 +749,10 @@ def cmd_mcp_add(args):
 def cmd_mcp_remove(args):
     """Remove an MCP server from config."""
     name = args.name
-    if _lookup_server(name, _get_mcp_servers()) is None:
+    if _lookup_server(name, _get_all_mcp_servers()) is None:
         return
+    if _refuse_non_config_write(name):
+        return 1
     if not _confirm(f"Remove server '{name}'?", default=True):
         _info("Cancelled.")
         return
@@ -717,16 +770,7 @@ def cmd_mcp_remove(args):
 
 def cmd_mcp_list(args=None):
     """List every MCP server the runtime connects: config.yaml plus the workspace ``.mcp.json``."""
-    servers = dict(_get_mcp_servers())
-    project_names: set = set()
-    try:
-        from tools.mcp_tool_config import _load_project_mcp_json
-        for name, cfg in _load_project_mcp_json().items():
-            if name not in servers:
-                servers[name] = cfg
-                project_names.add(name)
-    except Exception:
-        pass
+    servers, origins = _get_mcp_servers_with_origins()
     if not servers:
         print()
         _info("No MCP servers configured.")
@@ -766,7 +810,8 @@ def cmd_mcp_list(args=None):
 
         enabled = mcp_server_enabled(cfg)
         status = color(f"{'✓ enabled':<12}", Colors.GREEN) if enabled else color(f"{'✗ disabled':<12}", Colors.DIM)
-        source = ".mcp.json" if name in project_names else "config.yaml"
+        origin, plugin = origins.get(name, ("config", None))
+        source = {"project": ".mcp.json (project)", "plugin": f"plugin:{plugin}"}.get(origin, "config.yaml")
         print(f"  {name:<16} {transport:<30} {tools_str:<12} {status} {color(source, Colors.DIM)}")
     print()
 
@@ -798,7 +843,7 @@ def cmd_mcp_test(args):
     already owns 2 for usage errors, so "no such server" stays distinguishable from "bad flags").
     """
     name = args.name
-    cfg = _lookup_server(name, _get_mcp_servers(), "Available")
+    cfg = _lookup_server(name, _get_all_mcp_servers(), "Available")
     if cfg is None:
         return 3
     print()
@@ -928,7 +973,7 @@ def _reauth_oauth_server(name: str, server_config: dict, *, flow: str | None = N
 
 def cmd_mcp_login(args):
     """Run an explicit browser or device authorization for an OAuth-based MCP server."""
-    cfg = _lookup_server(args.name, _get_mcp_servers())
+    cfg = _lookup_server(args.name, _get_all_mcp_servers())
     if cfg is not None:
         _reauth_oauth_server(args.name, cfg, flow=getattr(args, "flow", None))
 
@@ -941,7 +986,7 @@ def cmd_mcp_reauth(args):
     This is the self-service fix for the recurring stale-client ritual in GH#36767 (and avoids the startup
     popup storm when several servers go stale at once).
     """
-    servers = _get_mcp_servers()
+    servers = _get_all_mcp_servers()
     name = getattr(args, "name", None)
     if getattr(args, "all", False):
         oauth_servers = [(n, c) for n, c in servers.items() if c.get("auth") == "oauth" and c.get("url")]
@@ -1004,10 +1049,13 @@ def _rebuild_exclude_list(
 def cmd_mcp_configure(args):
     """Reconfigure which tools are enabled for an existing MCP server."""
     import sys as _sys
+    name = args.name
+    # Checked before the TTY gate so a plugin/project server gets the actionable reason, not a TTY error.
+    if name in _get_all_mcp_servers() and _refuse_non_config_write(name):
+        return 1
     if not _sys.stdin.isatty():
         print("Error: 'hermes mcp configure' requires an interactive terminal.", file=_sys.stderr)
         _sys.exit(1)
-    name = args.name
     cfg = _lookup_server(name, _get_mcp_servers(), "Available")
     if cfg is None:
         return

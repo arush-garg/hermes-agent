@@ -124,6 +124,19 @@ Delivery follows the same routing as user-attached images (`agent.image_input_mo
 
 Forwarding is best-effort: unreadable paths are skipped with a log line, and any failure in the image plumbing falls back to the plain text goal — it can never break a spawn. Images are for things the child must *see*; put text file paths in `context` as usual.
 
+### Choosing the Subagent's Working Directory
+
+By default a child starts in your current directory. Pass a per-task `cwd` to start it somewhere else — another repo, a package inside a monorepo:
+
+```python
+delegate_task(tasks=[
+    {"goal": "Run the test suite and report failures", "cwd": "~/src/api-server"},
+    {"goal": "Audit the build config", "cwd": "packages/web"},  # relative to your current directory
+])
+```
+
+The child's terminal starts there, its relative file paths resolve from there, and that directory's project context files (`AGENTS.md`, `CLAUDE.md`, ...) go into its prompt. The child's own `cd`s never move the parent. With worktree isolation on, the worktree is branched from the repo that contains `cwd`. On the local backend, a `cwd` that doesn't exist or isn't a directory rejects the whole call before any child spawns. On container/remote backends only the path shape is checked, because the host can't see that filesystem.
+
 ## Practical Examples
 
 ### Parallel Research
