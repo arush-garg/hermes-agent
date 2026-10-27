@@ -1424,6 +1424,17 @@ def _primary_quota_reopened_early(agent, primary_provider, primary_model, matche
 def restore_primary_runtime(agent) -> bool:
     """Restore the primary runtime at the start of a new turn so fallback stays turn-scoped
     (long-lived CLI agents and the gateway's cached agents)."""
+    # /keep <prompt> (fork feature): stay on the current model for this one turn instead of restoring the
+    # primary, which would force a context resend. Consumed here so the next turn restores normally.
+    if getattr(agent, "_keep_on_fallback_this_turn", False) is True:  # `is True`: MagicMock agents are truthy
+        agent._keep_on_fallback_this_turn = False
+        agent._fallback_index = 0  # avoid chain-exhausted stranding on next turn
+        logger.info(
+            "keep_on_fallback: skipping primary restore, staying on %s via %s",
+            getattr(agent, "model", "?"), getattr(agent, "provider", "?"),
+        )
+        return False
+
     if not agent._fallback_activated:
         # Reset the index even without activation: a failed _try_activate_fallback() can strand
         # _fallback_index past the chain end and silently block future fallbacks (#20465).
