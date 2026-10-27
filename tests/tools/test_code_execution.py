@@ -912,21 +912,22 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         tool_call_counter = [0]
 
         def _run():
-            with patch(
-                "model_tools.handle_function_call",
-                side_effect=_mock_handle_function_call,
-            ):
-                _rpc_server_loop(
-                    listener,
-                    "test-task",
-                    tool_call_log,
-                    tool_call_counter,
-                    max_tool_calls=10,
-                    allowed_tools=frozenset({"terminal"}),
-                    stop_event=stop_event,
-                    rpc_token=rpc_token,
-                )
+            _rpc_server_loop(
+                listener,
+                "test-task",
+                tool_call_log,
+                tool_call_counter,
+                max_tool_calls=10,
+                allowed_tools=frozenset({"terminal"}),
+                stop_event=stop_event,
+                rpc_token=rpc_token,
+            )
 
+        # Patch from the test thread: the server thread can outlive the join below, and a patch it
+        # entered would then restore late (or never), leaking the mock into every later test.
+        handle_patch = patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call)
+        handle_patch.start()
+        self.addCleanup(handle_patch.stop)
         t = threading.Thread(target=_run, daemon=True)
         t.start()
 

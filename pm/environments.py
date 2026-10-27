@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shlex
+import sys
 from pathlib import Path
 
 from hermes_constants import get_default_hermes_root, project_venv_dir
@@ -49,7 +50,9 @@ def _live_checkout_under_pytest(root: Path) -> bool:
     Tmp-path checkouts used by PM tests are unaffected.
     """
     try:
-        return ("PYTEST_CURRENT_TEST" in os.environ
+        # `_pytest` in sys.modules too: tests that patch os.environ with clear=True drop PYTEST_CURRENT_TEST
+        # mid-test, and the probe would then read the operator's real home.
+        return (("PYTEST_CURRENT_TEST" in os.environ or "_pytest" in sys.modules)
                 and Path(root).resolve() == Path(__file__).resolve().parent.parent)
     except OSError:
         return False

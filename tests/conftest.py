@@ -455,6 +455,18 @@ def _reset_foreground_exit_fence():
 
 
 @pytest.fixture(autouse=True)
+def _reset_session_context_vars():
+    """Return the gateway session ContextVars to "never bound" after every test.
+
+    ``clear_session_vars`` (what many fixtures call in teardown) marks them explicitly cleared (``""``),
+    which later tests in the same process read as a bound-but-empty session instead of the unbound CLI
+    default, so ``get_session_env`` stops falling back to the environment and CLI-path logic misfires."""
+    yield
+    if (ctx := sys.modules.get("gateway.session_context")) is not None:
+        ctx.reset_session_vars()
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_kanban_memory_guard(request, monkeypatch):
     """Pin the kanban dispatcher's memory guard to "no data" for every test.
 

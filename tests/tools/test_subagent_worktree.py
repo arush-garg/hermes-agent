@@ -48,6 +48,11 @@ class SubagentWorktreeTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="hermes-sw-test-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
+        # Finalize asks which processes work inside the worktree; the real process table holds other
+        # sessions' cwds under the operator's home, which the home-I/O guard refuses to stat.
+        live = mock.patch("hermes_cli.worktree_sweep.live_process_pids", return_value={})
+        live.start()
+        self.addCleanup(live.stop)
 
     # ── resolve_repo_root ──────────────────────────────────────────────
 

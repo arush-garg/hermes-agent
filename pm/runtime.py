@@ -64,7 +64,11 @@ def _resident_runtime() -> tuple[Path, Path] | None:
     from pm.paths import repo_root
 
     project = repo_root()
-    payload = project.parent if (project.parent / "manifest.json").is_file() else None
+    from pm.environments import _live_checkout_under_pytest
+
+    # A source checkout under test is never a sealed payload; probing its parent can be the real home.
+    payload = (project.parent if not _live_checkout_under_pytest(project)
+               and (project.parent / "manifest.json").is_file() else None)
     if payload is not None:
         runtime = payload / "pm-runtime"
     else:
