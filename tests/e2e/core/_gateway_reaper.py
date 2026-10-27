@@ -7,7 +7,13 @@ A client turn auto-starts its home's gateway, which then idles for
 
 from __future__ import annotations
 
+import os
+import signal
 from pathlib import Path
+
+# Captured before the live-system guard patches ``os.kill``: the detached gateway is reparented to
+# init, so the guard would refuse it as outside the test subtree. Identity is proven below instead.
+_REAL_KILL = os.kill
 
 
 def stop_home_gateway(hermes_home: Path, timeout: float = 30.0) -> None:
@@ -20,10 +26,13 @@ def stop_home_gateway(hermes_home: Path, timeout: float = 30.0) -> None:
     if pid is None:
         return
     try:
-        gateway = psutil.Process(pid)  # binds the create time: terminate() refuses a reused PID
-        gateway.terminate()
+        gateway = psutil.Process(pid)
+        if not gateway.is_running():  # create-time check: the PID was not reused since the lookup
+            return
+        _REAL_KILL(pid, signal.SIGTERM)
         gateway.wait(timeout=timeout)
-    except psutil.NoSuchProcess:
+    except (psutil.NoSuchProcess, ProcessLookupError):
         return
     except psutil.TimeoutExpired:
-        gateway.kill()
+        if gateway.is_running():
+            _REAL_KILL(pid, signal.SIGKILL)

@@ -191,8 +191,11 @@ def shard_of(name: str, shards: int = SHARDS) -> int:
 
 
 def decoy_keys(catalog: list[Row]) -> dict[str, str]:
-    """One distinct fake secret per credential env var any provider declares."""
-    return {r.key_env: f"sk-cat-{r.key_env.lower()}" for r in catalog if r.key_env}
+    """One distinct fake secret per credential env var any HTTP provider declares. External-process
+    rows are left out: their var belongs to a vendor CLI (claude-cli's CLAUDE_CODE_OAUTH_TOKEN), and
+    a decoy there would outrank ANTHROPIC_API_KEY by the documented Anthropic token precedence."""
+    return {r.key_env: f"sk-cat-{r.key_env.lower()}" for r in catalog
+            if r.key_env and r.auth_type != "external_process"}
 
 
 def hermetic_env(home: Path, extra: dict[str, str]) -> dict[str, str]:

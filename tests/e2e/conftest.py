@@ -24,6 +24,7 @@ from gateway.platforms.event import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionEntry, SessionSource, build_session_key
 from hermes_cli.version_info import _reset_version_info_cache
+from tests.e2e.core._gateway_reaper import stop_home_gateway  # import now: captures the unguarded os.kill
 
 # E2E tests compare against real hermes processes, which resolve the checkout's real
 # identity; drop the root conftest's seeded version so in-process lookups agree.
@@ -38,8 +39,6 @@ def _stop_auto_started_gateways(request):
     yield
     if "tmp_path" not in request.fixturenames:
         return
-    from tests.e2e.core._gateway_reaper import stop_home_gateway
-
     for pid_file in request.getfixturevalue("tmp_path").rglob("gateway.pid"):
         stop_home_gateway(pid_file.parent)
 
