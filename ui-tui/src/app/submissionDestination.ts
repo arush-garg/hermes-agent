@@ -28,6 +28,18 @@ function canonicalHome(path: string): string {
   }
 }
 
+/** A receipt's `target_profile_home` names the owner's home as the owner spelled it; a symlinked
+ *  HERMES_HOME (macOS `/var` -> `/private/var`) must still match the canonical one captured here. */
+export function receiptNamesDestinationHome(destination: SubmissionDestination, receiptHome: unknown): boolean {
+  if (typeof receiptHome !== 'string' || !receiptHome) {
+    return false
+  }
+
+  const expected = destination.ownerHome ?? destination.profileHome
+
+  return expected === receiptHome || canonicalHome(resolve(expected)) === canonicalHome(resolve(receiptHome))
+}
+
 export function captureDestination(): SubmissionDestination {
   const { sid, info } = getUiState()
   const profileHome = canonicalHome(resolve(process.env.HERMES_HOME ?? join(homedir(), '.hermes')))

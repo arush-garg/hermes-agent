@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -16,7 +16,7 @@ import { useQueue } from '../hooks/useQueue.js'
 import { loadPendingInputs } from '../lib/pendingInputs.js'
 
 async function coldResume(legacy: boolean) {
-  const home = mkdtempSync(join(tmpdir(), 'ink-cold-native-'))
+  const home = realpathSync(mkdtempSync(join(tmpdir(), 'ink-cold-native-')))
   vi.stubEnv('HERMES_HOME', home)
   resetUiState()
   // A separate interpreter writes the real fsync/rename journal; no shared UI or successor map.

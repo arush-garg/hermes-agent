@@ -4,7 +4,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { isServerQueued } from '../app/pendingBubbles.js'
-import { captureDestination, type SubmissionDestination } from '../app/submissionDestination.js'
+import { captureDestination, receiptNamesDestinationHome, type SubmissionDestination } from '../app/submissionDestination.js'
 import { $uiState, getUiState, patchUiState } from '../app/uiStore.js'
 import { t } from '../i18n/runtime.js'
 import {
@@ -373,7 +373,7 @@ export function useQueue(gw?: { request: (method: string, params: Record<string,
           item.submissionId === (receipt.input_id ?? receipt.admission_id) &&
           Boolean(item.destination?.storedSid) &&
           item.destination?.storedSid === receipt.target_session_id &&
-          (item.destination?.ownerHome ?? item.destination?.profileHome) === receipt.target_profile_home
+          Boolean(item.destination) && receiptNamesDestinationHome(item.destination!, receipt.target_profile_home)
       )
 
       if (!item) {
