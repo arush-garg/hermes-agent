@@ -55,11 +55,15 @@ def _restore_tool_and_agent_modules():
         or name.startswith("tools.")
         or name == "agent"
         or name.startswith("agent.")
+        # _install_fake_tools_package() also stubs plugins / plugins.browser.*; without restoring them
+        # every later test in the process sees the stub packages (no plugins.web, plugins.memory, ...).
+        or name == "plugins"
+        or name.startswith("plugins.")
     }
     try:
         yield
     finally:
-        _reset_modules(("tools", "agent"))
+        _reset_modules(("tools", "agent", "plugins"))
         sys.modules.update(original_modules)
 
 
