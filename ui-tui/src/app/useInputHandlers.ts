@@ -33,7 +33,7 @@ import {
 import { respondToServerRequest } from './serverRequestStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
-import { getUiState } from './uiStore.js'
+import { getUiState, patchUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 
@@ -840,6 +840,12 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       // gateway.rpc swallows errors with its own sys() message and resolves to null,
       // so we only speak when it came back with a real shape. null = rpc already spoke.
       return void gateway.rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: live.sid }).then(r => {
+        if (r?.value === '1' || r?.value === '0') {
+          const yolo = r.value === '1'
+
+          patchUiState(state => (state.info ? { ...state, info: { ...state.info, yolo } } : state))
+        }
+
         if (r?.value === '1') {
           return actions.sys(t('session.input.yoloOn'))
         }

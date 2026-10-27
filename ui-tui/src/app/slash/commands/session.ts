@@ -655,9 +655,12 @@ export const sessionCommands: SlashCommand[] = [
       ctx.gateway
         .rpc<ConfigSetResponse>('config.set', { key: 'yolo', session_id: ctx.sid })
         .then(
-          ctx.guarded<ConfigSetResponse>(r =>
-            ctx.transcript.sys(r.value === '1' ? t('slashCmd.session.yolo.on') : t('slashCmd.session.yolo.off'))
-          )
+          ctx.guarded<ConfigSetResponse>(r => {
+            const yolo = r.value === '1'
+
+            patchUiState(state => (state.info ? { ...state, info: { ...state.info, yolo } } : state))
+            ctx.transcript.sys(yolo ? t('slashCmd.session.yolo.on') : t('slashCmd.session.yolo.off'))
+          })
         )
     }
   },

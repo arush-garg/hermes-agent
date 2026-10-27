@@ -472,10 +472,16 @@ def _classic_cli_fields(authority, ref, live, agent, policy):
     row = {}
     with contextlib.suppress(Exception):
         row = authority.db.get_session(stored_id) or {}
-    yolo = bool(policy is not None and getattr(policy, 'yolo', False))
+    yolo = False
     with contextlib.suppress(Exception):
-        from tools.approval import is_session_yolo_enabled
-        yolo = yolo or is_session_yolo_enabled(live.route)
+        # The route's bypass as a turn would arm it: a ``--yolo`` launch is seeded now (not at the first
+        # turn) and an explicit /yolo OFF on the routing entry stays off over the launch policy.
+        from gateway.session_managed_worker import _session_yolo
+        yolo = bool(_session_yolo(authority, live.route, policy)) if policy is not None else False
+    if not yolo:
+        with contextlib.suppress(Exception):
+            from tools.approval import is_session_yolo_enabled
+            yolo = is_session_yolo_enabled(live.route)
     api_mode = getattr(agent, 'api_mode', None) if agent is not None else None
     if api_mode is None and policy is not None:
         with contextlib.suppress(Exception):

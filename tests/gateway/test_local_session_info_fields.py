@@ -52,3 +52,31 @@ def test_local_viewer_title_republishes_session_info(monkeypatch):
     turn._attach_session_title_callback(agent, turn._ctx)
     agent._on_session_title('Auto', 'llm')
     assert published == [('session.info', {'title': 'Auto'})]
+
+
+def _yolo_fields(monkeypatch, *, launch, entry_yolo, route='yolo-route'):
+    from gateway import session_local
+    from tools import approval
+    monkeypatch.setattr(approval, '_YOLO_MODE_FROZEN', False)
+    monkeypatch.setattr(approval, '_session_yolo', set())
+    monkeypatch.setattr(approval, '_launch_yolo_applied', set())
+    store = SimpleNamespace(lookup_by_session_key=lambda key: SimpleNamespace(yolo=entry_yolo))
+    authority = SimpleNamespace(
+        runner=SimpleNamespace(session_store=store),
+        db=SimpleNamespace(get_session=lambda sid: {}))
+    live = SimpleNamespace(route=route)
+    ref = SimpleNamespace(session_id='s')
+    policy = SimpleNamespace(yolo=launch, effective=lambda *a, **k: ({},))
+    return session_local._classic_cli_fields(authority, ref, live, None, policy)['yolo']
+
+
+def test_launch_yolo_reports_on_before_any_turn(monkeypatch):
+    assert _yolo_fields(monkeypatch, launch=True, entry_yolo=None) is True
+
+
+def test_explicit_yolo_off_beats_launch_policy(monkeypatch):
+    assert _yolo_fields(monkeypatch, launch=True, entry_yolo=False) is False
+
+
+def test_no_launch_yolo_reports_off(monkeypatch):
+    assert _yolo_fields(monkeypatch, launch=False, entry_yolo=None) is False
