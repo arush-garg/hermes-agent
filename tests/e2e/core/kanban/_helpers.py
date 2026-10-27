@@ -106,6 +106,8 @@ class Board:
             "HERMES_STATE_DB_GUARD_BYPASS": "1",
             **FAST_ENV, **self.env_extra,
         })
+        env["HERMES_NO_LAUNCHD"] = "1"  # never bootstrap a real launchd job from a test child
+        env.setdefault("HERMES_DISABLE_LAZY_INSTALLS", "1")  # a temp HOME would otherwise run a full dependency sync
         assert env["HERMES_HOME"].startswith(str(self.root))
         return env
 
