@@ -97,7 +97,10 @@ def _extract(plugin_dir: Path, module_name: str) -> dict[str, Any]:
     # Windows resolves Path.home() from USERPROFILE, never HOME: without it the child cannot start.
     env.update(HOME=str(Path.home()), USERPROFILE=str(Path.home()), HERMES_HOME=home,
                PYTHONPATH=repo_root,
-               **{HOST_PROCESS_ENV: "1"})
+               **{HOST_PROCESS_ENV: "1"},
+               # A throwaway child never owns dependency state: without this a home Hermes does not own
+               # (a per-task HERMES_HOME) runs a full dependency sync before the extraction can start.
+               HERMES_DISABLE_LAZY_INSTALLS="1")
     # -P and a trusted cwd: ``-m`` otherwise puts the launch directory ahead of PYTHONPATH, so a
     # ``hermes_cli/`` package in the directory Hermes was started from would run instead of ours.
     argv = [*host_launcher(), sys.executable, "-P", "-m", "hermes_cli.plugin_host_child", "--extract-profiles",

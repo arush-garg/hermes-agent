@@ -179,6 +179,9 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
 
 def test_vercel_setup_configures_access_token_auth(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    # Setup looks for .vercel/project.json up the cwd's ancestors; a checkout inside ~/.hermes would
+    # walk into the real home.
+    monkeypatch.chdir(tmp_path)
     _clear_vercel_env(monkeypatch)
     monkeypatch.setenv("VERCEL_OIDC_TOKEN", "old-oidc")
     monkeypatch.setitem(sys.modules, "vercel", types.ModuleType("vercel"))

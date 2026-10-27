@@ -135,7 +135,10 @@ def test_runtime_node_comes_from_pm_without_legacy_repair(tmp_path, monkeypatch)
     node = shutil.which("node")
     managed = tmp_path / "bin/node"
     managed.parent.mkdir()
-    managed.symlink_to(node)
+    # A wrapper, not a symlink: a node installed under the developer's real Hermes home (PM puts it
+    # there) would resolve through the link into the home and trip the home-I/O guard.
+    managed.write_text(f'#!/bin/sh\nexec "{node}" "$@"\n', encoding="utf-8")
+    managed.chmod(0o755)
     monkeypatch.delenv("HERMES_NODE", raising=False)
     acquired = []
 

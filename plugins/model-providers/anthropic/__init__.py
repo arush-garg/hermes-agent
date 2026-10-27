@@ -35,7 +35,7 @@ class AnthropicProfile(ProviderProfile):
         except Exception:
             is_oauth = api_key.startswith(("sk-ant-oat", "cc-", "eyJ"))
         try:
-            endpoint = f"{(base_url or self.base_url).rstrip('/')}/v1/models"
+            endpoint = f"{(base_url or self.base_url or 'https://api.anthropic.com').rstrip('/')}/v1/models"
 
             def _page(after_id: str | None) -> dict:
                 query = urllib.parse.urlencode({"after_id": after_id}) if after_id else ""

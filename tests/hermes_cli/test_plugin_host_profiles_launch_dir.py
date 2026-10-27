@@ -40,3 +40,24 @@ def test_profile_extraction_ignores_a_hermes_cli_package_in_the_launch_directory
     assert not (launch_dir / "shadow-imported.txt").exists()
     assert [p.name for p in profiles] == ["cwdprobe"]
     assert profiles[0].base_url == "https://cwdprobe.example/v1"
+
+
+def test_profile_extraction_child_never_runs_a_dependency_sync(tmp_path, monkeypatch):
+    """A throwaway extraction child under a home Hermes does not own would otherwise sync dependencies."""
+    from types import SimpleNamespace
+
+    from hermes_cli import plugin_host_profiles
+
+    seen = {}
+
+    def fake_run(argv, **kwargs):
+        seen.update(kwargs["env"])
+        return SimpleNamespace(stdout=b'{"profiles": []}', stderr=b"", returncode=0)
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+    monkeypatch.setattr(plugin_host_profiles.subprocess, "run", fake_run)
+
+    plugin_host_profiles._extract(tmp_path, "_hermes_test_nosync")
+
+    assert seen["HERMES_DISABLE_LAZY_INSTALLS"] == "1"
