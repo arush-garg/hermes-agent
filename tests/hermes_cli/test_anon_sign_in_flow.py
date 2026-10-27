@@ -329,7 +329,10 @@ def test_the_ca_bundle_is_honoured_for_the_whole_sign_in(portal, free_account, m
         return real_client(timeout_seconds, verify)
 
     assert _drain(client_factory=_recording)[-1].kind == "completed"
-    assert seen and isinstance(seen[0], ssl.SSLContext)
+    from agent.ssl_verify import _stdlib_ssl_context_class
+    # The pinned bundle REPLACES OS trust: a stdlib context, never truststore's (which falls back to
+    # the OS store whenever the bundle rejects a chain).
+    assert seen and type(seen[0]) is _stdlib_ssl_context_class()
 
 
 def test_the_scope_is_entered_for_the_precondition_and_the_persist_but_never_around_a_wait(

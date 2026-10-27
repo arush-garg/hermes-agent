@@ -253,7 +253,10 @@ def _resolve_verify(
                 "CA bundle path does not exist: %s — falling back to default certificates",
                 ca_path)
             return _default_verify()
-        return ssl.create_default_context(cafile=ca_path)
+        # Not ssl.create_default_context: once truststore is injected that context falls back to the
+        # OS store whenever the bundle rejects a chain, so a pinned bundle would not restrict trust.
+        from agent.ssl_verify import resolve_httpx_verify
+        return resolve_httpx_verify(ca_bundle=ca_path)
     return _default_verify()
 
 
