@@ -50,6 +50,25 @@ _normcase = os.path.normcase
 _INTERPRETER_PREFIX_STRS = tuple(_normcase(os.fspath(p)) for p in _INTERPRETER_PREFIXES)
 
 
+# Scans that resolve the paths OTHER processes hold (open files, cwd) to compare them with ours.
+_PROCESS_PROBES = frozenset({
+    ("hermes_state_holders", "foreign_state_db_holders"),
+    ("hermes_cli.worktree_sweep", "_psutil_live_pids"),
+})
+
+
+def _called_from_process_probe(max_depth: int = 25) -> bool:
+    frame = sys._getframe(1)
+    for _ in range(max_depth):
+        if frame is None:
+            return False
+        module = frame.f_globals.get("__name__") or ""
+        if module.partition(".")[0] == "psutil" or (module, frame.f_code.co_name) in _PROCESS_PROBES:
+            return True
+        frame = frame.f_back
+    return False
+
+
 def _within(path: str, prefix: str) -> bool:
     """``Path(path).is_relative_to(prefix)`` for two normalized, case-folded absolute strings."""
     if path == prefix:
@@ -124,7 +143,7 @@ class HomeIOGuard:
             # tree merely to decide that the original path was forbidden.
             for root in roots:
                 if _within(absolute, root):
-                    self.refuse(value)
+                    self._refuse_unless_process_probe(value, metadata)
             if resolved is None:
                 resolved = _normcase(os.path.realpath(absolute))
             if metadata and resolved in roots:
@@ -135,7 +154,7 @@ class HomeIOGuard:
                     return
             for root in roots:
                 if _within(resolved, root):
-                    self.refuse(value)
+                    self._refuse_unless_process_probe(value, metadata)
         finally:
             self.checking.active = False
 
@@ -154,6 +173,15 @@ class HomeIOGuard:
                 pytest.fail(f"TEST BUG: changing the REAL installed Hermes desktop app: {value}\n"
                             "Stub hermes_cli.gui_uninstall.packaged_gui_app_paths to a temporary path.")
         return resolved
+
+    def _refuse_unless_process_probe(self, value, metadata):
+        # Holder scans (psutil open_files()/cwd() and our callers that realpath() the results) resolve the
+        # paths OTHER processes hold; on macOS there is no /proc to exempt. That is descriptor inspection,
+        # like the /proc/<pid>/fd case above, not I/O against the home: without this a developer machine
+        # running a live Hermes fails every holder-scan test. Metadata only; reads and writes stay guarded.
+        if metadata and _called_from_process_probe():
+            return
+        self.refuse(value)
 
     @staticmethod
     def refuse(value):
