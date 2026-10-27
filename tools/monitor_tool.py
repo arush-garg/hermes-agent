@@ -78,7 +78,7 @@ def _load_persisted_monitors() -> list[dict]:
     if not _MONITORS_FILE.exists():
         return []
     try:
-        data = json.loads(_MONITORS_FILE.read_text())
+        data = json.loads(_MONITORS_FILE.read_text(encoding="utf-8-sig"))
         return data.get("monitors", [])
     except Exception:
         logger.exception("Failed to load persisted monitors from %s", _MONITORS_FILE)
@@ -105,7 +105,7 @@ def _save_persisted_monitors() -> None:
         ]
     try:
         _MONITORS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _MONITORS_FILE.write_text(json.dumps({"monitors": active}, indent=2))
+        _MONITORS_FILE.write_text(json.dumps({"monitors": active}, indent=2), encoding="utf-8")
     except Exception:
         logger.exception("Failed to save persisted monitors")
 

@@ -117,7 +117,7 @@ def execute_shell_command(
 
     if is_posix:
         kwargs["executable"] = "/bin/bash"
-        kwargs["preexec_fn"] = os.setsid  # isolate process group
+        kwargs["preexec_fn"] = os.setsid  # isolate process group  # windows-footgun: ok (POSIX-only branch)
     else:
         # Windows: prevent the console window from flashing
         kwargs.setdefault("creationflags", 0)
@@ -142,7 +142,7 @@ def execute_shell_command(
         # Kill the entire process group so orphaned children don't linger
         if is_posix and proc.pid is not None:
             try:
-                os.killpg(proc.pid, signal.SIGKILL)
+                os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok (guarded by is_posix)
             except (ProcessLookupError, PermissionError, OSError):
                 pass
         proc.kill()

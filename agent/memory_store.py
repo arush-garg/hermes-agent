@@ -73,7 +73,7 @@ def _validate_owned_directory(path: Path, name: str) -> None:
         raise ValueError(f"symlinked {name} is forbidden")
     if not stat.S_ISDIR(value.st_mode):
         raise ValueError(f"{name} must be a directory")
-    if value.st_uid != os.geteuid():
+    if hasattr(os, "geteuid") and value.st_uid != os.geteuid():  # windows-footgun: ok
         raise ValueError(f"{name} must be owned by the current user")
 
 
@@ -83,7 +83,7 @@ def _validate_database(path: Path) -> None:
         raise ValueError("database symlink is forbidden")
     if not stat.S_ISREG(value.st_mode):
         raise ValueError("database must be a regular file")
-    if value.st_uid != os.geteuid():
+    if hasattr(os, "geteuid") and value.st_uid != os.geteuid():  # windows-footgun: ok
         raise ValueError("database must be owned by the current user")
     if value.st_nlink != 1:
         raise ValueError("database hard links are forbidden")

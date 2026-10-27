@@ -823,7 +823,7 @@ class CheckpointManager:
         # Periodic checkpoint counter for long-running sessions (#99869).
         self._periodic_counter: int = 0
         # Last periodic checkpoint timestamp per working_dir (rate-limit fallback).
-        self._last_periodic_ts: Dict[str, float] = {}
+        self._last_periodic_ts: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Turn lifecycle
@@ -1777,7 +1777,7 @@ def read_interrupted_marker(session_id, base=None):
         marker = _session_marker_path(session_id, base)
         if not marker.exists():
             return None
-        return __import__("json").loads(marker.read_text(encoding="utf-8"))
+        return __import__("json").loads(marker.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
 
@@ -1803,7 +1803,7 @@ def list_interrupted_markers(base=None):
         out = []
         for p in d.glob("*.interrupted"):
             try:
-                data = __import__("json").loads(p.read_text(encoding="utf-8"))
+                data = __import__("json").loads(p.read_text(encoding="utf-8-sig"))
                 data["_path"] = str(p)
                 out.append(data)
             except Exception:

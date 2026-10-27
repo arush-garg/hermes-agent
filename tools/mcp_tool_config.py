@@ -753,7 +753,7 @@ def _load_project_mcp_json(workspace_root: Optional[str] = None) -> dict[str, di
         return {}
 
     try:
-        with open(path, "r", encoding="utf-8") as handle:
+        with open(path, "r", encoding="utf-8-sig") as handle:
             data = json.load(handle)
     except (OSError, json.JSONDecodeError) as exc:
         logger.warning("Could not load project MCP config %s: %s", path, exc)
