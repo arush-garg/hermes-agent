@@ -834,6 +834,7 @@ from hermes_cli.main_provider_setup import (
     _model_choice_save_count,
     _named_custom_provider_map,
     _offer_reasoning_after_pick,
+    _prompt_api_key,
     _prompt_main_reasoning_effort,
     _prompt_provider_choice,
     _remove_custom_provider,
@@ -2438,7 +2439,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "auth", "status", "cron", "doctor", "config", "pairing", "skills", "tools", "mcp",
         "sessions", "insights", "update", "uninstall", "profile", "dashboard", "serve", "webapp",
         "desktop", "gui", "honcho", "claw", "plugins", "security", "acp", "webhook", "peer",
-        "memory", "dump", "debug", "backup", "import", "completion", "logs", "usage",
+        "memory", "dump", "debug", "backup", "import", "completion", "kickbacks", "logs", "usage",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -2762,7 +2763,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "computer-use", "connectors",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "egress", "fallback", "gateway", "hooks", "import", "insights",
-        "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
+        "gui", "desktop", "kanban", "kickbacks", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
         "model", "monitoring", "pairing", "pause", "peer", "pets", "plugins", "portal", "profile",
         "project", "proxy",
@@ -3080,6 +3081,12 @@ def _try_fast_serve_launch() -> bool:
     return True
 
 
+def _wants_stealth_early(argv: "list[str] | None" = None) -> bool:
+    """Return whether a stealth-mode flag is present in the invocation."""
+    argv = argv or sys.argv[1:]
+    return "--stealth" in argv or "-stealth" in argv
+
+
 def _try_fast_chat_launch() -> bool:
     """Fast path for unambiguous interactive chat launches (all hosts).
 
@@ -3103,6 +3110,8 @@ def _try_fast_chat_launch() -> bool:
         return False
     # TUI launches keep full dispatch outside Termux (own startup path).
     if _wants_tui_early(argv):
+        return False
+    if _wants_stealth_early(argv):
         return False
     if _first_positional_argv() not in {None, "chat"}:
         return False
@@ -3362,6 +3371,82 @@ def _build_cli_parser():
 
     _register_plugin_cli_commands(subparsers)
 
+    # =========================================================================
+    # kickbacks command — ad plugin (login, logout, status, config, etc.)
+    # =========================================================================
+    kickbacks_parser = subparsers.add_parser(
+        "kickbacks",
+        help="Manage the Kickbacks ad plugin (login, logout, status, config)",
+        description=(
+            "Kickbacks is an ad plugin that shows sponsored text in Hermes "
+            "spinner and gateway messages and rewards you for views."
+        ),
+    )
+    kickbacks_sub = kickbacks_parser.add_subparsers(dest="kickbacks_command")
+
+    kickbacks_sub.add_parser("login", help="Start Kickbacks OAuth login")
+    kickbacks_sub.add_parser("logout", help="Sign out from Kickbacks")
+    kickbacks_sub.add_parser("status", help="Show plugin status and earnings")
+    kickbacks_sub.add_parser("config", help="Show current configuration")
+    kickbacks_sub.add_parser("enable", help="Enable kickbacks plugin")
+    kickbacks_sub.add_parser("disable", help="Disable kickbacks plugin")
+    kickbacks_sub.add_parser("demo", help="Switch to demo mode (no auth)")
+    kickbacks_sub.add_parser("live", help="Switch to live mode (requires auth)")
+    kickbacks_ads_parser = kickbacks_sub.add_parser("ads", help="Show cached ad details")
+    kickbacks_ads_sub = kickbacks_ads_parser.add_subparsers(dest="kickbacks_ads_command")
+    kickbacks_ads_sub.add_parser("list", help="Show cached ad")
+
+    def cmd_kickbacks(args):
+        """Dispatch kickbacks subcommands -- lazy-import the plugin CLI module."""
+        import importlib.util as _importlib_util
+        import sys as _sys
+        from pathlib import Path as _Path
+
+        # Load kickbacks CLI module from its absolute path (it lives under
+        # ~/.hermes/plugins/kickbacks/, not inside the hermes-agent tree).
+        _name = "kickbacks_cli_module"
+        if _name in _sys.modules:
+            _mod = _sys.modules[_name]
+        else:
+            _cli_path = _Path.home() / ".hermes" / "plugins" / "kickbacks" / "cli.py"
+            _spec = _importlib_util.spec_from_file_location(_name, _cli_path)
+            if _spec is None or _spec.loader is None:
+                print("Error: kickbacks plugin not found.")
+                _sys.exit(1)
+            _mod = _importlib_util.module_from_spec(_spec)
+            _sys.modules[_name] = _mod
+            _spec.loader.exec_module(_mod)
+
+        _command = getattr(args, "kickbacks_command", None)
+        if _command == "login":
+            _mod.cmd_login()
+        elif _command == "logout":
+            _mod.cmd_logout()
+        elif _command == "status":
+            _mod.cmd_status()
+        elif _command == "config":
+            _mod.cmd_config()
+        elif _command == "enable":
+            _mod.set_config("enabled", True)
+            print("✓ Kickbacks enabled")
+        elif _command == "disable":
+            _mod.set_config("enabled", False)
+            print("✓ Kickbacks disabled")
+        elif _command == "demo":
+            _mod.cmd_demo()
+        elif _command == "live":
+            _mod.cmd_live()
+        elif _command == "ads":
+            _ads_cmd = getattr(args, "kickbacks_ads_command", None)
+            if _ads_cmd == "list":
+                _mod.cmd_ads_list()
+            else:
+                _mod.cmd_help()
+        else:
+            _mod.cmd_help()
+
+    kickbacks_parser.set_defaults(func=cmd_kickbacks)
+
     build_curator_parser(subparsers)
     build_pets_parser(subparsers)
     build_journey_parser(subparsers)
@@ -3538,6 +3623,14 @@ def main():
 
     from hermes_cli.observability.shared_metrics_disabled import set_process_surface
     set_process_surface(args.command)
+    # `hermes --stealth` is the short form of `hermes desktop --stealth`.
+    # Route it before the no-subcommand chat fallback. cmd_gui uses getattr for
+    # desktop-only options, so the top-level namespace remains intentionally
+    # small and retains global flags such as --profile and --yolo.
+    if args.command is None and getattr(args, "stealth", False):
+        cmd_gui(args)
+        return
+
     # No subcommand (optionally with top-level --resume / --continue) → chat.
     if args.command is None:
         _default_to_chat(args)

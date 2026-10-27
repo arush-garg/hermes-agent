@@ -639,6 +639,28 @@ class CLILoopsMixin:
             return GatewayHeartbeatManager(sid, connection)
         return self._automation_manager("_heartbeat_manager", "heartbeat manager", load, remote)
 
+    def _get_wait_manager(self):
+        """WaitManager bound to the current session_id (see ``_session_bound_manager``)."""
+        def load():
+            from hermes_cli.waits import WaitManager
+            return lambda sid: WaitManager(session_id=sid)
+        return self._session_bound_manager("_wait_manager", "wait manager", load)
+
+    def _handle_wait_command(self, cmd: str) -> None:
+        """Dispatch /wait: ``/wait 2h <message>`` sends <message> as a normal user turn once the delay has
+        elapsed and the session is idle; ``/wait list`` / ``/wait cancel [<id>|all]`` manage pending ones."""
+        from cli import _cprint
+        from hermes_cli.cli_commands_session_tools import _command_arg, _dim_line
+        from hermes_cli.waits import run_wait_command
+        mgr = self._get_wait_manager()
+        if mgr is None:
+            return _cprint(_dim_line("Waits unavailable (no active session)."))
+        reply, armed = run_wait_command(mgr, _command_arg(cmd))
+        if armed:
+            self._start_heartbeat_watchdog()
+        for line in reply.splitlines():
+            _cprint(f"  {line}")
+
     def _get_loop_manager(self):
         """LoopManager bound to the current session_id (see ``_session_bound_manager``)."""
         def load():
@@ -651,11 +673,14 @@ class CLILoopsMixin:
         return self._automation_manager("_loop_manager", "loop manager", load, remote)
 
     def _start_heartbeat_watchdog(self):
-        """Start the idle-poll daemon that injects a due heartbeat prompt into
-        ``_pending_input`` as a normal user turn when the session is idle. Missed ticks
-        coalesce (the anchor resets on fire, so a busy hour yields ONE heartbeat turn).
-        Idempotent; safe to call on every /heartbeat set."""
-        if getattr(self, "_heartbeat_watchdog_started", False):
+        """Start the idle-poll daemon that injects a due /heartbeat prompt or /wait message into
+        ``_pending_input`` as a normal user turn when the session is idle. Missed heartbeat ticks
+        coalesce (the anchor resets on fire, so a busy hour yields ONE heartbeat turn); due waits
+        go out one per idle poll, earliest first. Idempotent; safe to call on every set.
+
+        Not in a TUI slash worker: nothing drains its ``_pending_input``, so a claim there is lost
+        (the TUI session owner fires due state from the store instead)."""
+        if getattr(self, "_heartbeat_watchdog_started", False) or getattr(self, "_headless_slash_worker", False):
             return
         self._heartbeat_watchdog_started = True
         from hermes_cli.gateway_automation import GatewayHeartbeatManager
@@ -666,13 +691,6 @@ class CLILoopsMixin:
                 while not getattr(self, "_should_exit", False):
                     time.sleep(POLL_SECONDS)
                     try:
-                        mgr = self._get_heartbeat_manager()
-                        if isinstance(mgr, GatewayHeartbeatManager):
-                            # The gateway poller stands down while this watchdog runs, so a resume,
-                            # set or re-anchor from another viewer must reach this copy.
-                            mgr.refresh()
-                        if mgr is None or not mgr.is_active():
-                            continue
                         busy = (
                             self._agent_running
                             or getattr(self, "_voice_recording", False)
@@ -680,14 +698,61 @@ class CLILoopsMixin:
                             or not self._pending_input.empty())
                         if busy:
                             continue
-                        prompt = mgr.due_prompt()
-                        if prompt:
-                            self._pending_input.put(prompt)
+                        heartbeat = self._get_heartbeat_manager()
+                        if isinstance(heartbeat, GatewayHeartbeatManager):
+                            # The gateway poller stands down while this watchdog runs, so a resume,
+                            # set or re-anchor from another viewer must reach this copy.
+                            heartbeat.refresh()
+                        for mgr in (self._get_wait_manager(), heartbeat):
+                            prompt = mgr.due_prompt() if mgr is not None and mgr.is_active() else None
+                            if prompt:
+                                self._pending_input.put(prompt)
+                                break
                     except Exception as exc:
                         logging.debug("heartbeat watchdog tick failed: %s", exc)
             finally:
                 self._heartbeat_watchdog_started = False
         threading.Thread(target=_loop, daemon=True, name="heartbeat-watchdog").start()
+
+    def _inject_shell_output(self, formatted: str) -> None:
+        """Route formatted shell output into the agent context.
+
+        While the agent runs, try ``agent.steer()`` first so shell output never interrupts a tool
+        call; fall back to queuing for the next turn if steer is unavailable, raises or declines.
+        When idle, queue as the next message.
+        """
+        from cli import _DIM, _RST, _cprint
+        if self._agent_running:
+            if self.agent is not None and hasattr(self.agent, "steer"):
+                try:
+                    accepted = bool(self.agent.steer(formatted))
+                except Exception as exc:
+                    _cprint(f"  {_DIM}Steer failed ({exc}) — queued for next turn.{_RST}")
+                    accepted = False
+                if accepted:
+                    _cprint("  \033[33m⏩ Shell output appended to last tool result\033[0m")
+                    return
+            self._pending_input.put(formatted)
+            _cprint("  Queued for the next turn")
+        else:
+            self._pending_input.put(formatted)
+
+    def _wake_idle_from_pending_steer(self) -> None:
+        """Wake an idle session from a periodic-monitor tick.
+
+        A monitor steer that lands while idle sits in ``agent._pending_steer`` with no in-loop drain
+        (conversation_loop drains only pre-API-call, during an active turn). Move it into the input
+        queue so it becomes a fresh user turn. Callers gate on ``not self._agent_running``.
+        """
+        agent = getattr(self, "agent", None)
+        if agent is None:
+            return
+        try:
+            pending = agent._drain_pending_steer()
+        except Exception:
+            return
+        if pending:
+            self._pending_input.put(pending)
 
     def _maybe_resume_parked_goal(self) -> None:
         """Idle hook run from process_loop: when a parked /goal's barrier has lifted (the process

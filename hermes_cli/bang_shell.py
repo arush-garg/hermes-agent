@@ -27,6 +27,8 @@ from typing import Optional
 # cap so an accidental `!sleep 999` cannot wedge the composer (the user can Ctrl+C anyway).
 DEFAULT_TIMEOUT = 120
 
+USAGE_HINT = "Usage: !<command> — run a shell command without spending a model turn (e.g. !git status)"
+
 # Legacy facade helpers kept for external callers while the interactive implementation lives here.
 # They describe the pre-extraction, agent-context shell path; current bang execution intentionally
 # bypasses the model and uses the functions below instead.

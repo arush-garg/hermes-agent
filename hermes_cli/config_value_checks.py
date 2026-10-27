@@ -8,6 +8,11 @@ from hermes_cli.config_issues import ConfigIssue, _issue
 
 def _validate_voice(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
     voice_cfg = config.get("voice")
+    if isinstance(voice_cfg, dict) and "push_to_talk_only" in voice_cfg:
+        ptt_val = voice_cfg.get("push_to_talk_only")
+        if not isinstance(ptt_val, bool):
+            _issue(issues, "error", f"voice.push_to_talk_only must be a boolean, got {type(ptt_val).__name__}",
+                   "Set voice.push_to_talk_only to true (push-to-talk only) or false (continuous mode)")
     if not (isinstance(voice_cfg, dict) and "submit_mode" in voice_cfg):
         return
     submit_mode = voice_cfg.get("submit_mode")

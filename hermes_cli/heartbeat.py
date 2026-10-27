@@ -43,6 +43,15 @@ _STATE_FIELDS = {
 }
 
 
+def parse_duration(text: str) -> Optional[int]:
+    """Parse ``30s`` / ``10m`` / ``2h`` / ``90 minutes`` / ``1.5d`` into whole seconds; None when not a duration.
+
+    The shared grammar behind ``/heartbeat every <interval>`` and ``/wait <duration>``; no floor applied.
+    """
+    m = _INTERVAL_RE.match(text) if text else None
+    return int(float(m.group(1)) * _UNIT_SECONDS[m.group(2).lower()]) if m else None
+
+
 def parse_interval(text: str) -> Optional[int]:
     """Parse ``10m`` / ``every 2h`` / ``every 90 minutes`` into seconds.
 
@@ -286,6 +295,7 @@ __all__ = [
     "format_interval",
     "load_heartbeat",
     "migrate_heartbeat_to_session",
+    "parse_duration",
     "parse_interval",
     "save_heartbeat",
 ]

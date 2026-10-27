@@ -1115,11 +1115,11 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
     _SLASH_DISPATCH: dict[str, tuple[str, bool]] = {
         "exit": ("_cmd_exit", True), "quit": ("_cmd_exit", True), "help": ("_cmd_help", True),
         "palette": ("_open_command_palette", False), "whoami": ("_handle_whoami_command", False),
-        "profile": ("_handle_profile_command", False), "toolsets": ("show_toolsets", False),
+        "profile": ("_handle_profile_command", False), "id": ("_handle_id_command", False), "toolsets": ("show_toolsets", False),
         "config": ("show_config", False), "redraw": ("_cmd_redraw", True), "clear": ("_cmd_clear", True),
         "history": ("show_history", False), "title": ("_cmd_title", True), "new": ("_cmd_new", True),
         "model": ("_handle_model_switch", True), "codex-runtime": ("_handle_codex_runtime", True),
-        "retry": ("_cmd_retry", True), "prompt": ("_handle_prompt_compose_command", True),
+        "retry": ("_cmd_retry", True), "keep": ("_handle_keep_command", True), "prompt": ("_handle_prompt_compose_command", True),
         "undo": ("_cmd_undo", True), "save": ("save_conversation", True), "skills": ("_cmd_skills", True),
         "platforms": ("_show_gateway_status", False), "status": ("_show_session_status", False),
         "context": ("_show_context_breakdown", True), "egress": ("_cmd_egress", True),
@@ -1786,3 +1786,63 @@ if __name__ == "__main__":
     import fire
 
     fire.Fire(main)
+
+
+# ---- PLUGIN-COMPAT: old import paths -------------------------------
+# External plugins (and old in-tree modules) import these names from ``cli``; each one is resolved
+# lazily on first access so cli.py pays nothing at import time and no cycle is created.
+def AIAgent(*args, **kwargs):
+    from run_agent import AIAgent as _AIAgent
+
+    return _AIAgent(*args, **kwargs)
+
+
+def CanonicalUsage(*args, **kwargs):
+    from agent.usage_pricing import CanonicalUsage as _CanonicalUsage
+
+    return _CanonicalUsage(*args, **kwargs)
+
+
+_PLUGIN_COMPAT_LAZY = {
+    'DEFAULT_BROWSER_CDP_URL': ('hermes_cli.browser_connect', 'DEFAULT_BROWSER_CDP_URL'),
+    '_SHELL_DISPLAY_MAX': ('hermes_cli.bang_shell', '_SHELL_DISPLAY_MAX'),
+    '_format_shell_output': ('hermes_cli.bang_shell', '_format_shell_output'),
+    '_looks_like_shell_command': ('hermes_cli.bang_shell', '_looks_like_shell_command'),
+    '_shell_display_truncate': ('hermes_cli.bang_shell', '_shell_display_truncate'),
+    'HERMES_AGENT_LOGO': ('hermes_cli.banner', 'HERMES_AGENT_LOGO'),
+    'HERMES_CADUCEUS': ('hermes_cli.banner', 'HERMES_CADUCEUS'),
+    'SlashCommandAutoSuggest': ('hermes_cli.commands_completion', 'SlashCommandAutoSuggest'),
+    'SlashCommandCompleter': ('hermes_cli.commands_completion', 'SlashCommandCompleter'),
+    'build_welcome_banner': ('hermes_cli.banner', 'build_welcome_banner'),
+    'display_hermes_home': ('hermes_constants', 'display_hermes_home'),
+    'estimate_usage_cost': ('agent.usage_pricing', 'estimate_usage_cost'),
+    'get_all_toolsets': ('toolsets', 'get_all_toolsets'),
+    'get_job': ('cron.jobs', 'get_job'),
+    'get_toolset_for_tool': ('model_tools', 'get_toolset_for_tool'),
+    'get_toolset_info': ('toolsets', 'get_toolset_info'),
+    'init_skin_from_config': ('hermes_cli.skin_engine', 'init_skin_from_config'),
+    'is_browser_debug_ready': ('hermes_cli.browser_connect', 'is_browser_debug_ready'),
+    'is_table_divider': ('agent.markdown_tables', 'is_table_divider'),
+    'looks_like_table_row': ('agent.markdown_tables', 'looks_like_table_row'),
+    'manual_chrome_debug_command': ('hermes_cli.browser_connect', 'manual_chrome_debug_command'),
+    'print_config_warnings': ('hermes_cli.config', 'print_config_warnings'),
+    'prompt_for_secret': ('hermes_cli.callbacks', 'prompt_for_secret'),
+    'set_friendly_tool_labels': ('agent.display', 'set_friendly_tool_labels'),
+    'set_tool_preview_max_len': ('agent.display', 'set_tool_preview_max_len'),
+    'setup_logging': ('hermes_logging', 'setup_logging'),
+}
+
+
+def __getattr__(name):  # PEP 562 — lazy so no import cycles
+    target = _PLUGIN_COMPAT_LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
+    try:  # the compat layer's report plumbing is gone; an old name still resolves
+        from hermes_cli.plugin_compat import warn_once
+    except ImportError:
+        pass
+    else:
+        warn_once(__name__, name, *target)
+    return getattr(importlib.import_module(target[0]), target[1])
+# ---- END PLUGIN-COMPAT ----

@@ -293,6 +293,22 @@ class CLICommandsSessionToolsMixin:
         _say_block(f"  {_t('profile.profile', profile=reply.data['profile'])}",
                    f"  {_t('profile.home', home=reply.data['home'])}")
 
+    def _handle_keep_command(self, cmd_original: str) -> None:
+        """Queue one turn on the current fallback model without restoring the primary."""
+        from cli import _slash_args
+        remaining = _slash_args(cmd_original)
+        if not remaining:
+            _cp("  Usage: /keep <prompt>",
+                "  Sends a prompt using the current model without restoring the primary.")
+            return
+        if self.agent is not None:
+            self.agent._keep_on_fallback_this_turn = True
+        self._pending_input.put(remaining)
+
+    def _handle_id_command(self) -> None:
+        """Display the current session ID (usable for transcript pulls mid-session)."""
+        _cp(f"  Session ID: {self.session_id}")
+
 
 def _stop_background_work() -> None:
     """``/stop``'s cleanup: kill the background processes, then interrupt the background (async)

@@ -45,6 +45,7 @@
   "/heartbeat": null,
   "/help": null,
   "/history": null,
+  "/id": null,
   "/image": "terminal",
   "/import": null,
   "/indicator": "terminal",

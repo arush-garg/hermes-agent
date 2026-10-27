@@ -109,6 +109,10 @@ DEFAULT_CONFIG = {
         # TimeoutStopSec or risk SIGKILL mid-cleanup; for /restart prefer restart_after_turn_timeout
         # so turns finish BEFORE stop().
         "restart_drain_timeout": 0,
+        # Maximum auto-continue cycles after iteration-budget exhaustion: the loop compacts the
+        # context and continues with a fresh budget up to this many times, keeping cumulative usage
+        # accounting. 0 disables the feature (falls back to the summary fallback).
+        "max_auto_continue": 3,
         # Floor under the stop()/drain wait (seconds) for cron jobs and api_server runs. Interrupted
         # chat turns resume on the next message, but an interrupted cron run is recorded as a
         # permanent failure and an interrupted /v1 run fails its waiting caller, so neither may
@@ -137,6 +141,37 @@ DEFAULT_CONFIG = {
         # visible "retrying automatically" countdown instead of ending the turn. Esc/interrupt stops
         # the wait; auth/format/billing/policy errors never enter. 0 disables.
         "auto_recovery_cycles": 5,
+        # Wi-Fi / local-connectivity pause. When model calls fail at the transport layer
+        # (DNS/TCP/connect/reset/timeout) and probes confirm the local link is down
+        # (provider host unreachable AND neutral internet endpoints unreachable), park the
+        # turn with a visible "waiting for connectivity" status instead of burning retries
+        # and fallbacks, then resume on the SAME provider when the link returns. A
+        # provider outage (provider down, internet up) keeps the normal fallback path.
+        "connectivity_pause": {
+            # Master switch. False restores the pre-feature behavior exactly.
+            "enabled": True,
+            # Consecutive transport failures before the pause path engages (debounce so
+            # one flaky packet doesn't park the turn).
+            "consecutive_failures": 2,
+            # Seconds between connectivity probes while paused.
+            "probe_interval_s": 10,
+            # Per-probe socket timeout in seconds.
+            "probe_timeout_s": 3,
+            # Neutral "host:port" endpoints proving the internet works.
+            "probe_hosts": ["1.1.1.1:443", "8.8.8.8:53"],
+            # Max seconds to stay paused before falling back to the normal recovery
+            # ladder. 0 = wait indefinitely until interrupted.
+            "max_pause_s": 1800,
+            # Prompt-cache warmth window in seconds. Resume skips the compaction check
+            # when the outage was shorter than this (cache still warm); longer outages
+            # re-run the pre-API preflight so an oversized cold-cache context compacts
+            # before the expensive re-read.
+            "cache_warm_window_s": 1800,
+            # Pin the provider for the resume cycle (the /keep path): a post-outage
+            # failure never bounces a massive context at a different provider. When
+            # false, resume behaves like a normal retry cycle.
+            "resume_keep_provider": True,
+        },
         # Seconds the Codex/Responses stream may keep reading after its terminal frame so the relay
         # finalizer can run. Relays that never close the SSE socket after response.completed would
         # otherwise wedge the turn until the idle watchdog discards the already-billed response
@@ -1228,6 +1263,7 @@ DEFAULT_CONFIG = {
         "submit_mode": "direct",  # TUI: direct submits immediately; draft = editable transcript
         "max_recording_seconds": 120,
         "auto_tts": False,
+        "push_to_talk_only": False,   # If true: no continuous full-duplex listener; only record when push-to-talk key is pressed
         # Desktop remote clients call STT/TTS providers DIRECTLY (config + key fetched over
         # authenticated REST at session start) instead of relaying via the gateway.
         "client_direct": True,
@@ -2097,6 +2133,16 @@ DEFAULT_CONFIG = {
         "export": {"otlp": {"enabled": False, "endpoint": "", "headers_env": {}}},
     },
     "gateway": {  # Gateway settings (messaging platforms: Telegram, Discord, Slack, ...).
+        # User-facing provider failure replies for messaging surfaces. Override individual categories
+        # to match a product's voice; empty values retain the safe built-in text. Raw provider
+        # bodies are never interpolated.
+        "provider_error_replies": {
+            "authentication": "",
+            "policy": "",
+            "rate_limit": "",
+            "connection": "",
+            "generic": "",
+        },
         "unmanaged_idle_exit_seconds": 600,  # client-auto-started gateway only; 0 disables
         # Seconds a SIGTERM-interrupted agent unwinds before teardown (short: service stop budgets).
         "signal_interrupt_grace_timeout": 1,

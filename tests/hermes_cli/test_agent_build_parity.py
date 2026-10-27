@@ -57,7 +57,7 @@ def stubbed(monkeypatch):
                 "HERMES_TUI_PASS_SESSION_ID", "HERMES_TUI_SKILLS", "HERMES_IGNORE_RULES", "HERMES_PREFILL_MESSAGES_FILE"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr("hermes_cli.models.resolve_fast_mode_overrides",
-                        lambda model, provider=None, base_url=None: {"service_tier": "priority"})
+                        lambda model, provider=None, base_url=None, tier=None: {"service_tier": "priority"})
     monkeypatch.setattr("hermes_cli.agent_build_options.register_config_hooks", lambda *_a, **_kw: None)
     monkeypatch.setattr("hermes_cli.mcp_startup.ensure_mcp_discovery_before_agent_build", lambda **_kw: None)
     return monkeypatch
@@ -72,6 +72,7 @@ def _capture(monkeypatch):
         return types.SimpleNamespace(model=kwargs.get("model"), session_id=kwargs.get("session_id"))
 
     monkeypatch.setattr("run_agent.AIAgent", fake_agent)
+    monkeypatch.setattr("hermes_cli.gateway_agent.GatewayAgent", fake_agent)  # the CLI builds this one
     return captured
 
 
@@ -79,7 +80,6 @@ def _build_cli(monkeypatch, cfg, fail_provider=None):
     import sys
     monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _fake_runtime(fail_provider))
     cli_obj = _make_cli(config_overrides=copy.deepcopy(cfg))
-    monkeypatch.setattr(sys.modules["cli"], "_prepare_deferred_agent_startup", lambda: None)
     monkeypatch.setattr(cli_obj, "_install_tool_callbacks", lambda: None)
     cli_obj._session_db = object()
     captured = _capture(monkeypatch)

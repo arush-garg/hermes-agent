@@ -512,6 +512,13 @@ class CLIInfoMixin:
         ``CommandDef`` entries declare ``busy_policy="dispatch"``; the classic CLI honours it here)."""
         return self._busy_inline_command(text, has_images, ("bg", "btw"))
 
+    def _should_handle_session_state_command_inline(
+        self, text: str, has_images: bool = False) -> bool:
+        """Return True when /goal, /subgoal or /yolo should run on the UI thread while the agent runs.
+        They only touch session state (``busy_policy="dispatch"``); queued raw they would show as a
+        prompt waiting for the next turn instead of acting now, without interrupting the run."""
+        return self._busy_inline_command(text, has_images, ("goal", "subgoal", "yolo"))
+
     def _should_handle_stop_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /stop should be dispatched while the agent runs: its ``CommandDef`` declares
         ``busy_policy="interrupt_then_dispatch"``, and queued it would only run after the turn it stops."""
@@ -529,7 +536,8 @@ class CLIInfoMixin:
         from cli import _rich_text_from_ansi
         from hermes_cli.bang_shell import (
             USAGE_HINT, bang_shell_enabled, check_bang_approval, is_bang_command,
-            parse_bang_command, resolve_bang_cwd, run_bang_command)
+            parse_bang_command, resolve_bang_cwd, run_bang_command,
+            run_bang_command_interactive)
 
         if not is_bang_command(text):
             return False
@@ -539,7 +547,44 @@ class CLIInfoMixin:
             return False
 
         command = parse_bang_command(text)
-        if not command:  # bare `!` — show what the feature does
+        cwd = resolve_bang_cwd(getattr(self, "session_id", None))
+        app = getattr(self, "_app", None)
+        on_event_loop = False
+        if app is not None and getattr(app, "is_running", False):
+            import asyncio
+
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            else:
+                on_event_loop = True
+
+        if on_event_loop:
+            import asyncio
+
+            async def _run_interactive():
+                if command:
+                    approval = await asyncio.to_thread(check_bang_approval, command)
+                    if not approval.get("approved"):
+                        message = approval.get("message") or t(
+                            "cli.shell.command_denied",
+                            reason=approval.get("description") or t("cli.shell.flagged_as_dangerous"))
+                        self._console_print(f"[bold red]{_escape(str(message))}[/]")
+                        return
+
+                exit_code = await run_bang_command_interactive(
+                    app,
+                    command or None,
+                    cwd=cwd,
+                )
+                if exit_code:
+                    self._console_print(f"[dim]{t('cli.shell.exited', code=str(exit_code))}[/]")
+
+            app.create_background_task(_run_interactive())
+            return True
+
+        if not command:  # bare `!` with no terminal to hand over — show what the feature does
             self._console_print(f"[dim]{USAGE_HINT}[/]")
             return True
 
@@ -553,7 +598,7 @@ class CLIInfoMixin:
 
         exit_code = run_bang_command(
             command,
-            cwd=resolve_bang_cwd(getattr(self, "session_id", None)),
+            cwd=cwd,
             writer=lambda line: self._console_print(_rich_text_from_ansi(line)))
         if exit_code:
             self._console_print(f"[dim]{t('cli.shell.exited', code=str(exit_code))}[/]")
@@ -662,34 +707,16 @@ class CLIInfoMixin:
             return
 
         args = cmd_original.split(maxsplit=1)[1].strip().lower() if " " in cmd_original else ""
-        expanded = args in {"all", "full", "details"}
 
-        from agent.context_breakdown import (
-            compute_context_details, compute_session_context_breakdown,
-            render_context_breakdown_lines)
+        from hermes_cli.live_slash_core import context_breakdown_lines  # shared with the TUI's live /context
         try:
-            payload = compute_session_context_breakdown(self.agent, self.conversation_history)
+            lines = context_breakdown_lines(self.agent, self.conversation_history, args, model=self.model)
         except Exception as e:
             print(f"  {t('cli.context.compute_failed', error=str(e))}")
             return
 
-        details = None
-        if expanded:
-            try:
-                details = compute_context_details(self.agent)
-            except Exception:
-                details = {"skills": [], "toolsets": []}
-
-        from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
-        try:
-            file_lines = render_context_file_lines(context_file_sources_for_agent(self.agent))
-        except Exception:
-            file_lines = []
-
         print()
-        print(f"  {t('cli.context.header', model=payload.get('model') or self.model)}")
-        print()
-        for line in render_context_breakdown_lines(payload, details=details, grid=True) + ([""] + file_lines if file_lines else []):
+        for line in lines:
             print(f"  {line}")
         print()
 

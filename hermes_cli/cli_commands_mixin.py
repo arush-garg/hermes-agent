@@ -13,6 +13,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -797,6 +798,57 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         return self._handoff_keep(f"  {_t('handoff.timed_out')}", f"  {_t('handoff.session_intact')}")
 
     # ---- /resume, /sessions, /branch ------------------------------------------------------
+    def _pick_resume_target(self) -> str | None:
+        """Bare ``/resume``: an interactive curses picker on a TTY, else the numbered list armed for a
+        one-shot bare-number reply. Returns the chosen session id, or None when nothing was chosen."""
+        sessions = self._list_recent_sessions(limit=20)
+        if not sessions:
+            _cp(f"  {_t('resume.usage')}", f"  {_t('resume.tip_find_sessions')}")
+            return None
+        # A captured or redirected terminal cannot host curses. Keep the numbered list
+        # available for scripts and redirected CLI sessions; an interactive TTY gets the picker.
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            _cp(f"  {_t('resume.usage')}")
+            if self._show_recent_sessions(reason="resume", limit=20):
+                # One-shot: the next bare number selects from the list the table just showed (#34584).
+                self._pending_resume_sessions = sessions
+            return None
+        from hermes_cli.curses_ui import curses_session_picker
+
+        def pick_session():
+            return curses_session_picker(
+                sessions=sessions,
+                title="Select a session to resume",
+                description="↑↓ navigate  Enter select  / search  ESC cancel",
+            )
+
+        app = getattr(self, "_app", None)
+        if app is not None and app.is_running:
+            # Slash commands run on process_loop while prompt_toolkit owns stdin on the main loop.
+            # Detach its input before curses reads the same terminal.
+            import asyncio
+            from concurrent.futures import Future
+            from prompt_toolkit.application import run_in_terminal
+
+            result = Future()
+
+            def start_picker():
+                task = asyncio.ensure_future(run_in_terminal(pick_session, in_executor=True))
+
+                def finish_picker(done):
+                    try:
+                        result.set_result(done.result())
+                    except BaseException as exc:
+                        result.set_exception(exc)
+
+                task.add_done_callback(finish_picker)
+
+            app.loop.call_soon_threadsafe(start_picker, context=app.context.copy())
+            selected = result.result()
+        else:
+            selected = pick_session()
+        return selected["id"] if selected else None
+
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
         if getattr(self, "_agent_running", False):
@@ -807,17 +859,9 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         if len(target) >= 2 and target[0] + target[-1] in {"<>", "[]", '""', "''"}:
             target = target[1:-1].strip()
         if not target:
-            _cp(f"  {_t('resume.usage')}")
-            if self._show_recent_sessions(reason="resume"):
-                # Arm a one-shot bare-number selection; must be the same list the table showed
-                # and the numbered branch resolves (all use _list_recent_sessions(limit=10)).
-                # Arm a one-shot pending-resume selection so the user can type just the number (`3`) on the
-                # next line instead of having to retype `/resume 3`. The list here must match the one shown
-                # by _show_recent_sessions and used for index resolution below — all three go through
-                # _list_recent_sessions(limit=10). See #34584.
-                self._pending_resume_sessions = self._list_recent_sessions(limit=10)
+            target = self._pick_resume_target()
+            if not target:
                 return
-            return _cp(f"  {_t('resume.tip_find_sessions')}")
         # Any explicit /resume <target> supersedes a previously-armed bare numbered prompt.
         self._pending_resume_sessions = None
         if not self._session_db:
@@ -1663,22 +1707,10 @@ class CLICommandsMixin(CLICommandsSessionToolsMixin):
         """Dispatch /refine — run the memory/skill review fork on demand (same machinery as the
         automatic post-turn ``_spawn_background_review``), with optional focus text. Background
         fork; the live conversation and prompt cache are never touched."""
-        focus = _command_arg(cmd)
-        agent = getattr(self, "agent", None)
-        if agent is None:
-            return _cp(_dim_line(_t("refine.nothing_yet")))
-        snapshot = list(getattr(self, "conversation_history", None) or [])
-        if not snapshot:
-            return _cp(_dim_line(_t("refine.empty")))
-        try:
-            agent._spawn_background_review(
-                messages_snapshot=snapshot, review_memory=True,
-                review_skills="skill_manage" in getattr(agent, "valid_tool_names", set()),
-                focus=focus or None, explicit=True)
-        except Exception as exc:
-            return _cp(f"  {_t('refine.failed', error=exc)}")
-        tail = _t("refine.focus_suffix", focus=focus) if focus else ""
-        _cp(f"  {_t('refine.started', focus=tail)}")
+        from hermes_cli.live_slash_core import EMPTY_REFINE, NOTHING_TO_REFINE, start_refine
+        _started, msg = start_refine(  # shared with the TUI's live-session /refine
+            getattr(self, "agent", None), getattr(self, "conversation_history", None), _command_arg(cmd))
+        _cp(_dim_line(msg) if msg in {NOTHING_TO_REFINE, EMPTY_REFINE} else f"  {msg}")
 
     def _handle_review_command(self, cmd: str) -> None:
         """Dispatch /review — snapshot the last N messages (+ argument text as instructions) and

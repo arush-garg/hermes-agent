@@ -1046,6 +1046,48 @@ def _validate_fallback_model(fb: Any, issues: list[ConfigIssue]) -> None:
                         suffix=" — fallback will be disabled")
 
 
+def _validate_connectivity_pause(cp: Any, issues: list[ConfigIssue]) -> None:
+    """agent.connectivity_pause: nested dict of numeric/bool/list knobs for the Wi-Fi
+    outage pause. Type/range errors are reported; agent_init falls back to defaults
+    for malformed values so one bad knob can't break the turn loop."""
+    if not isinstance(cp, dict):
+        _issue(issues, "error",
+               f"agent.connectivity_pause should be a dict, got {type(cp).__name__}",
+               "Remove it or set it as a dict, e.g.:\n  connectivity_pause:\n    enabled: true")
+        return
+    for key in ("enabled", "resume_keep_provider"):
+        if key in cp and not isinstance(cp[key], bool):
+            _issue(issues, "error",
+                   f"agent.connectivity_pause.{key} must be a boolean, got {cp[key]!r}",
+                   f"Set agent.connectivity_pause.{key} to true or false")
+    for key in ("consecutive_failures",):
+        if key in cp and (isinstance(cp[key], bool) or not isinstance(cp[key], int) or cp[key] < 1):
+            _issue(issues, "error",
+                   f"agent.connectivity_pause.{key} must be a positive integer, got {cp[key]!r}",
+                   f"Set agent.connectivity_pause.{key} to 1 or higher (2 = default debounce)")
+    for key in ("probe_interval_s", "probe_timeout_s", "cache_warm_window_s"):
+        val = cp.get(key)
+        if key in cp and (isinstance(val, bool) or not isinstance(val, (int, float)) or val <= 0):
+            _issue(issues, "error",
+                   f"agent.connectivity_pause.{key} must be a positive number, got {val!r}",
+                   f"Set agent.connectivity_pause.{key} to a positive number of seconds")
+    if "max_pause_s" in cp:
+        val = cp["max_pause_s"]
+        if isinstance(val, bool) or not isinstance(val, (int, float)) or val < 0:
+            _issue(issues, "error",
+                   f"agent.connectivity_pause.max_pause_s must be a non-negative number, got {val!r}",
+                   "Set agent.connectivity_pause.max_pause_s to seconds (0 = wait indefinitely)")
+    if "probe_hosts" in cp:
+        hosts = cp["probe_hosts"]
+        if (not isinstance(hosts, list) or not hosts
+                or any(not isinstance(h, str) or not h.strip() for h in hosts)):
+            _issue(issues, "error",
+                   f"agent.connectivity_pause.probe_hosts must be a non-empty list of "
+                   f"'host:port' strings, got {hosts!r}",
+                   "Set agent.connectivity_pause.probe_hosts, e.g.:\n"
+                   "  probe_hosts: [\"1.1.1.1:443\", \"8.8.8.8:53\"]")
+
+
 def _container_slots() -> dict[str, str]:
     """Dotted key -> ``"list"``/``"mapping"`` for every slot the schema fixes to a container:
     ``DEFAULT_CONFIG`` (sections included) plus the known-container table for roots it omits."""
@@ -1107,6 +1149,18 @@ def validate_config_structure(config: Optional[dict[str, Any]] = None) -> list[C
     for value, validator in ((cp, _validate_custom_providers), (fb, _validate_fallback_model)):
         if value is not None:
             validator(value, issues)
+
+    # ── agent.max_auto_continue: non-negative integer ──────────────────────
+    agent_cfg = config.get("agent")
+    if isinstance(agent_cfg, dict) and "max_auto_continue" in agent_cfg:
+        mac_val = agent_cfg.get("max_auto_continue")
+        if isinstance(mac_val, bool) or not isinstance(mac_val, int) or mac_val < 0:
+            _issue(issues, "error", f"agent.max_auto_continue must be a non-negative integer, got {mac_val!r}",
+                   "Set agent.max_auto_continue to 0 (disabled) or a positive integer (max continuation cycles)")
+
+    # ── agent.connectivity_pause: Wi-Fi outage pause knobs ─────────────────────
+    if isinstance(agent_cfg, dict) and "connectivity_pause" in agent_cfg:
+        _validate_connectivity_pause(agent_cfg["connectivity_pause"], issues)
 
     if isinstance(cp, dict) and "fallback_model" not in config and "fallback_model" in (cp or {}):
         _issue(issues, "error", "fallback_model appears inside custom_providers instead of at root level",
@@ -2720,9 +2774,15 @@ def save_env_value(key: str, value: str):
         lines = _read_env_lines(env_path) if env_path.exists() else []
         serialized_value = _quote_env_value(value)
 
-        idx = next((i for i, line in enumerate(lines) if _env_line_defines_key(line, key)), None)
-        if idx is not None:
-            lines[idx] = f"{key}={serialized_value}\n"
+        # A file can carry MORE than one line assigning the same key (hand-edits, partial writes
+        # from older versions). load_env() lets the LAST line win, so updating only the first match
+        # would leave a stale later line that resurrects the old value on the next load. Replace the
+        # FIRST matching line with the fresh assignment and drop every later duplicate.
+        match_indexes = [i for i, line in enumerate(lines) if _env_line_defines_key(line, key)]
+        if match_indexes:
+            lines[match_indexes[0]] = f"{key}={serialized_value}\n"
+            for i in reversed(match_indexes[1:]):
+                del lines[i]
         else:
             if lines and not lines[-1].endswith("\n"):
                 lines[-1] += "\n"

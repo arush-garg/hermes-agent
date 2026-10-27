@@ -29,7 +29,7 @@ def checkpoint_settings(cfg: Any, enabled_flag: bool = False) -> dict:
     configured limits and periodic interval. ``checkpoints: true`` (bare bool) is accepted."""
     raw = cfg.get("checkpoints") if isinstance(cfg, dict) else None
     section = {"enabled": raw} if isinstance(raw, bool) else (raw if isinstance(raw, dict) else {})
-    get = lambda key: section.get(key, _CHECKPOINT_DEFAULTS[key])  # noqa: E731
+    get = lambda key: section.get(key, _CHECKPOINT_DEFAULTS[key])
     return {
         "checkpoints_enabled": bool(enabled_flag or section.get("enabled", False)),
         "checkpoint_max_snapshots": get("max_snapshots"),
@@ -60,11 +60,12 @@ def service_tier(cfg: Any) -> Optional[str]:
 def fast_mode_request_overrides(tier: Optional[str], model: Any, provider: Any, base_url: Any) -> Optional[dict]:
     """Static fast mode (``priority``) is pinned into ``request_overrides`` at build time; ``auto``/``cold``
     are layered per request by ``agent.fast_mode``. None when the route has no fast override."""
-    if tier != "priority":
+    from agent.fast_mode import STATIC_TIERS
+    if tier not in STATIC_TIERS:
         return None
     try:
         from hermes_cli.models import resolve_fast_mode_overrides
-        return resolve_fast_mode_overrides(model, provider=provider or None, base_url=base_url or None)
+        return resolve_fast_mode_overrides(model, provider=provider or None, base_url=base_url or None, tier=tier)
     except Exception:
         logger.debug("fast-mode override resolution failed", exc_info=True)
         return None

@@ -537,19 +537,12 @@ class CLIAgentSetupMixin:
         """Effective model/runtime config for one turn — always the session's primary
         provider. With a static `/fast` tier (fast / ultrafast) attach request_overrides;
         auto/cold tiers are applied per request by agent.fast_mode instead."""
-        from agent.fast_mode import STATIC_TIERS
-        from hermes_cli.models import resolve_fast_mode_overrides
+        from hermes_cli.agent_build_options import fast_mode_request_overrides
         runtime = _current_runtime(self)
         route = {"model": self.model, "runtime": runtime, "signature": _route_signature(self.model, runtime)}
-        overrides = None
-        tier = getattr(self, "service_tier", None)
-        if tier in STATIC_TIERS:
-            try:
-                overrides = resolve_fast_mode_overrides(
-                    route["model"], provider=runtime["provider"], base_url=runtime["base_url"], tier=tier)
-            except Exception:
-                pass
-        route["request_overrides"] = overrides
+        # Same owner as the TUI gateway's _make_agent.
+        route["request_overrides"] = fast_mode_request_overrides(
+            getattr(self, "service_tier", None), route["model"], runtime.get("provider"), runtime.get("base_url"))
         return route
 
     def _follow_compression_chain(self, session_meta, announce):
@@ -728,6 +721,7 @@ class CLIAgentSetupMixin:
                 fallback_model=self._fallback_model, thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
+                checkpoint_interval=getattr(self, "checkpoint_interval", 10),
                 checkpoint_max_total_size_mb=self.checkpoint_max_total_size_mb,
                 checkpoint_max_file_size_mb=self.checkpoint_max_file_size_mb,
                 pass_session_id=self.pass_session_id, skip_context_files=self.ignore_rules,

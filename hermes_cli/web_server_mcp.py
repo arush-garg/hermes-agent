@@ -81,7 +81,8 @@ def _redact_mcp_env(env: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-def _mcp_server_summary(name: str, cfg: dict[str, Any], plugin: str | None = None) -> dict[str, Any]:
+def _mcp_server_summary(name: str, cfg: dict[str, Any], plugin: str | None = None,
+                        source: str | None = None) -> dict[str, Any]:
     from tools.mcp_tool_common import mcp_server_enabled
 
     transport = "http" if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown")
@@ -100,7 +101,7 @@ def _mcp_server_summary(name: str, cfg: dict[str, Any], plugin: str | None = Non
         "enabled": mcp_server_enabled(cfg),
         # Tool selection: list of enabled tool names, or None = all.
         "tools": cfg.get("tools"),
-        "source": "plugin" if plugin is not None else "config",
+        "source": source or ("plugin" if plugin is not None else "config"),
         "plugin": plugin,
     }
 

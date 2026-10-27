@@ -856,8 +856,16 @@ class CLITuiMixin:
                 self._voice_tts_done.set()
             except Exception:
                 pass
-        with self._voice_lock:
-            self._voice_continuous = True
+        # The pending responses belong to the earlier turn and must not play over this recording.
+        try:
+            while True:
+                self._voice_tts_queue.get_nowait()
+                self._voice_tts_queue.task_done()
+        except queue.Empty:
+            pass
+        if not getattr(self, "_voice_push_to_talk_only", False):
+            with self._voice_lock:
+                self._voice_continuous = True
 
         # play_beep(sd.wait), AudioRecorder.start(lock) and config I/O must never block the loop.
         def _start_recording():
@@ -1446,7 +1454,7 @@ class CLITuiMixin:
         buf.reset(append_to_history=True)
 
     def _tui_enter_inline_command(self, event, text: str, has_images: bool) -> bool:
-        """Run /model, /steer, /bg, /btw directly on the UI thread; True when handled.
+        """Run /model, /steer, /bg, /btw, /stop, /goal, /subgoal, /yolo directly on the UI thread; True when handled.
 
         /model needs the prompt_toolkit terminal-handoff helpers of the interactive pickers.
         /steer, /bg and /btw while the agent runs must not queue through _pending_input: the
@@ -1466,7 +1474,8 @@ class CLITuiMixin:
                     event.app.exit()
         elif (self._should_handle_steer_command_inline(text, has_images=has_images)
               or self._should_handle_background_command_inline(text, has_images=has_images)
-              or self._should_handle_stop_command_inline(text, has_images=has_images)):
+              or self._should_handle_stop_command_inline(text, has_images=has_images)
+              or self._should_handle_session_state_command_inline(text, has_images=has_images)):
             self.process_command(text)
         else:
             return False
@@ -1874,6 +1883,9 @@ class CLITuiMixin:
         self._voice_recording = False
         self._voice_processing, self._voice_live_text = False, ""  # STT in progress; live partial text
         self._voice_continuous = False  # auto-restart after the agent responds
+        self._voice_tts_queue = queue.Queue()
+        self._voice_tts_worker_thread = None
+        self._voice_push_to_talk_only = False  # voice.push_to_talk_only: never arm the continuous listener
         self._voice_tts_done = threading.Event()  # TTS playback finished
         self._voice_tts_done.set()  # initially "done" (no TTS pending)
         self._voice_tts_stop = None  # active streaming pipeline's stop event

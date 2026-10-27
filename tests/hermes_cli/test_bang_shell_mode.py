@@ -22,6 +22,24 @@ from hermes_cli.bang_shell import (
     run_bang_command_interactive,
 )
 
+# Collection-time warm-up (before the home-I/O guard activates): _make_cli
+# imports cli (which pulls hermes_bootstrap) inside test bodies — a first
+# import during the test probes the checkout root for an install manifest
+# (fail-open in production, refused by the guard). Importing here moves that
+# probe to collection time (same pattern as
+# tests/gateway/test_prompt_cancel_started.py).
+import cli
+
+
+@pytest.fixture(autouse=True)
+def _no_install_probe(monkeypatch):
+    """Stub the hermes bin-dir probe: it reads the install manifest beside the
+    checkout (the real home on default installs), refused by the home-I/O
+    guard. PATH completion is irrelevant to these assertions (same pattern as
+    tests/tools/environments/test_local_path_completion.py)."""
+    import tools.environments.local as local_env
+    monkeypatch.setattr(local_env, "_resolve_hermes_bin_dir", lambda: None)
+
 # ── detection / parsing ────────────────────────────────────────────────────
 
 class TestBangDetection:

@@ -83,10 +83,12 @@ CONFIGURABLE_TOOLSETS = [
     ("memory",          "💾 Memory",                    "persistent memory across sessions"),
     ("context_engine",  "🧩 Context Engine",            "runtime tools from the active context engine"),
     ("session_search",  "🔎 Session Search",            "search past conversations"),
+    ("sessions_peers",  "📡 Session Peers",             "list live Hermes sessions, message one"),
     ("connections",     "🔌 Connections",               "remote connector tools and account authorization"),
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
+    ("monitor",         "⏱️ Periodic Monitor",          "add_monitor, delete_monitors"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
@@ -418,6 +420,15 @@ def enabled_mcp_server_names(config: dict) -> set[str]:
         names |= portable - set(mcp_servers)  # native config wins on a name collision (mirrors _load_mcp_config)
     except Exception:
         logger.debug("Failed to include portable MCP servers", exc_info=True)
+    try:
+        from tools.mcp_tool_config import _load_project_mcp_json
+        project = {
+            str(name) for name, server_cfg in _load_project_mcp_json().items()
+            if isinstance(server_cfg, dict) and mcp_server_enabled(server_cfg)
+        }
+        names |= project - set(mcp_servers)  # global/plugin names win on collision (mirrors _load_mcp_config)
+    except Exception:
+        logger.debug("Failed to include project .mcp.json MCP servers", exc_info=True)
     return names
 
 

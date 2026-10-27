@@ -798,7 +798,11 @@ def validate_requested_model(
         normalized = "custom"
     from providers import get_provider_profile
     profile = get_provider_profile(normalized) if normalized else None
-    lookup = (profile.normalize_model_id(requested, api_key=api_key or "") if profile is not None else None) or requested
+    try:
+        _normalize = getattr(profile, "normalize_model_id", None) if profile is not None else None
+        lookup = (_normalize(requested, api_key=api_key or "") if callable(_normalize) else None) or requested
+    except Exception:
+        lookup = requested
 
     if not requested:
         return _reject("Model name cannot be empty.")

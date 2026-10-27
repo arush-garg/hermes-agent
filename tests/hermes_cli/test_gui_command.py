@@ -339,6 +339,71 @@ def test_gui_close_preview_flag_forwards_to_packaged_exe(tmp_path, monkeypatch):
         assert launched == [[str(packaged_exe), "--close-preview"]]
 
 
+def test_gui_forwards_stealth_to_packaged_electron(tmp_path, monkeypatch):
+    """The desktop launcher passes the parser flag to Electron unchanged."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    packaged_exe = _make_packaged_executable(root, monkeypatch)
+    monkeypatch.setattr(main_desktop, "_desktop_exe_integrity_error", lambda _: None)
+
+    launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
+    with patch("hermes_constants.with_hermes_node_path", return_value=os.environ.copy()), \
+         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main_desktop._register_linux_desktop_entry"), \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(stealth=True))
+
+    assert exc.value.code == 0
+    launched = mock_run.call_args.args[0]
+    assert launched[0] == str(packaged_exe)
+    assert launched[-1] == "--stealth"
+
+
+def test_gui_install_env_prepends_managed_node_on_bare_path(tmp_path, monkeypatch):
+    """Regression: npm's child scripts (electron-winstaller's select-7z-arch.js)
+    shell out to bare ``node``. When Desktop is launched from the updater chain
+    the parent PATH is stripped, so the install env MUST carry the Hermes-managed
+    Node ahead of that bare PATH or the install dies with ``node: not found``.
+    """
+    import os
+
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+
+    # Simulate the stripped PATH the desktop updater chain hands us.
+    monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+    managed_node = str(tmp_path / "pm" / "node" / "bin")
+
+    def pm_build_env(base_env=None, **_kw):
+        # Node/npm are provisioned by the package manager (pm.ensure); it prepends its dirs.
+        env = dict(base_env or os.environ)
+        env["PATH"] = os.pathsep.join([managed_node, env["PATH"]])
+        return env
+
+    launch_ok = subprocess.CompletedProcess(["hermes"], 0)
+
+    # Dependencies go through source_build.prepare_source_dependencies (node-deps.mjs, run with
+    # the build env). Assert on the env handed to it, not on a call count: cmd_gui legitimately
+    # shells out for other steps (e.g. the Linux sandbox fixup).
+    with patch("hermes_cli.source_build.source_build_env", side_effect=pm_build_env), \
+         patch("hermes_cli.source_build.prepare_source_dependencies") as mock_install, \
+         patch("hermes_cli.main_desktop.build_prepared_desktop", return_value=None), \
+         patch("hermes_cli.main_desktop._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main_desktop._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main_desktop._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main.subprocess.run", return_value=launch_ok), \
+         pytest.raises(SystemExit):
+        cli_main.cmd_gui(_ns(skip_build=False))
+
+    install_env = mock_install.call_args.kwargs["env"]
+    path_parts = install_env["PATH"].split(os.pathsep)
+    assert path_parts[0] == managed_node
+    assert "/usr/bin" in path_parts  # the bare updater PATH is preserved, just after managed Node
+
+
 @pytest.mark.parametrize("exists,platform", [(True, "darwin"), (False, "darwin"), (True, "linux")])
 def test_launch_installed_macos_desktop_app_gates_on_bundle_and_platform(tmp_path, monkeypatch, exists, platform):
     monkeypatch.setattr(main_desktop.sys, "platform", platform)

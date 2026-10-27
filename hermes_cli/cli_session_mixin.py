@@ -691,7 +691,8 @@ class CLISessionMixin:
             _cprint(f"  {t('cli.session.resume_index_out_of_range', index=index)}")
             _cprint(f"  {t('cli.session.resume_no_args_hint')}")
             return True
-        self._handle_resume_command(f"/resume {index}")
+        # The shown list is the selection authority, even if recent sessions changed since.
+        self._handle_resume_command(f"/resume {pending[index - 1]['id']}")
         return True
 
     def save_conversation(self, cmd: str = "/save"):

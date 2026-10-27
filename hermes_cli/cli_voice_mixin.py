@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import tempfile
 import threading
@@ -282,17 +283,57 @@ class CLIVoiceMixin:
                 self._voice_restart_recording_async()
 
     def _voice_speak_response_async(self, text: str) -> None:
-        """Schedule TTS and mark it pending before continuous recording can restart."""
+        """Queue final speech after any intermediate response segments."""
         if not self._voice_tts or not text:
             return
-        self._voice_tts_done.clear()
-        threading.Thread(target=self._voice_speak_response, args=(text,), daemon=True).start()
+        self._voice_tts_enqueue(text, transition_word="also")
         # Barge-in safety net for speak calls outside a chat turn (the agent-turn listener
         # armed in chat() normally covers playback); idempotent via _voice_fd_active.
-        if self._voice_continuous:
+        if self._voice_continuous and not getattr(self, "_voice_push_to_talk_only", False):
             threading.Thread(target=self._voice_full_duplex_listener, daemon=True).start()
 
-    def _voice_speak_response(self, text: str):
+    def _voice_tts_enqueue(self, text: str, transition_word: str = "") -> None:
+        """Serialize speech so intermediate and final segments play in their original order."""
+        if not self._voice_tts or not text.strip():
+            return
+        with self._voice_lock:
+            self._voice_tts_queue.put((text, transition_word))
+            thread = self._voice_tts_worker_thread
+            if thread is None or not thread.is_alive():
+                thread = threading.Thread(target=self._voice_tts_worker, daemon=True,
+                                          name="hermes-tts-worker")
+                self._voice_tts_worker_thread = thread
+                thread.start()
+
+    def _voice_tts_worker(self) -> None:
+        """Play queued speech and signal completion only once the queue drains."""
+        played = False
+        while True:
+            try:
+                speech, transition = self._voice_tts_queue.get(timeout=0.2)
+            except queue.Empty:
+                with self._voice_lock:
+                    if not self._voice_tts_queue.empty():
+                        continue
+                    self._voice_tts_worker_thread = None
+                    self._voice_tts_done.set()
+                return
+            try:
+                if not self._voice_tts:
+                    continue
+                while self._voice_recording and self._voice_tts:
+                    time.sleep(0.2)
+                if self._voice_tts:
+                    self._voice_speak_response(
+                        f"{transition} {speech}" if played and transition else speech,
+                        _queue_item=True)
+                    played = True
+            finally:
+                self._voice_tts_queue.task_done()
+                if not self._voice_tts_queue.empty():
+                    self._voice_tts_done.clear()
+
+    def _voice_speak_response(self, text: str, *, _queue_item: bool = False):
         """Speak the agent's response aloud using TTS (runs in background thread)."""
         from cli import _DIM, _RST, _cprint, logger
         if not self._voice_tts:
@@ -345,7 +386,8 @@ class CLIVoiceMixin:
             logger.warning("Voice TTS playback failed: %s", e)
             _cprint(f"{_DIM}{t('cli.voice.tts_failed', error=e)}{_RST}")
         finally:
-            self._voice_tts_done.set()
+            if not _queue_item:
+                self._voice_tts_done.set()
 
     def _voice_full_duplex_listener(self) -> None:
         """Full-duplex agent-turn listener: mic live for the WHOLE turn.
@@ -393,6 +435,11 @@ class CLIVoiceMixin:
                 return not is_audio_output_active()
 
             def _on_trigger(phase: str) -> None:
+                # During generation, voice input is explicit via the record key. A background
+                # detection must not interrupt the model or create a second user turn.
+                if phase != "playback":
+                    logger.debug("Ignoring full-duplex trigger during generation")
+                    return
                 # Latch BEFORE cutting anything: suppresses process_loop's auto-restart until
                 # the capture is submitted.
                 self._voice_barge_capture.set()
@@ -505,7 +552,9 @@ class CLIVoiceMixin:
 
         with self._voice_lock:
             self._voice_mode = True
-        if _config_section("voice").get("auto_tts", False):
+        voice_config = _config_section("voice")
+        self._voice_push_to_talk_only = voice_config.get("push_to_talk_only") is True
+        if voice_config.get("auto_tts", False):
             with self._voice_lock:
                 self._voice_tts = True
 
