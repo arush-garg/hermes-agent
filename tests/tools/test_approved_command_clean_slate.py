@@ -43,6 +43,13 @@ def _isolate(tmp_path, monkeypatch):
     yield
     with _lock:
         _interrupted_threads.clear()
+    # These tests run real commands under the default task; drop its cached environment and recorded
+    # cwd (a path inside this test's tmp_path) so later tests in the process don't inherit them.
+    from tools.terminal_tool_lifecycle import cleanup_vm
+
+    cleanup_vm("default")
+    with tt._session_cwd_lock:
+        tt._session_cwd.clear()
 
 
 def _wait_for_sentinel(sentinel, timeout=10.0):
