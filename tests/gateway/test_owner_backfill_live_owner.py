@@ -30,7 +30,7 @@ def test_owner_backfill_runs_on_the_live_owner(tmp_path):
     work.mkdir(parents=True)
     (work / 'config.yaml').write_text(json.dumps(model))
     root = Path(__file__).resolve().parents[2]
-    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
+    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED', 'HERMES_DISABLE_LAZY_INSTALLS') if k in os.environ}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                PYTHONUNBUFFERED='1')
     with (tmp_path / 'gateway.log').open('w+') as log:

@@ -16,7 +16,7 @@ def test_operator_cross_surface_real_auth_fifo_and_attribution(tmp_path, creator
     home.mkdir(mode=0o700)
     user.mkdir()
     # Do not inherit credentials, plugins, provider configuration, or user state.
-    env = {key: os.environ[key] for key in ('PATH', 'LANG', 'TZ') if key in os.environ}
+    env = {key: os.environ[key] for key in ('PATH', 'LANG', 'TZ', 'HERMES_DISABLE_LAZY_INSTALLS') if key in os.environ}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home),
                PYTHONPATH=str(root), PYTHONUNBUFFERED='1')
     result = subprocess.run(

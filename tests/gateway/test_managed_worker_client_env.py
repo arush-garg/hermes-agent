@@ -71,7 +71,7 @@ def test_managed_workers_run_each_sessions_tools_under_its_client_toolchain(tmp_
         'platform_toolsets': {'cli': ['terminal']}}))
     system_path = os.environ['PATH']
     bins = {name: _bin(tmp_path, name) for name in ('daemon', 'alpha', 'beta')}
-    env = {k: os.environ[k] for k in ('LANG', 'TZ') if k in os.environ}
+    env = {k: os.environ[k] for k in ('LANG', 'TZ', 'HERMES_DISABLE_LAZY_INSTALLS') if k in os.environ}
     env.update(PATH=f'{bins["daemon"]}{os.pathsep}{system_path}', HOME=str(user), USERPROFILE=str(user),
                HERMES_HOME=str(home), PYTHONPATH=str(ROOT), OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url)
     # Never printed by the probe: if it shows anywhere public, the private client map leaked.

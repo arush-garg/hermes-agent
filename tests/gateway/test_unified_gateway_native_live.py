@@ -32,7 +32,7 @@ from websockets.asyncio.client import connect
 ROOT = Path(__file__).resolve().parents[2]
 # Windows children need the system environment (Winsock, temp, PATHEXT) that the
 # hermetic test process still carries; POSIX only ever uses the first three.
-_CHILD_ENV_KEYS = ('PATH', 'LANG', 'TZ', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP',
+_CHILD_ENV_KEYS = ('PATH', 'LANG', 'TZ', 'HERMES_DISABLE_LAZY_INSTALLS', 'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP',
                    'PATHEXT', 'LOCALAPPDATA', 'APPDATA', 'PROGRAMDATA', 'NUMBER_OF_PROCESSORS',
                    'PROCESSOR_ARCHITECTURE')
 

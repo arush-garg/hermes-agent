@@ -92,7 +92,7 @@ def test_restart_fences_open_prompts_and_never_reruns_work(tmp_path, restart):
         'auxiliary': {'title_generation': {'enabled': False}}, 'terminal': {'cwd': str(home)},
         'approvals': {'mode': 'manual', 'timeout': 120}, 'agent': {'clarify_timeout': 120},
         'platform_toolsets': {'cli': ['terminal', 'clarify']}}))
-    env = child_env() | {k: os.environ[k] for k in ('TIRITH_ENABLED',) if k in os.environ}
+    env = child_env() | {k: os.environ[k] for k in ('TIRITH_ENABLED', 'HERMES_DISABLE_LAZY_INSTALLS') if k in os.environ}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url, PYTHONUNBUFFERED='1')
 

@@ -33,7 +33,7 @@ def test_registry_grant_renames_and_deletes_only_its_own_served_profile(tmp_path
         (home / 'profiles' / name).mkdir(parents=True)
         (home / 'profiles' / name / 'config.yaml').write_text(json.dumps(model))
     root = Path(__file__).resolve().parents[2]
-    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED') if k in os.environ}
+    env = {k: os.environ[k] for k in ('PATH', 'LANG', 'TZ', 'TIRITH_ENABLED', 'HERMES_DISABLE_LAZY_INSTALLS') if k in os.environ}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                PYTHONUNBUFFERED='1')
     with (tmp_path / 'gateway.log').open('w+') as log:

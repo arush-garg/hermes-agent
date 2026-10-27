@@ -63,7 +63,7 @@ def test_managed_worker_trims_checkpoints_to_the_configured_max_snapshots(tmp_pa
         'model': {'provider': 'custom', 'default': 'cp-model', 'base_url': url},
         'auxiliary': {'title_generation': {'enabled': False}}, 'platform_toolsets': {'cli': ['file']},
         'checkpoints': {'enabled': True, 'max_snapshots': 1}}))
-    env = {**child_env(), **{k: os.environ[k] for k in ('TIRITH_ENABLED',) if k in os.environ}}
+    env = {**child_env(), **{k: os.environ[k] for k in ('TIRITH_ENABLED', 'HERMES_DISABLE_LAZY_INSTALLS') if k in os.environ}}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url)
 

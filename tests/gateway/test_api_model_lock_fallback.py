@@ -37,7 +37,7 @@ def test_locked_session_chat_does_not_fall_back_to_the_profile_chain(tmp_path):
               'fallback_providers': [{'provider': 'custom', 'model': 'backup-model', 'base_url': burl,
                                       'api_key': 'loopback-only'}]}
     (home / 'config.yaml').write_text(json.dumps(config))
-    env = {**child_env(), **{k: os.environ[k] for k in ('TIRITH_ENABLED',) if k in os.environ}}
+    env = {**child_env(), **{k: os.environ[k] for k in ('TIRITH_ENABLED', 'HERMES_DISABLE_LAZY_INSTALLS') if k in os.environ}}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=purl, API_SERVER_KEY='lock-owned-secret',
                API_SERVER_ENABLED='true', API_SERVER_PORT=str(api_port), PYTHONUNBUFFERED='1')

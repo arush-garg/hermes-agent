@@ -40,7 +40,7 @@ def _load(tmp_path, *, config_yaml="", env=None, dotenv=""):
     # A clean child: the suite process has already imported adapters, and the developer's shell
     # may carry platform env vars that are genuine activation evidence.
     child_env = {k: v for k, v in os.environ.items()
-                 if k in {"PATH", "LANG", "TZ", "HERMES_RUNTIME_DIR", "TMPDIR", "SYSTEMROOT"}}
+                 if k in {"PATH", "LANG", "TZ", "HERMES_RUNTIME_DIR", "TMPDIR", "SYSTEMROOT", "HERMES_DISABLE_LAZY_INSTALLS"}}
     child_env.update(HOME=str(tmp_path), HERMES_HOME=str(home), PYTHONPATH=str(REPO), **(env or {}))
     out = subprocess.run([sys.executable, "-c", _PROBE], cwd=str(REPO), env=child_env,
                          capture_output=True, text=True, timeout=120, check=False)

@@ -77,7 +77,7 @@ def test_existing_session_keeps_frozen_mcp_transport_after_profile_edit(tmp_path
               'mcp_servers': {'owned': {'command': sys.executable, 'args': [str(home / 'peer.py'), 'FROZEN_A']}},
               'platform_toolsets': {'cli': ['owned']}}
     (home / 'config.yaml').write_text(json.dumps(config))
-    env = {**child_env(), **{k: os.environ[k] for k in ('TIRITH_ENABLED',) if k in os.environ}}
+    env = {**child_env(), **{k: os.environ[k] for k in ('TIRITH_ENABLED', 'HERMES_DISABLE_LAZY_INSTALLS') if k in os.environ}}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                OPENAI_API_KEY='loopback-only', OPENAI_BASE_URL=url)
 
@@ -151,7 +151,7 @@ def test_ordinary_worker_binding_freezes_readers_but_keeps_customizations(tmp_pa
             'mcp': _load_mcp_config()['x']['command'],
             'plugin': os.path.exists(os.path.join(os.environ['HERMES_HOME'], 'plugin-executed'))}}))
     '''), encoding='utf-8')
-    env = {**child_env(), **{k: os.environ[k] for k in ('TIRITH_ENABLED',) if k in os.environ}}
+    env = {**child_env(), **{k: os.environ[k] for k in ('TIRITH_ENABLED', 'HERMES_DISABLE_LAZY_INSTALLS') if k in os.environ}}
     env.update(HOME=str(tmp_path), USERPROFILE=str(tmp_path), HERMES_HOME=str(home), PYTHONPATH=str(root))
     result = subprocess.run([sys.executable, str(script)], cwd=root, env=env, stdin=subprocess.DEVNULL,
                             capture_output=True, text=True, timeout=90, check=False)

@@ -13,7 +13,7 @@ def test_full_observer_cannot_block_real_authority_execution(tmp_path):
     home, state = tmp_path / 'home', tmp_path / 'state'
     home.mkdir()
     state.mkdir()
-    env = {key: os.environ[key] for key in ('PATH', 'LANG', 'TZ') if key in os.environ}
+    env = {key: os.environ[key] for key in ('PATH', 'LANG', 'TZ', 'HERMES_DISABLE_LAZY_INSTALLS') if key in os.environ}
     env.update(HOME=str(home), USERPROFILE=str(home), HERMES_HOME=str(state),
                PYTHONPATH=str(repo), PYTHONUNBUFFERED='1')
     result = subprocess.run(
