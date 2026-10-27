@@ -204,6 +204,25 @@ def _format_live_history_output(sid: str, session: dict, arg: str) -> str:
     return "\n".join(lines)
 
 
+def _format_live_prompt_output(sid: str, session: dict, arg: str) -> str:
+    agent = session.get("agent")
+    mirror = _metadata_mirror(session)
+    if agent is None and "system_prompt" not in mirror:
+        return _NO_AGENT
+    prompt = (
+        mirror.get("system_prompt") or getattr(agent, "ephemeral_system_prompt", None)
+        or getattr(agent, "_cached_system_prompt", None) or "")
+    if not prompt:
+        return "Current system prompt is not built yet; send a message first."
+    return f"Current system prompt:\n{prompt}"
+
+
+def _format_live_id_output(sid: str, session: dict, arg: str) -> str:
+    """Display the current session ID."""
+    session_id = session.get("session_key") or sid
+    return f"🆔 **Session ID:** `{session_id}`"
+
+
 def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
     from collections import Counter
     try:
@@ -339,7 +358,9 @@ _LIVE_SLASH_OUTPUT = {
     "review": (None, _format_live_review_output),
     "history": ("No conversation history yet.", _format_live_history_output),
     "refine": (None, _format_live_refine_output),
+    "prompt": (_NO_AGENT, _format_live_prompt_output),
     "status": (None, _format_live_status_output),
+    "id": (None, _format_live_id_output),
     "context": ("Conversation is empty (no messages yet).", _format_live_context_output),
     "tools": ("No tools available.", _format_live_tools_output),
     "help": (None, _format_live_help_output),

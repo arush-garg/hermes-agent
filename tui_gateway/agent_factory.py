@@ -54,28 +54,21 @@ def _config_model_target() -> tuple[str, str]:
     return (cfg_model.strip() if isinstance(cfg_model, str) else ""), ""
 
 
-def _resolve_startup_runtime() -> tuple[str, str | None]:
-    model = _resolve_model()
-    if explicit_provider := os.environ.get("HERMES_TUI_PROVIDER", "").strip():
-        return model, explicit_provider
-    if not (explicit_model := _env_model_seed()):
-        return model, None
+def _startup_model_selection():
+    """Launch model choice through the owner HermesCLI uses (``hermes_cli.agent_build_options``): the
+    ``HERMES_MODEL`` / ``HERMES_TUI_PROVIDER`` launch seeds stand in for ``-m`` / ``--provider``."""
+    from hermes_cli.agent_build_options import StartupModelSelection, resolve_startup_model_selection
+    explicit_provider = os.environ.get("HERMES_TUI_PROVIDER", "").strip()
     with contextlib.suppress(Exception):
-        from hermes_cli.model_switch import resolve_startup_model_route
-        from hermes_cli.models import detect_static_provider_for_model
-        full_cfg = _load_cfg()
-        cfg = full_cfg.get("model") or {}
-        current_provider = ((str(cfg.get("provider") or "").strip().lower() if isinstance(cfg, dict) else "")
-                            or os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto")
-        # Same owner as HermesCLI/oneshot: ``custom:<name>:<model>`` selects that provider (#73943).
-        if route := resolve_startup_model_route(
-                explicit_model, current_provider=current_provider,
-                user_providers=full_cfg.get("providers"), custom_providers=full_cfg.get("custom_providers")):
-            return route.model, route.provider
-        if detected := detect_static_provider_for_model(explicit_model, current_provider):
-            provider, detected_model = detected
-            return detected_model, provider
-    return model, None
+        selection = resolve_startup_model_selection(_load_cfg(), model=_env_model_seed(), provider=explicit_provider)
+        if selection.model:
+            return selection
+    return StartupModelSelection(model=_resolve_model(), provider=explicit_provider)
+
+
+def _resolve_startup_runtime() -> tuple[str, str | None]:
+    selection = _startup_model_selection()
+    return selection.model, selection.provider or None
 
 
 def _is_routable_provider(provider: str) -> bool:

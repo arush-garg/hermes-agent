@@ -239,3 +239,13 @@ def test_cli_context_and_refine_run_the_shared_bodies(capsys):
     assert c.agent._spawn_background_review.call_args.kwargs["focus"] == "naming"
     assert c.agent._spawn_background_review.call_args.kwargs["review_skills"] is False
     assert "(focus: naming)" in capsys.readouterr().out
+
+
+def test_tui_id_and_prompt_answer_from_the_live_session():
+    """/id and /prompt need the gateway session (the agentless worker has neither id nor prompt)."""
+    from types import SimpleNamespace
+    from tui_gateway import server
+    session = _live_session(SimpleNamespace(ephemeral_system_prompt="Be terse."), [])
+    assert "`parity-key`" in server._live_slash_command_output("sid", session, "id", "")
+    assert "Be terse." in server._live_slash_command_output("sid", session, "prompt", "")
+    assert server._live_slash_command_output("sid", None, "prompt", "") == "No active agent -- send a message first."
