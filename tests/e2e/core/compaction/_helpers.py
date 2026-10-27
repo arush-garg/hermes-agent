@@ -591,8 +591,16 @@ class Scenario:
         started = time.monotonic()
         result = self.agent.run_conversation(spec.user, conversation_history=self.history)
         elapsed = time.monotonic() - started
-        self.sent_markers.append(spec.marker)
         where = f"turn {len(self.turns)} ({spec.kind}, mode={self.mode})"
+        if result.get("turn_exit_reason") == "context_compression_timeout":
+            # Turn-start preflight could not bring the session under the window: the turn is handed back
+            # as an explicit, typed failure and its user row is deliberately NOT persisted (#7100), so
+            # the caller re-sends it. It is not a message the session ever accepted.
+            assert allow_abort and result.get("failed") and result.get("final_response"), (
+                f"{where}: preflight refusal must be an explicit failure with guidance: "
+                f"{ {k: result.get(k) for k in ('failed', 'error', 'turn_exit_reason', 'final_response')} }")
+        else:
+            self.sent_markers.append(spec.marker)
 
         # (1) liveness: bounded wall time, every scripted step consumed exactly once.
         assert elapsed < TURN_WALL_BOUND_SECONDS, f"{where}: turn took {elapsed:.1f}s"
