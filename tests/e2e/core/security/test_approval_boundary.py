@@ -143,7 +143,9 @@ def cli_approve(tmp_path_factory):
 def test_cli_variants_are_live_deletes(cli_approve):
     """Discriminator for the table: approved, every spelling really deletes its victim."""
     victims = cli_approve["victims"]
-    survived = [n for n in VARIANTS if (victims / n).exists()]
+    # BSD rm (macOS) has no long options, so that spelling cannot delete there even when approved.
+    unsupported = {"long_flags"} if sys.platform == "darwin" else set()
+    survived = [n for n in VARIANTS if n not in unsupported and (victims / n).exists()]
     assert not survived, f"variants that do not delete even when approved (fix the table): {survived}"
     control = cli_approve["results"][CONTROL]
     assert control.get("exit_code") == 0 and (victims / "benign_marker").exists(), control

@@ -95,7 +95,8 @@ class FakeIdP:
 
             host, port = self.server.server_address[:2]
             ca = make_test_ca(Path(tls_dir), [name or host])
-            context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            from agent.ssl_verify import _stdlib_ssl_context_class  # truststore cannot serve TLS
+            context = _stdlib_ssl_context_class()(ssl.PROTOCOL_TLS_SERVER)
             context.load_cert_chain(ca.leaf_pem, ca.leaf_key)
             self.server.socket = context.wrap_socket(self.server.socket, server_side=True)
             self.base = f"https://{name or host}" + ("" if port == 443 else f":{port}")

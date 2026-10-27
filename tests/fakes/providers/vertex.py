@@ -401,7 +401,8 @@ class FakeVertex:
         server.daemon_threads = True
         self._server = server
         self.ca_pem, cert, key = make_tls_material(self.root / "tls", [self.host])
-        self._tls = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        from agent.ssl_verify import _stdlib_ssl_context_class  # truststore cannot serve TLS
+        self._tls = _stdlib_ssl_context_class()(ssl.PROTOCOL_TLS_SERVER)
         self._tls.load_cert_chain(cert, key)
         self.sa = make_service_account(self.root / "sa.json", self.token_uri, self._sa_project)
         threading.Thread(target=server.serve_forever, name="fake-vertex", daemon=True).start()

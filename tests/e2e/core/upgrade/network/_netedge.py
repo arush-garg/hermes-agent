@@ -158,7 +158,8 @@ class TestCA:
         cert_path, key_path = stem.with_suffix(".crt"), stem.with_suffix(".key")
         cert_path.write_bytes(cert.public_bytes(ser.Encoding.PEM) + self.pem)
         key_path.write_bytes(key.private_bytes(ser.Encoding.PEM, ser.PrivateFormat.PKCS8, ser.NoEncryption()))
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        from agent.ssl_verify import _stdlib_ssl_context_class  # truststore cannot serve TLS
+        ctx = _stdlib_ssl_context_class()(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(str(cert_path), str(key_path))
         ctx.set_alpn_protocols(["http/1.1"])
         return ctx

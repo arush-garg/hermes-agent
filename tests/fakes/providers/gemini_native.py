@@ -452,7 +452,8 @@ class GeminiFake:
         self._lock = threading.Lock()
         self._counter = 0
         self.ca_pem, cert, key = _write_tls_material(workdir / "tls")
-        self._tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        from agent.ssl_verify import _stdlib_ssl_context_class  # truststore cannot serve TLS
+        self._tls = _stdlib_ssl_context_class()(ssl.PROTOCOL_TLS_SERVER)
         self._tls.load_cert_chain(cert, key)
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler_class())
         self._server.daemon_threads = True

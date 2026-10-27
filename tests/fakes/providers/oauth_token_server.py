@@ -361,7 +361,8 @@ class TLSInterceptProxy:
         self.hosts = frozenset(h.lower() for h in hosts)
         self.connects: list[str] = []
         self.refused: list[str] = []
-        self._ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        from agent.ssl_verify import _stdlib_ssl_context_class  # truststore cannot serve TLS
+        self._ctx = _stdlib_ssl_context_class()(ssl.PROTOCOL_TLS_SERVER)
         self._ctx.load_cert_chain(str(ca.leaf_pem), str(ca.leaf_key))
         self._sock: socket.socket | None = None
         self._stop = threading.Event()
