@@ -3506,6 +3506,13 @@ def _candidate_rejected(
         with _swallow('no-progress backoff arm failed', exc_info=True):
             if callable(_recorder := getattr(agent.context_compressor, "_record_structural_no_op", None)):
                 _recorder("compaction returned the transcript unchanged (no_progress)")
+        # The backoff above keeps this from re-firing each turn, so the session stays over the trigger:
+        # say so once instead of leaving it there silently.
+        with contextlib.suppress(Exception):
+            agent._emit_warning(
+                "⚠ Compression made no progress; the conversation is still over the compaction threshold. "
+                "Run /compress <focus> to retry with a narrower summary, or /new to start a fresh session."
+            )
         _emit_aborted_attempt_telemetry(agent, attempt.started_at, "no_progress", attempt.seed)
         return True
     if not compressed:
