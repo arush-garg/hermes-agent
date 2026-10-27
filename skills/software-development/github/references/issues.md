@@ -26,7 +26,7 @@ fi
 
 ### Multi-issue Loop with curl
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
 
 ISSUES=(3 7 12)
@@ -108,7 +108,7 @@ gh issue edit "$ISSUE_NUM" $( [[ -z "$CURRENT_LABELS" ]] && echo "--add-label pr
 
 ### Batch Update with Rate Limiting
 ```bash
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
 
 for issue in $(seq 1 25); do

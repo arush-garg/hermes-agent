@@ -26,7 +26,7 @@ narrower routes (`hermes_cli/gateway_chat_commands.py`).
 setting to this local session (its next turn and `config.get`), saving config.yaml only where the
 handler does; `client-local (cli_only)` commands are terminal/UI features of a client.
 
-104 registry commands: 29 control, 19 read, 56 refused.
+106 registry commands: 29 control, 19 read, 58 refused.
 
 | Command | Gateway (`slash.exec`) | Classic CLI | Ink | Desktop | ACP | Notes |
 |---|---|---|---|---|---|---|
@@ -66,6 +66,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/heartbeat` (/hb) | control | HermesCLI._handle_heartbeat_command | slash.exec | slash.exec | slash.exec |  |
 | `/help` | read | HermesCLI._cmd_help | local | action: help | local |  |
 | `/history` | refused | HermesCLI.show_history | local | action: history | slash.exec: refused | client-local (cli_only) |
+| `/id` | refused | HermesCLI._handle_id_command | slash.exec: refused | slash.exec: refused | slash.exec: refused |  |
 | `/image` | refused | HermesCLI._handle_image_command | local | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
 | `/import` | refused | HermesCLI._handle_import_command | slash.exec: refused | action: import | slash.exec: refused | client-local (cli_only) |
 | `/indicator` | refused | HermesCLI._handle_indicator_command | config.get, config.set | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
@@ -130,6 +131,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/verbose` | control | HermesCLI._toggle_verbose | config.set | unavailable: terminal | slash.exec | per-session setting (gateway handler) |
 | `/version` (/v) | read | HermesCLI._cmd_version | slash.exec | slash.exec | slash.exec |  |
 | `/voice` | control | HermesCLI._handle_voice_command | config.get, slash.exec; sidecar: voice.toggle; `tts` refused | unavailable: composer-voice | slash.exec | per-session setting (gateway handler) |
+| `/wait` | refused | HermesCLI._handle_wait_command | slash.exec: refused | slash.exec: refused | slash.exec: refused |  |
 | `/wake` | refused | HermesCLI._handle_wake_command | local | action: wake | slash.exec: refused | client-local (cli_only) |
 | `/whoami` | read | HermesCLI._handle_whoami_command | slash.exec | slash.exec | slash.exec |  |
 | `/worktree` | refused | HermesCLI._handle_worktree_command | slash.exec: refused | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
