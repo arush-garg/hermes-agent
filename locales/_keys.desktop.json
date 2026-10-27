@@ -970,6 +970,7 @@
     "composer.commandDescs./undo",
     "composer.commandDescs./usage",
     "composer.commandDescs./version",
+    "composer.commandDescs./wait",
     "composer.commandDescs./wake",
     "composer.commandDescs./whoami",
     "composer.commandDescs./worktree",
