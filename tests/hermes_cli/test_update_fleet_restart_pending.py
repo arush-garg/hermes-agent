@@ -98,6 +98,10 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
 
     monkeypatch.setattr(update_custody, "run",
                         lambda argv, *, inherit_lock=False, **kw: run_side_effect(list(argv), **kw))
+    # Where no parent-death signal exists (macOS) a fetch under the update lock runs through the
+    # owner-watched spawn instead, which would run real git against the fake checkout below.
+    monkeypatch.setattr(update_custody, "_run_owner_watched",
+                        lambda argv, kwargs: run_side_effect(list(argv), **kwargs))
     monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(update_cmd, "_prepare_updated_checkout", lambda *a, **k: None)
     (tmp_path / ".git").mkdir()

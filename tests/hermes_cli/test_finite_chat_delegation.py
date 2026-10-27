@@ -125,7 +125,10 @@ def test_finite_chat_joins_parallel_children_before_final_response(tmp_path, mod
     env.update(HOME=str(tmp_path), USERPROFILE=str(tmp_path), HERMES_HOME=str(home),
                HERMES_MANAGED_DIR=str(tmp_path / "managed"), TERMINAL_CWD=str(tmp_path),
                OPENAI_BASE_URL=url, OPENAI_API_KEY="local-test-only", PYTHONPATH=str(REPO_ROOT),
-               PYTHONDONTWRITEBYTECODE="1", LANG="C.UTF-8")
+               PYTHONDONTWRITEBYTECODE="1", LANG="C.UTF-8",
+               # The temporary HERMES_HOME is a borrowing root: without this each launch (daemon and chat)
+               # would run a full dependency sync before the code under test starts.
+               HERMES_DISABLE_LAZY_INSTALLS="1")
     mode_flags = {"quiet": ["-Q"], "oneshot": ["--oneshot"], "redirected": [],
                   "resumed": ["-Q"]}
     command = [

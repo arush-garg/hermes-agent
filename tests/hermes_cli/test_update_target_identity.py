@@ -242,6 +242,10 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
         return run(command, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, 'run', guarded_run)
+    # Without a parent-death signal (macOS) a fetch under the update lock spawns through the owner-watched
+    # path, which would skip the guarded runner above.
+    from hermes_cli import update_custody
+    monkeypatch.setattr(update_custody, '_run_owner_watched', lambda argv, kwargs: guarded_run(argv, **kwargs))
     if server == 'fetch-refused':
         with pytest.raises(SystemExit) as error:
             cli_main.cmd_update(t.args)
