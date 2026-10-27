@@ -4437,6 +4437,20 @@ def _guard_official_docker_root_gateway() -> None:
     sys.exit(1)
 
 
+def _activate_current_store_tools() -> None:
+    """Put the store's CURRENT tool versions first on PATH. A service definition keeps the PATH
+    captured at install time, so after a tool upgrade it still names superseded version dirs;
+    ``pm.activate`` swaps them for what facts.json records now. Best effort."""
+    try:
+        import pm
+        problems = pm.activate()
+    except Exception:
+        logger.debug("Could not activate store tools on gateway start", exc_info=True)
+        return
+    if problems:
+        logger.debug("Store tool check reported problems on gateway start: %s", problems)
+
+
 def _apply_startup_watchdog_config() -> None:
     """Idempotent backstop arming of the startup-liveness watchdog. Must run AFTER the conflict guards (a
     --replace loser must not arm one). config.yaml gateway.startup_watchdog* is the user surface; env
@@ -4567,6 +4581,7 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False, fo
     _guard_existing_gateway_process_conflict(replace=replace)
     sys.path.insert(0, str(PROJECT_ROOT))
     _apply_startup_watchdog_config()
+    _activate_current_store_tools()
     from hermes_cli.observability.shared_metrics_process import begin_process
     begin_process("gateway")
 

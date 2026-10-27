@@ -1032,12 +1032,19 @@ def activate(*, allow_incomplete: bool = False) -> list[str]:
 
 def store_first_path(path: str) -> str:
     """``path`` with the installed store's tool dirs moved to the front, for
-    Hermes's own children whose PATH gets other dirs prepended after activate."""
+    Hermes's own children whose PATH gets other dirs prepended after activate.
+
+    Other dirs inside the store are dropped: a long-lived PATH (a launchd/systemd
+    unit written before a tool upgrade) still names the superseded version, which
+    would shadow the current one or vanish when the store is pruned."""
     import os
 
     dirs = _store_path_dirs()
     if not dirs:
         return path
     store = {d.lower() for d in dirs}
-    rest = [p for p in path.split(os.pathsep) if p and p.lower() not in store]
+    root = os.path.normcase(os.path.abspath(str(paths.store_root()))) + os.sep
+    rest = [p for p in path.split(os.pathsep)
+            if p and p.lower() not in store
+            and not os.path.normcase(os.path.abspath(p)).startswith(root)]
     return os.pathsep.join([*dirs, *rest])

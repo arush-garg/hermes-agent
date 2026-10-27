@@ -589,6 +589,17 @@ def _prepend_missing_path_entries(existing_path: str, dirs: list[str]) -> str:
     return os.pathsep.join([*missing, *entries]) if missing else existing_path
 
 
+def _current_store_tools(existing_path: str) -> str:
+    """*existing_path* with superseded store tool versions swapped for the current ones
+    (``pm.store_first_path``), read per spawn so a tool upgrade applies to the next command
+    without restarting the gateway. Unchanged when pm is unavailable."""
+    try:
+        from pm import store_first_path
+        return store_first_path(existing_path)
+    except Exception:
+        return existing_path
+
+
 def _user_tools_first(existing_path: str) -> str:
     """*existing_path* with the user's tools before Hermes's (``pm.user_facing``) and, on
     Windows, Git Bash's dirs first. They go first even when already listed: they are store
@@ -776,7 +787,7 @@ def _make_run_env(env: dict) -> dict:
     run_env = _scrubbed_env(
         [(dict(toolchain_environ(strip_launch_profile_env(os.environ.copy())) | env), True)],
         frozenset(),
-        lambda p: _user_tools_first(_append_missing_sane_path_entries(p)),
+        lambda p: _user_tools_first(_append_missing_sane_path_entries(_current_store_tools(p))),
     )
     # While this profile's Bot Desktop is running, its DISPLAY/XAUTHORITY/DBUS ride along so GUI
     # apps the agent launches from the terminal open on the Bot Screen the user is watching, not
