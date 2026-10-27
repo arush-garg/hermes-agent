@@ -452,7 +452,18 @@ _CONTROL_STATE: dict[str, Any] = {
     # /steer: the drain hook appends the note to the last tool result after the current
     # batch — no interrupt, no new user turn (role alternation preserved).
     "_pending_steer": None,
+    # Cross-session peer messages (sessions_peers) ride the same lock/lane as a steer but keep
+    # their own slot: they are framed with the PEER marker (no user authority) and never mixed
+    # into the user's steer marker.
+    "_pending_peer_steer": None,
     "_pending_steer_lock": threading.Lock,
+    # Pending /yolo toggle — (session_key, enable: bool) queued to fire after the next tool call,
+    # same timing contract as _pending_steer.
+    "_pending_yolo_action": None,
+    # Messages that arrived while context compression was running: injected into the compressed
+    # transcript once it completes (they become real user turns). Guarded by the lock.
+    "_pending_compression_queue": list,
+    "_pending_compression_lock": threading.Lock,
     # Active-turn redirect: keep the valid turn prefix, cancel only the in-flight request,
     # rebuild the tail with the correction. Drained at a role-safe boundary.
     "_pending_redirect": None,
@@ -1094,7 +1105,8 @@ def _publish_session_id(session_id: str) -> None:
 
 
 def _init_session_state(agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
-    checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb):
+    checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb,
+    checkpoint_interval=10):
     agent.session_start = datetime.now()
     agent.session_id = session_id or new_session_id(agent.session_start)
     _publish_session_id(agent.session_id)
@@ -1110,6 +1122,7 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
         enabled=checkpoints_enabled, max_snapshots=checkpoint_max_snapshots,
         max_total_size_mb=checkpoint_max_total_size_mb,
         max_file_size_mb=checkpoint_max_file_size_mb,
+        checkpoint_interval=checkpoint_interval,
     )
 
     agent._session_db = session_db  # optional SQLite store (CLI/gateway-provided)
@@ -1349,6 +1362,88 @@ def _apply_agent_section(agent, _agent_cfg):
         agent._auto_recovery_cycles = max(int(_agent_section.get("auto_recovery_cycles", 5)), 0)
     except (TypeError, ValueError):
         agent._auto_recovery_cycles = 5
+    # Wi-Fi / local-connectivity pause (agent.connectivity_pause in config.yaml): validated
+    # settings dict the turn loop reads via agent/turn_api_error.py. Malformed values fall
+    # back to DEFAULT_CONFIG so one bad knob can't break the turn loop.
+    agent._connectivity_pause = resolve_connectivity_pause_settings(
+        _cfg_dict(_agent_section, "connectivity_pause"))
+
+
+def _cp_number(raw: Any, default: float) -> float:
+    """``float(raw)`` when a positive number, else ``default`` (bools rejected: YAML
+    ``true`` must not become a timeout)."""
+    if isinstance(raw, bool):
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _cp_flag(raw: Any, default: bool) -> bool:
+    """Boolean coercion that fails closed to ``default``: recognized spellings map
+    to a bool, anything else (garbage strings, containers) keeps the default rather
+    than silently flipping the feature off."""
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return default
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    if isinstance(raw, str):
+        text = raw.strip().lower()
+        if text in ("1", "true", "yes", "on"):
+            return True
+        if text in ("0", "false", "no", "off", ""):
+            return False
+    return default
+
+
+def resolve_connectivity_pause_settings(section: dict[str, Any]) -> dict[str, Any]:
+    """Validated ``agent.connectivity_pause`` settings (see DEFAULT_CONFIG).
+
+    Pure function of the config section so tests can drive it through the real
+    loader: ``resolve_connectivity_pause_settings(load_config()["agent"]["connectivity_pause"])``.
+    """
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    defaults = DEFAULT_CONFIG["agent"]["connectivity_pause"]
+    raw_hosts = section.get("probe_hosts", defaults["probe_hosts"])
+    if not isinstance(raw_hosts, list):
+        raw_hosts = []
+    probe_hosts = [h for h in (str(h).strip() for h in raw_hosts) if h] or list(defaults["probe_hosts"])
+    max_pause_raw = section.get("max_pause_s", defaults["max_pause_s"])
+    if isinstance(max_pause_raw, bool):
+        max_pause_s = float(defaults["max_pause_s"])
+    else:
+        try:
+            max_pause_s = float(max_pause_raw)
+        except (TypeError, ValueError):
+            max_pause_s = float(defaults["max_pause_s"])
+        if max_pause_s < 0:
+            max_pause_s = float(defaults["max_pause_s"])
+    return {
+        "enabled": _cp_flag(section.get("enabled", defaults["enabled"]),
+                            defaults["enabled"]),
+        "consecutive_failures": max(int(_cp_number(
+            section.get("consecutive_failures", defaults["consecutive_failures"]),
+            defaults["consecutive_failures"])), 1),
+        "probe_interval_s": _cp_number(
+            section.get("probe_interval_s", defaults["probe_interval_s"]),
+            defaults["probe_interval_s"]),
+        "probe_timeout_s": _cp_number(
+            section.get("probe_timeout_s", defaults["probe_timeout_s"]),
+            defaults["probe_timeout_s"]),
+        "probe_hosts": probe_hosts,
+        # 0 = wait indefinitely until interrupted (validated non-negative above).
+        "max_pause_s": max_pause_s,
+        "cache_warm_window_s": _cp_number(
+            section.get("cache_warm_window_s", defaults["cache_warm_window_s"]),
+            defaults["cache_warm_window_s"]),
+        "resume_keep_provider": _cp_flag(
+            section.get("resume_keep_provider", defaults["resume_keep_provider"]),
+            defaults["resume_keep_provider"]),
+    }
 
 
 def _positive_int(raw: Any, *, reject: tuple = ()) -> Optional[int]:
@@ -2090,6 +2185,12 @@ _USAGE_STATE: dict[str, Any] = {
     "session_completion_tokens": 0,
     "session_total_tokens": 0,
     "session_api_calls": 0,
+    # Counts provider calls that supplied usable token usage. Separate from session_api_calls
+    # because some runtimes count completed calls even when the provider omits usage metadata.
+    "session_usage_report_calls": 0,
+    "session_cache_usage_report_calls": 0,
+    "session_context_usage_report_calls": 0,
+    "session_last_prompt_tokens": 0,
     "session_input_tokens": 0,
     "session_output_tokens": 0,
     "session_cache_read_tokens": 0,
@@ -2139,7 +2240,7 @@ def init_agent(
     iteration_budget: IterationBudget = None, run_budget_seconds: Optional[float] = None,
     fallback_model: dict[str, Any] | None = None, credential_pool=None, checkpoints_enabled: bool = False,
     checkpoint_max_snapshots: int = 20, checkpoint_max_total_size_mb: int = 500,
-    checkpoint_max_file_size_mb: int = 10, pass_session_id: bool = False,
+    checkpoint_max_file_size_mb: int = 10, checkpoint_interval: int = 10, pass_session_id: bool = False,
     requested_provider: str | None = None, capabilities: Optional[dict[str, bool]] = None, cwd: Optional[str] = None,
     side_agent: bool = False, memory_manager=None,
     tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
@@ -2223,6 +2324,7 @@ def init_agent(
     _init_session_state(
         agent, session_id, session_db, parent_session_id, reasoning_config, max_tokens,
         checkpoints_enabled, checkpoint_max_snapshots, checkpoint_max_total_size_mb, checkpoint_max_file_size_mb,
+        checkpoint_interval,
     )
 
     # Load config once for memory, skills, and compression sections

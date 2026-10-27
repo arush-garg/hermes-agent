@@ -348,11 +348,19 @@ def test_plugin_toolsets_are_known_toolsets(lifecycle, monkeypatch):
 
 
 def test_provider_is_plugin_facing_only():
-    """``provider`` lives on the plugin request; no model-facing delegate_task field can carry a route."""
+    """``provider`` lives on the plugin request; the model-facing route is the per-task fork field.
+
+    Reconciled with upstream: no TOP-LEVEL (legacy single-goal) delegate_task property carries a
+    route, and no ``api_key``/``base_url`` is model-facing anywhere. This fork keeps advertising
+    the optional per-task ``provider``/``model`` route (``test_delegate_task_routes.py``), which
+    upstream moved behind the delegation-provider plugin's ``schema_extension``.
+    """
     import dataclasses
     from tools.delegate_tool import DELEGATE_TASK_SCHEMA
 
     assert "provider" in {field.name for field in dataclasses.fields(SubagentLaunchRequest)}
     props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-    exposed = set(props) | set(props["tasks"]["items"]["properties"])
-    assert not exposed & {"provider", "model", "base_url", "api_key"}
+    item_props = props["tasks"]["items"]["properties"]
+    assert not {"provider", "model", "base_url", "api_key"} & set(props)
+    assert not {"base_url", "api_key"} & set(item_props)
+    assert {"provider", "model"} <= set(item_props)

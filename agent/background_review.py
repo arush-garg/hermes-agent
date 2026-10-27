@@ -329,6 +329,13 @@ def _msg_text(m: dict) -> str:
     return c.strip() if isinstance(c, str) else ""
 
 
+def _prepare_review_history(messages_snapshot: list[dict]) -> list[dict]:
+    """Build deterministic, structure-preserving history for a review fork."""
+    from agent.context_compressor import prune_messages_for_handoff
+
+    return prune_messages_for_handoff(messages_snapshot, protect_last_n=24)
+
+
 def _digest_history(messages_snapshot: list[dict], tail: int = 24) -> list[dict]:
     """Compact replay for the routed (different-model) path only: keep the recent ``tail``
     messages verbatim (extended so the kept run never starts on a tool result) and collapse older

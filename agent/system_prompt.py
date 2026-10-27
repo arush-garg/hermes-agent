@@ -21,7 +21,7 @@ from agent.delegation_context import owned_kanban_task
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, EXECUTION_GUIDANCE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE, HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS, KANBAN_GUIDANCE,
-    PARALLEL_TOOL_CALL_GUIDANCE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
+    PARALLEL_TOOL_CALL_GUIDANCE, PEER_CHANNEL_NOTE, PLATFORM_HINTS, SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE, TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, drain_truncation_warnings,
 )
@@ -573,6 +573,10 @@ def _guidance_parts(agent: Any) -> list[str]:
     from agent.oneshot_footprint import agent_is_oneshot
     if not agent_is_oneshot(agent):
         parts.append(STEER_CHANNEL_NOTE)
+    # Cross-session peer messages arrive like steers but under a no-authority PEER marker: only
+    # worth briefing when this session can actually receive or send them.
+    if "sessions_peers" in agent.valid_tool_names:
+        parts.append(PEER_CHANNEL_NOTE)
     # agent.tool_use_enforcement / agent.execution_guidance: "auto" (default)
     # matches the hardcoded model lists; true/false force; a list gives custom
     # model-name substrings.  Execution guidance is an independent gate so
@@ -604,11 +608,26 @@ def _alibaba_identity_part(agent: Any) -> list[str]:
 def _workspace_pin_key() -> str:
     """The directory the workspace probe inspects, which is also the prompt's ``Current working
     directory``: a build with no cwd bound (launch dir) and a later one binding that same dir
-    (TUI ``/compress``) are one workspace, not two."""
+    (TUI ``/compress``) are one workspace, not two.
+
+    Resolved, because the block it keys is rendered from the probe's canonical root
+    (``coding_context._git_root`` / ``_marker_root`` resolve too). On hosts where a path
+    component is a symlink — macOS ``/var`` -> ``/private/var``, so every ``/var/folders``
+    or ``/var/tmp`` temp dir — a lexical key never equalled the rendered ``- Root:`` and
+    every rebuild re-probed, rewriting a pinned snapshot."""
     try:
-        return str(resolve_context_cwd() or resolve_agent_cwd())
+        cwd = resolve_context_cwd() or resolve_agent_cwd()
     except OSError:  # deleted cwd
         return ""
+    return _canonical_cwd(cwd)
+
+
+def _canonical_cwd(value: Any) -> str:
+    """*value* as an absolute, symlink-resolved path string (best effort)."""
+    try:
+        return str(Path(str(value)).expanduser().resolve())
+    except OSError:
+        return str(value or "")
 
 
 def _persisted_workspace_block(prompt: str, key: str) -> Optional[str]:
@@ -656,7 +675,9 @@ def _seed_workspace_pin(agent: Any, key: str) -> None:
     if not prompt:
         return
     stored_cwd = runtime_host_value(prompt, "Current working directory")
-    if stored_cwd and stored_cwd != key:
+    # Compare canonically: the pin key is resolved, a persisted prompt may carry the cwd
+    # exactly as the surface spelled it (same directory, different symlinked spelling).
+    if stored_cwd and _canonical_cwd(stored_cwd) != key:
         return
     block = _persisted_workspace_block(prompt, key)
     # Only a real snapshot is adopted: a prompt without one (built on a surface without the

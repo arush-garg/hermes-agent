@@ -7,7 +7,10 @@ from datetime import datetime, timezone, UTC
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
-from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata, strip_codex_context_variant_suffix
+from agent.model_metadata import (
+    _model_name_suggests_minimax_m3, fetch_endpoint_model_metadata, fetch_model_metadata,
+    strip_codex_context_variant_suffix,
+)
 from utils import base_url_host_matches, base_url_hostname, base_url_origin
 
 logger = logging.getLogger(__name__)
@@ -391,6 +394,96 @@ def _usage_field(obj: Any, *path: str) -> int:
 def _first_nonzero(obj: Any, *paths: tuple[str, ...]) -> int:
     """First non-zero ``_usage_field`` across candidate paths, else 0."""
     return next((v for v in (_usage_field(obj, *path) for path in paths) if v), 0)
+
+
+def _usage_raw(obj: Any, name: str) -> Any:
+    """Raw value of ``name`` on a usage payload (dict or attribute object), None when absent."""
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def _usage_field_reported(obj: Any, name: str) -> bool:
+    """Return whether a provider payload explicitly carried *name* (present and not None)."""
+    if isinstance(obj, dict):
+        return name in obj and obj.get(name) is not None
+    fields_set = getattr(obj, "model_fields_set", None)
+    if isinstance(fields_set, (set, frozenset)):
+        return name in fields_set
+    return hasattr(obj, name) and getattr(obj, name, None) is not None
+
+
+def usage_reports_cache_metrics(
+    response_usage: Any,
+    *,
+    provider: Optional[str] = None,
+    api_mode: Optional[str] = None,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> bool:
+    """Return whether this response exposes trustworthy cache-read telemetry.
+
+    Restored (merge dropped it): a MiniMax M3 route omits cache telemetry, and ``moa``
+    never reports it, so callers must not mistake a missing field for zero reuse.
+    """
+    if not response_usage:
+        return False
+    provider_name = (provider or "").strip().lower()
+    mode = (api_mode or "").strip().lower()
+    if provider_name == "moa":
+        return False
+    minimax_route = provider_name in {"minimax", "minimax-cn", "minimax-oauth"} or any(
+        base_url_host_matches(base_url or "", host)
+        for host in ("api.minimax.io", "api.minimaxi.com")
+    )
+    if (
+        mode == "anthropic_messages"
+        and minimax_route
+        and _model_name_suggests_minimax_m3(model or "")
+    ):
+        return False
+
+    for details_name in ("input_tokens_details", "prompt_tokens_details"):
+        details = _usage_raw(response_usage, details_name)
+        if details is not None and _usage_field_reported(details, "cached_tokens"):
+            return True
+
+    return any(
+        _usage_field_reported(response_usage, field)
+        for field in (
+            "cache_read_input_tokens",
+            "prompt_cache_hit_tokens",
+            "cached_tokens",
+        )
+    )
+
+
+def usage_reports_full_prompt_metrics(
+    response_usage: Any,
+    *,
+    provider: Optional[str] = None,
+    api_mode: Optional[str] = None,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> bool:
+    """Return whether canonical prompt tokens represent full context occupancy.
+
+    Restored (merge dropped it): a MiniMax M3 route reports a partial window, so footer
+    accounting must not treat its prompt total as the whole context.
+    """
+    if not response_usage:
+        return False
+    provider_name = (provider or "").strip().lower()
+    mode = (api_mode or "").strip().lower()
+    minimax_route = provider_name in {"minimax", "minimax-cn", "minimax-oauth"} or any(
+        base_url_host_matches(base_url or "", host)
+        for host in ("api.minimax.io", "api.minimaxi.com")
+    )
+    return not (
+        mode == "anthropic_messages"
+        and minimax_route
+        and _model_name_suggests_minimax_m3(model or "")
+    )
 
 
 # Picker slugs → snapshot provider key ("openai-api" is the slug for direct

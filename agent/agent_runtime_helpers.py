@@ -2032,6 +2032,24 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent.provider, reason, shared, agent._client_log_context(),
         )
         return provider_client
+    if agent.provider == "claude-cli" or str(client_kwargs.get("base_url", "")).startswith("claude-cli://"):
+        from agent.claude_cli_client import ClaudeCLIClient
+
+        # ClaudeCLIClient spawns the first-party `claude` binary and exposes Hermes'
+        # full tool surface to it via an in-process MCP bridge, so it needs a handle
+        # to the live agent (fork feature). Strip OpenAI-only kwargs it doesn't accept.
+        safe_kwargs = {
+            k: v for k, v in client_kwargs.items()
+            if k in {"api_key", "base_url", "default_headers", "timeout"}
+        }
+        client = ClaudeCLIClient(agent=agent, **safe_kwargs)
+        _ra().logger.info(
+            "Claude CLI client created (%s, shared=%s) %s",
+            reason,
+            shared,
+            agent._client_log_context(),
+        )
+        return client
     from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
     if agent.provider in _GEMINI_NATIVE_PROVIDER_NAMES:
         client = _gemini_native_client(agent, client_kwargs, httpx_verify, reason=reason, shared=shared)
@@ -3702,6 +3720,14 @@ def _requeue_pending_steer(agent, steer_text: str) -> None:
     requeue_drained_steer(agent, steer_text)
 
 
+def _requeue_pending_peer_steer(agent, peer_text: str) -> None:
+    """Put drained (framed) peer text back so the leftover path delivers it as a next-turn message."""
+    _lock = getattr(agent, "_pending_steer_lock", None)
+    with (_lock if _lock is not None else contextlib.nullcontext()):
+        existing = getattr(agent, "_pending_peer_steer", None)
+        agent._pending_peer_steer = (peer_text + "\n\n" + existing) if existing else peer_text
+
+
 def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: int) -> None:
     """Persist any pending /steer text as a standalone user message.
 
@@ -3725,7 +3751,10 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
     if num_tool_msgs <= 0 or not messages:
         return
     steer_text = agent._drain_pending_steer()
-    if not steer_text:
+    # Cross-session peer message (already framed with the PEER marker): same slot/timing as /steer.
+    _drain_peer = getattr(agent, "_drain_pending_peer_steer", None)
+    peer_text = _drain_peer() if callable(_drain_peer) else None
+    if not steer_text and not peer_text:
         return
     # Skip non-tool messages in the tail in case something else is appended at the boundary.
     tail = range(len(messages) - 1, max(len(messages) - num_tool_msgs - 1, -1), -1)
@@ -3734,9 +3763,22 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
         # No tool result in this batch (e.g. all skipped by interrupt);
         # requeue so the fallback path delivers it as a normal next-turn
         # user message (which persists like any other user turn).
-        _requeue_pending_steer(agent, steer_text)
+        if steer_text:
+            _requeue_pending_steer(agent, steer_text)
+        if peer_text:
+            _requeue_pending_peer_steer(agent, peer_text)
         return
-    messages.append(steer_user_row(steer_text))
+    if not steer_text:
+        from agent.prompt_builder import peer_steer_user_row
+
+        messages.append(peer_steer_user_row(peer_text))
+        _ra().logger.info("Delivered peer message to agent after tool batch (%d chars)", len(peer_text))
+        return
+    row = steer_user_row(steer_text)
+    if peer_text:
+        # ONE combined row (never two consecutive user rows): user-steer block, then the peer block.
+        row["content"] = row["content"] + "\n\n" + peer_text
+    messages.append(row)
     _ra().logger.info(
         "Delivered /steer to agent after tool batch (%d chars) as new user message: %s", len(steer_text),
         steer_text[:120] + ("..." if len(steer_text) > 120 else ""),

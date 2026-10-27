@@ -305,15 +305,38 @@ class InterruptControlMixin:
                     if ticket is not None:
                         _steer_fates(self)[ticket] = False
                 _set_steer_parts(self, [])
+                # Peer messages (cross-session) ride the same steer timing: drop them with it.
+                self._pending_peer_steer = None
+                # A hard interrupt supersedes any pending /yolo-steer too (fork
+                # feature): neither will have a tool-call boundary to fire at.
+                self._pending_yolo_action = None
         return True
 
-    def steer(self, text: str, *, ticket=None) -> bool:
+    def steer(self, text: str, *, ticket=None, sender: Optional[dict] = None) -> bool:
         """Queue user text for delivery as its own user row after the current tool batch finishes (no
         interrupt); multiple calls concatenate with newlines. Returns False for empty text. ``ticket``
-        names the submission, so ``withdraw_steer`` can settle exactly it, whatever text others carry."""
+        names the submission, so ``withdraw_steer`` can settle exactly it, whatever text others carry.
+
+        ``sender`` (``{"session_id": str, "title": str}``) marks a cross-session peer message: it is
+        framed with the PEER marker (no user authority) and queued in ``_pending_peer_steer`` — same
+        lock and timing as a user steer, but never mixed into the user's marker."""
         if not text or not text.strip():
             return False
         cleaned = text.strip()
+        if sender is not None:
+            from agent.prompt_builder import format_peer_message, sanitize_peer_body
+
+            if not sanitize_peer_body(cleaned):
+                return False
+            framed = format_peer_message(
+                from_session_id=str(sender.get("session_id") or ""),
+                from_title=str(sender.get("title") or ""),
+                body=cleaned,
+            )
+            with _ic_lock(self, "_pending_steer_lock"):
+                existing = getattr(self, "_pending_peer_steer", None)
+                self._pending_peer_steer = (existing + "\n\n" + framed) if existing else framed
+            return True
         with _ic_lock(self, "_pending_steer_lock"):
             _set_steer_parts(self, _steer_parts(self) + [(ticket, cleaned)])
         # The turn no longer ran on its own (first-task-done detection reads this off the result).
@@ -395,6 +418,13 @@ class InterruptControlMixin:
             self._pending_redirect = None
         return text
 
+    def _drain_pending_peer_steer(self) -> Optional[str]:
+        """Return the pending (already framed) peer-message text and clear the slot; None when empty."""
+        with _ic_lock(self, "_pending_steer_lock"):
+            text = getattr(self, "_pending_peer_steer", None)
+            self._pending_peer_steer = None
+        return text
+
     def _drain_pending_steer(self) -> Optional[str]:
         """Return the pending steer text (if any) and clear the slot; None when nothing is pending."""
         with _ic_lock(self, "_pending_steer_lock"):
@@ -406,6 +436,62 @@ class InterruptControlMixin:
                     _steer_fates(self)[ticket] = True
             self._steer_last_drain = (text, parts)  # requeue_drained_steer restores its tickets
         return text
+
+    # ── Fork customizations: /yolo steering + compression queue ──────────────
+
+    def steer_yolo(self, session_key: str, enable: bool) -> bool:
+        """Queue a /yolo toggle to fire after the next tool call.
+
+        Same timing contract as steer(): the action executes at the next tool-batch boundary rather
+        than immediately, so it never interrupts a running tool. Thread-safe.
+        """
+        with _ic_lock(self, "_pending_steer_lock"):
+            self._pending_yolo_action = (session_key, enable)
+        return True
+
+    def _drain_pending_yolo_action(self) -> Optional[tuple]:
+        """Return pending (session_key, enable) yolo action and clear it."""
+        with _ic_lock(self, "_pending_steer_lock"):
+            action = getattr(self, "_pending_yolo_action", None)
+            self._pending_yolo_action = None
+        return action
+
+    def _apply_pending_yolo_action(self) -> None:
+        """Execute any queued yolo toggle. Called at tool-batch boundaries."""
+        action = self._drain_pending_yolo_action()
+        if not action:
+            return
+        session_key, enable = action
+        try:
+            from tools.approval import disable_session_yolo, enable_session_yolo
+
+            (enable_session_yolo if enable else disable_session_yolo)(session_key)
+            logger.info("/yolo steer applied for session %s: %s", session_key, "enabled" if enable else "disabled")
+        except Exception as exc:
+            logger.warning("apply_pending_yolo_action failed for session %s: %s", session_key, exc)
+
+    def queue_message_during_compression(self, text: str) -> bool:
+        """Queue a user message received while compression is in flight.
+
+        Stored and injected as a new user turn into the compressed transcript once compression
+        succeeds. Thread-safe: uses _pending_compression_lock.
+        """
+        if not text or not text.strip():
+            return False
+        cleaned = text.strip()
+        with _ic_lock(self, "_pending_compression_lock"):
+            # getattr fallback: __init__-less test stubs have no queue yet.
+            if getattr(self, "_pending_compression_queue", None) is None:
+                self._pending_compression_queue = []
+            self._pending_compression_queue.append(cleaned)
+        return True
+
+    def _drain_compression_queue(self) -> list:
+        """Drain and return all messages queued during compression (oldest first)."""
+        with _ic_lock(self, "_pending_compression_lock"):
+            queued = list(getattr(self, "_pending_compression_queue", None) or [])
+            self._pending_compression_queue = []
+        return queued
 
     def _drain_leftover_steer(self) -> Optional[str]:
         """The turn finalizer's drain: return and clear the ticketless steers (they become the next user

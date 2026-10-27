@@ -15,6 +15,7 @@ import contextlib
 import contextvars
 import copy
 import dataclasses
+import functools
 import inspect
 import json
 import logging
@@ -160,7 +161,10 @@ def is_compaction_progress_status(text: str | None) -> bool:
         return False
     lowered = body.lower()
     # The failure-class overflow warning mentions compression but is a blocked notice, not progress.
-    if "compaction complete" in lowered or "compression is currently blocked" in lowered:
+    # "Continuing after compaction (n/m)" (iteration-budget auto-continue) is emitted AFTER the done edge;
+    # matching it re-latched the TUI "compacting" spinner for the whole continuation.
+    if ("compaction complete" in lowered or "compression is currently blocked" in lowered
+            or lowered.startswith("continuing after compaction")):
         return False
     return "compact" in lowered or "compress" in lowered or "context reduced to" in lowered
 
@@ -3986,7 +3990,7 @@ def _announce_compression_start(
     return _CompactionLifecycle(agent, bool(status))
 
 
-def compress_context(
+def _compress_context_impl(
     agent: Any, messages: list, system_message: str, *, approx_tokens: Optional[int] = None,
     task_id: str = "default", focus_topic: Optional[str] = None, force: bool = False,
     bypass_cooldown: bool = False, defer_context_engine_notification: bool = False,
@@ -4195,6 +4199,23 @@ def compress_context(
             )
         _fold_todo_snapshot(agent, compressed)
         compressed_user_turn_outcome = _ensure_compressed_has_user_turn(messages, compressed)
+        # A user can send more input while the summary LLM is working. Carry that
+        # input across this sanctioned cache boundary before the durable commit.
+        drain = getattr(agent, "_drain_compression_queue", None)
+        queued = drain() if callable(drain) else []
+        if queued:
+            from agent.message_metadata import append_message
+            content = "\n\n".join(str(item) for item in queued if str(item).strip())
+            if content:
+                if compressed and isinstance(compressed[-1], dict) and compressed[-1].get("role") == "user":
+                    tail = compressed[-1]
+                    old = tail.get("content")
+                    if isinstance(old, list):
+                        tail["content"] = [*old, {"type": "text", "text": content}]
+                    else:
+                        tail["content"] = f"{old or ''}\n\n{content}".strip()
+                else:
+                    append_message(compressed, {"role": "user", "content": content})
         new_system_prompt = _rebuild_system_prompt_at_boundary(agent, system_message)
         commit = _commit_compaction(
             agent, messages, compressed, in_place=in_place, lease=lease, new_system_prompt=new_system_prompt,
@@ -4253,6 +4274,19 @@ _IMAGE_SUFFIX_BY_MIME = {
     "image/png": ".png", "image/gif": ".gif", "image/webp": ".webp", "image/jpeg": ".jpg", "image/jpg": ".jpg",
     "image/bmp": ".bmp",
 }
+
+
+@functools.wraps(_compress_context_impl)
+def compress_context(agent: Any, messages: list, system_message: str, **kwargs: Any) -> tuple[list, str]:
+    """Run one compression and retire any input queued during a failed attempt.
+
+    Keyword-only parameters are those of ``_compress_context_impl`` (``functools.wraps`` exposes its signature)."""
+    try:
+        return _compress_context_impl(agent, messages, system_message, **kwargs)
+    finally:
+        drain = getattr(agent, "_drain_compression_queue", None)
+        if callable(drain):
+            drain()
 
 
 def _data_url_mime(header: str, default: str = "image/jpeg") -> str:

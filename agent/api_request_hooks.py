@@ -160,16 +160,29 @@ class ApiRequestHooksMixin:
             }
         )
 
+    def _rate_limit_state_for_hook(self) -> Optional[dict[str, Any]]:
+        """JSON-safe rate-limit snapshot for hook payloads (None when unavailable)."""
+        state = None
+        with suppress(Exception):
+            _rate_limit_getter = getattr(self, "get_rate_limit_state", None)
+            if callable(_rate_limit_getter):
+                state = _rate_limit_getter()
+        if state is None:
+            return None
+        with suppress(Exception):
+            return self._hook_jsonable(state)
+        return None
+
     def _invoke_api_request_error_hook(
         self, *, task_id: str, turn_id: str, api_request_id: str, api_call_count: int,
         api_start_time: float, api_kwargs: Optional[dict[str, Any]], error_type: str,
         error_message: str, status_code: Optional[int] = None, retry_count: Optional[int] = None,
         max_retries: Optional[int] = None, retryable: Optional[bool] = None,
-        reason: Optional[str] = None, error_context: Optional[Dict[str, Any]] = None,
+        reason: Optional[str] = None, error_context: Optional[dict[str, Any]] = None,
     ) -> None:
         # Fork feature: expose a JSON-safe rate-limit snapshot + remember the last
         # API error context so a failed turn's terminal result can carry it.
-        rate_limit: Dict[str, Any] = {}
+        rate_limit: dict[str, Any] = {}
         if isinstance(error_context, dict):
             reset_at = error_context.get("reset_at")
             if reset_at is not None:

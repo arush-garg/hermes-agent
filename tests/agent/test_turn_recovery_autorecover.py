@@ -10,6 +10,17 @@ from agent.turn_api_error import settle_unrecovered_error
 from agent.turn_recovery_autorecover import ladder_wait_seconds
 from agent.turn_retry_state import TurnRetryState
 
+# Collection-time warm-up (before the home-I/O guard activates): _settle patches
+# agent.conversation_loop by string target and settle_unrecovered_error lazily
+# imports it on every call — each first import probes the checkout root for an
+# install manifest (fail-open in production, refused by the guard). Importing
+# here moves those probes to collection time (same pattern as
+# tests/gateway/test_prompt_cancel_started.py).
+import agent.conversation_loop
+import agent.fallback_cooldown
+import agent.provider_route_hooks
+import agent.turn_recovery
+
 
 class _Err(Exception):
     def __init__(self, status_code, message, headers=None):

@@ -14,6 +14,8 @@ from agent import chat_completion_wait_notice as wn
 from agent.model_metadata import is_local_endpoint
 from agent.proxy_bypass import is_loopback_host
 from agent.sleep_clock import SleepWatch
+from utils import env_float
+
 logger = logging.getLogger(__name__)
 
 # Kills of one dispatched attempt whose worker never unwinds before the monitor gives up on it.
@@ -188,6 +190,14 @@ class StreamingWaitMonitor:
 
     def _monitor_loop(self) -> None:
         _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
+        # Absolute wall-clock cap on one streaming call. The stale detector only measures the gap
+        # since the LAST chunk, so a socket that returns headers and then blocks forever (or
+        # dribbles a chunk just under the threshold) never trips it and the call runs unbounded.
+        # Fires ONCE and force-closes the request-local transport exactly like the stale branch,
+        # landing the worker in the normal retry/fallback path instead of raising from this thread.
+        _abs_cap = env_float("HERMES_STREAM_MAX_SECONDS", 900.0)
+        _cap_start = time.time()
+        _abs_cap_fired = False
         self._mon = SimpleNamespace(
             last_heartbeat=time.time(), last_load_poll=0.0,
             load_notice_shown=False, load_notice_misses=0, wait_notice_started_ts=None,
@@ -200,8 +210,14 @@ class StreamingWaitMonitor:
         while not self._call_done.is_set():
             self._call_done.wait(timeout=0.3)
             if sleep_watch is not None:
-                self._skip_sleep(sleep_watch.slept())
+                _slept = sleep_watch.slept()
+                self._skip_sleep(_slept)
+                # The host's nap is not request time either: credit it to the cap, like the stall clock.
+                _cap_start += max(0.0, _slept)
             _hb_now = time.time()
+            if not _abs_cap_fired and _hb_now - _cap_start > _abs_cap:
+                _abs_cap_fired = True
+                self._kill_absolute_cap(_hb_now - _cap_start, _abs_cap)
             if _is_local_base and self._poll_local_load_notice(_hb_now):
                 continue
             # Reasoning callbacks do not clear the classic CLI spinner. The empty

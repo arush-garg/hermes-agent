@@ -3832,6 +3832,25 @@ class _StreamingCall(StreamingWaitMonitor):
         self._count_stale_attempt()
         self._rearm_or_abandon_after_kill(elapsed)
 
+    def _kill_absolute_cap(self, elapsed: float, cap: float) -> None:
+        """HERMES_STREAM_MAX_SECONDS tripped: the call has run past its hard wall-clock bound, so
+        cancel the attempt and abort the request-local client exactly like the stale branch — the
+        worker then rides the normal retry/fallback path instead of blocking this poll thread.
+        Fires once per call; the shared primary client is never closed from this thread."""
+        model = self.api_kwargs.get("model", "unknown")
+        logger.error(
+            "stream abs-cap hit after %.0fs (cap %.0fs) — model=%s. "
+            "Force-closing request-local transport for retry/fallback.",
+            elapsed, cap, model,
+        )
+        self.agent._buffer_diagnostic_status(
+            f"⚠️ Provider call exceeded {int(elapsed)}s hard cap (model: {model}). Aborting.")
+        _killed_response = self._attempt_stream_response
+        with contextlib.suppress(Exception):
+            self._cancel_current_stream_attempt("stream_abs_cap")
+            self.clients.close_once("stream_abs_cap")
+        self._shutdown_stale_attempt_socket(_killed_response)
+
     def _abort_for_interrupt(self, stale_elapsed: float) -> None:
         """/stop seen by the monitor: mark cancelled, abort the request-local
         socket, wait for the worker, flag the interrupt."""

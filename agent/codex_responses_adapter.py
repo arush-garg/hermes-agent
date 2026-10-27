@@ -13,6 +13,11 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TypeGuard
 
+from agent.context_freshness import (
+    DEFAULT_REASONING_REPLAY_KEEP_LAST,
+    clamp_reasoning_replay_keep_last,
+    reasoning_replay_keep_indices,
+)
 from agent.message_sanitization import coerce_tool_name, deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 from hermes_cli.route_identity import normalize_route_base_url
@@ -504,12 +509,15 @@ def _assistant_message_item(
 def _replay_reasoning_items(
     msg: dict[str, Any], *, seen_item_ids: set, current_issuer_kind: Optional[str],
     current_issuer_model: Optional[str] = None, native_compaction_eligible: bool,
+    reasoning_keep: bool = True,
 ) -> list[dict[str, Any]]:
     """Replay persisted encrypted reasoning/compaction items for one assistant turn. Skips duplicate
     ids, ``compaction`` checkpoints unless THIS request carries ``context_management`` (else a persisted
     checkpoint erases pre-checkpoint history on a model that cannot decrypt it), and items stamped by
     another issuer or model (HTTP 400). Items without a model stamp (legacy or unstamped) replay on a
-    matching issuer. ``id`` (store=False lookups 404) and the Hermes provenance fields are stripped."""
+    matching issuer. ``id`` (store=False lookups 404) and the Hermes provenance fields are stripped.
+    ``reasoning_keep=False`` drops ordinary encrypted reasoning outside the keep window; native
+    compaction checkpoints are not a stale interpretation and stay under their own gate."""
     global _CROSS_ISSUER_WARN_EMITTED
     replayed: list[dict[str, Any]] = []
     for ri in _as_list(msg.get("codex_reasoning_items")):
@@ -517,6 +525,10 @@ def _replay_reasoning_items(
             continue
         item_id = ri.get("id")
         if (item_id and item_id in seen_item_ids) or (ri.get("type") == "compaction" and not native_compaction_eligible):
+            continue
+        # Freshness bound: drop ordinary encrypted reasoning outside the keep
+        # window. Native compaction checkpoints are left to the gate above.
+        if ri.get("type") != "compaction" and not reasoning_keep:
             continue
         item_issuer = _canonical_issuer_kind(ri.get("_issuer_kind"))
         item_model = ri.get("_issuer_model")
@@ -649,6 +661,7 @@ def _chat_messages_to_responses_input(
     messages: list[dict[str, Any]], *, is_xai_responses: bool = False, drop_replay_item_ids: bool = False,
     replay_encrypted_reasoning: bool = True, current_issuer_kind: Optional[str] = None,
     current_issuer_model: Optional[str] = None, native_compaction_eligible: bool = False,
+    reasoning_replay_keep_last: Optional[int] = None,
 ) -> list[dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
 
@@ -685,6 +698,13 @@ def _chat_messages_to_responses_input(
     (auxiliary/compression client, ad-hoc ``convert_messages``). Dropping the checkpoint costs nothing:
     Hermes' local history is never truncated by native compaction, so the full conversation is still on the
     wire.
+
+    ``reasoning_replay_keep_last`` bounds *which* assistant turns still
+    replay encrypted reasoning between compactions. Reasoning on turns at
+    or before the latest compaction summary is always dropped; among the
+    remaining reasoning-bearing assistant turns only the last N are
+    replayed (default 8; ``0`` = no extra turn cap). Persisted history is
+    not mutated — this is request-assembly only.
     """
     items: list[dict[str, Any]] = []
     # Parallel to ``items``: source chat message per item. Pruning reads a summary
@@ -695,6 +715,16 @@ def _chat_messages_to_responses_input(
     item_sources: list[Optional[dict[str, Any]]] = []
     seen_item_ids: set = set()
     wire_ids = _WireCallIds()
+    keep_last = clamp_reasoning_replay_keep_last(
+        DEFAULT_REASONING_REPLAY_KEEP_LAST
+        if reasoning_replay_keep_last is None
+        else reasoning_replay_keep_last
+    )
+    keep_reasoning_at = (
+        reasoning_replay_keep_indices(messages, keep_last=keep_last)
+        if replay_encrypted_reasoning
+        else frozenset()
+    )
     # The ChatGPT Codex backend rejects a role message whose ``content`` is a plain string with
     # ``{"detail": "Unsupported content type"}`` (400) — even a single user turn with no replay state
     # (#51512). It accepts only typed parts, so string text goes out as ``input_text``/``output_text``
@@ -703,7 +733,7 @@ def _chat_messages_to_responses_input(
     def emit(new_items: list[dict[str, Any]], msg: dict[str, Any]) -> None:
         items.extend(new_items)
         item_sources.extend([msg] * len(new_items))
-    for msg in messages:
+    for msg_index, msg in enumerate(messages):
         if not isinstance(msg, dict):
             continue
         role = msg.get("role")
@@ -727,6 +757,7 @@ def _chat_messages_to_responses_input(
         reasoning_items = [] if not replay_encrypted_reasoning else _replay_reasoning_items(
             msg, seen_item_ids=seen_item_ids, current_issuer_kind=current_issuer_kind,
             current_issuer_model=current_issuer_model, native_compaction_eligible=native_compaction_eligible,
+            reasoning_keep=msg_index in keep_reasoning_at,
         )
         emit(reasoning_items, msg)
         message_items = _replay_message_items(

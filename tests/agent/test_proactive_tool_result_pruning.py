@@ -18,6 +18,13 @@ from agent.context_compressor import (
     prune_messages_for_handoff,
 )
 
+# Collection-time warm-up (before the home-I/O guard activates): compress()
+# lazily imports agent.conversation_loop inside
+# _is_synthetic_compression_user_turn — a first import during the test probes
+# the checkout root for an install manifest (fail-open in production, refused
+# by the guard). Importing here moves that probe to collection time.
+import agent.conversation_loop
+
 LARGE_WINDOW = 1_000_000
 
 

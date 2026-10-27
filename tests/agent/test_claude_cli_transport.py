@@ -208,7 +208,7 @@ def test_factory_branch_selects_claude_cli_client():
         enabled_toolsets=None, disabled_toolsets=None, _current_task_id=None,
         session_id="s1",
         _client_log_context=lambda: "ctx",
-        _build_keepalive_http_client=lambda u: None,
+        _build_keepalive_http_client=lambda base_url="", **_kw: None,
     )
     client = arh.create_openai_client(
         agent, {"base_url": "claude-cli://local", "api_key": "x", "model": "haiku"},

@@ -44,6 +44,10 @@ from agent.provider_base import ProviderBase
 #: raw route fields (``provider``/``model``/``base_url``/``api_key``) never become model-facing.
 RESERVED_TASK_PARAMETERS = frozenset({
     "goal", "context", "index", "output_schema", "images", "group", "role", "toolsets",
+    # Fork fields core also owns per task: the child's starting directory and the pruned-history
+    # handoff opt-in. Both are advertised on the schema, so routing must not read them as a
+    # provider parameter a backend has to declare.
+    "cwd", "give_compressed_context",
     "acp_command", "acp_args", "provider", "model", "base_url", "api_key", "api_mode",
 })
 

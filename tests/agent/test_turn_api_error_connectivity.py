@@ -28,6 +28,21 @@ from agent.turn_api_call import nous_rate_limit_guard, perform_api_call
 from agent.turn_connectivity_pause import PauseVerdict
 from agent.turn_retry_state import TurnRetryState
 
+# Collection-time warm-up (before the home-I/O guard activates): several tests
+# below import modules inside test bodies and fixtures, and
+# settle_unrecovered_error lazily imports agent.conversation_loop on the
+# exercised paths — each first import probes the checkout root for an install
+# manifest (fail-open in production, refused by the guard). Importing here moves
+# those probes to collection time (same pattern as
+# tests/gateway/test_prompt_cancel_started.py).
+import agent.agent_init
+import agent.conversation_loop
+import agent.fallback_cooldown
+import agent.provider_route_hooks
+import agent.turn_recovery_autorecover
+import hermes_cli.config
+import hermes_cli.config_defaults
+
 
 # ---------------------------------------------------------------------------
 # Pause-module seams: stub the network probe and the blocking wait
@@ -226,7 +241,7 @@ def test_transient_blip_declines_to_normal_path(pause_script, error_pipeline):
     for a resume."""
     pause_script.probe = ProbeOutcome(
         provider_reachable=True, network_reachable=True)
-    verdict, retry = call_handle_api_error(_dns_error())  # DNS fast-paths debounce
+    verdict, _retry = call_handle_api_error(_dns_error())  # DNS fast-paths debounce
 
     assert pause_script.probe_calls and not pause_script.wait_calls
     assert "recover_after" in error_pipeline.order
@@ -240,7 +255,7 @@ def test_provider_outage_declines_to_fallback_ladder(pause_script, error_pipelin
     recovery/fallback path must handle it, never the pause."""
     pause_script.probe = ProbeOutcome(
         provider_reachable=False, network_reachable=True)
-    verdict, retry = call_handle_api_error(_dns_error())
+    verdict, _retry = call_handle_api_error(_dns_error())
 
     assert pause_script.probe_calls and not pause_script.wait_calls
     assert "recover_after" in error_pipeline.order, \
@@ -289,7 +304,7 @@ def test_warm_resume_zeroes_retry_and_continues_normal_path(
     _both_unreachable(pause_script)
     pause_script.wait_verdict = PauseVerdict("continue")
     agent = make_agent()
-    verdict, retry = call_handle_api_error(_dns_error(), agent=agent)
+    verdict, _retry = call_handle_api_error(_dns_error(), agent=agent)
 
     assert pause_script.wait_calls, "the blocking wait must have engaged"
     assert agent._connectivity_resume_keep is True, "resume pins the provider"
@@ -529,7 +544,7 @@ def test_provider_side_failure_after_resume_reenables_fallback(
     assert pagent._connectivity_resume_keep is False
 
     settle_agent._connectivity_resume_keep = False
-    agent, kw, retry = _settle_kwargs(_client_error_classified(), agent=settle_agent)
+    agent, kw, _retry = _settle_kwargs(_client_error_classified(), agent=settle_agent)
     verdict = settle_unrecovered_error(agent, **kw)
 
     assert verdict.action == "break"

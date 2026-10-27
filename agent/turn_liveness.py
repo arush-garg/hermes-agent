@@ -16,8 +16,6 @@ import threading
 import time
 from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 
-from agent.session_activity import AwakeIdleMeter
-
 logger = logging.getLogger(__name__)
 
 DEFAULT_TURN_LIVENESS_TIMEOUT_S = 600.0
@@ -130,8 +128,6 @@ class TurnLivenessWatchdog:
         self._is_turn_active = is_turn_active
         self._commit_abort = commit_abort
         self._deactivate_turn = deactivate_turn
-        # A sleeping host is not a stalled turn: time asleep never counts toward the bound.
-        self._awake_idle = AwakeIdleMeter()
 
     def schedule(self):
         """Start polling via the shared periodic scheduler; returns the cancel handle.
@@ -147,7 +143,12 @@ class TurnLivenessWatchdog:
         snapshot = self._sample()
         if snapshot is None:
             return False  # turn no longer active
-        if self._awake_idle.measure(snapshot.idle_seconds) < self._timeout_s:
+        # ``snapshot.idle_seconds`` is already awake time: :func:`_idle_seconds` reads the
+        # monotonic half of the activity clock pair, which pauses while the host sleeps. An
+        # ``AwakeIdleMeter`` on top of that subtracts the same nap twice and delays a real
+        # stall past the bound, so the fork's clock-pair reading is the single correction here
+        # (the meter stays the gateway-side watchdog's correction).
+        if snapshot.idle_seconds < self._timeout_s:
             return None
         # Observational only: the commit below can still veto the abort if progress
         # resumed; the definitive settlement is _surface_committed_abort.

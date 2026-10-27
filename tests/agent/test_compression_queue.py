@@ -151,7 +151,7 @@ def test_compression_queue_injected_after_successful_compression():
     # Wait for compression to complete
     comp_thread.join(timeout=30.0)  # cold first compression (imports, aux probes) takes >2s
     
-    compressed_messages, new_system_prompt = result_container["result"]
+    compressed_messages, _new_system_prompt = result_container["result"]
     
     # Verify queued messages were injected
     user_messages = [m for m in compressed_messages if m["role"] == "user"]
@@ -191,7 +191,7 @@ def test_compression_queue_not_injected_on_failed_compression():
     
     comp_thread.join(timeout=30.0)  # cold first compression (imports, aux probes) takes >2s
     
-    compressed_messages, new_system_prompt = result_container["result"]
+    compressed_messages, _new_system_prompt = result_container["result"]
     
     # Compression failed, so original messages returned unchanged
     assert len(compressed_messages) == len(messages)
@@ -312,3 +312,16 @@ def test_compress_context_forwards_every_keyword_the_implementation_accepts(monk
     monkeypatch.setattr(cc, "_compress_context_impl", lambda *args, **kw: seen.update(kw) or ([], ""))
     cc.compress_context(SimpleNamespace(), [], "system", **kwargs)
     assert seen == kwargs
+
+
+def test_forwarder_signature_covers_the_implementation():
+    """A new keyword on the implementation must be added to the facade forwarder too."""
+    import inspect
+
+    from agent import conversation_compression as cc
+    from agent.compression_facade import CompressionFacadeMixin
+
+    impl_params = set(inspect.signature(cc.compress_context).parameters) - {"agent", "messages", "system_message"}
+    facade_params = set(inspect.signature(CompressionFacadeMixin._compress_context).parameters) - {
+        "self", "messages", "system_message"}
+    assert not impl_params - facade_params, sorted(impl_params - facade_params)

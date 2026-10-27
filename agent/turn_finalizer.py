@@ -111,6 +111,20 @@ def _invoke_hook_safely(name: str, logger: logging.Logger, **kwargs) -> list:
         return []
 
 
+def _handoff_leftover_steer(agent, result: dict) -> None:
+    """Move an undelivered /steer (and any undelivered cross-session peer message) into
+    ``result["pending_steer"]`` so the surface re-enqueues it as the next user turn. The peer text is
+    already framed with the PEER marker, so the next-turn prompt keeps its no-user-authority provenance."""
+    _leftover_steer = (getattr(agent, "_drain_leftover_steer", None) or agent._drain_pending_steer)()
+    if _leftover_steer:
+        result["pending_steer"] = _leftover_steer
+    _drain_peer = getattr(agent, "_drain_pending_peer_steer", None)
+    _leftover_peer = _drain_peer() if callable(_drain_peer) else None
+    if _leftover_peer:
+        _existing = result.get("pending_steer")
+        result["pending_steer"] = f"{_existing}\n\n{_leftover_peer}" if _existing else _leftover_peer
+
+
 def _guarded_cleanup(label: str, fn: Callable[[], Any], errors: list[str], logger) -> None:
     """Post-loop cleanup must never lose the response: each step is guarded
     independently and errors surface via ``cleanup_errors`` (#8049)."""
@@ -812,9 +826,7 @@ def finalize_turn(
     # A /steer landing after the final assistant turn has no tool batch to drain into;
     # hand it back so it becomes the next user turn instead of being lost. A gateway transfer
     # (ticketed) stays buffered: the claim's settlement returns it to its own queue place.
-    _leftover_steer = (getattr(agent, "_drain_leftover_steer", None) or agent._drain_pending_steer)()
-    if _leftover_steer:
-        result["pending_steer"] = _leftover_steer
+    _handoff_leftover_steer(agent, result)
     agent._response_was_previewed = False
     agent._reused_response_text = None
     if interrupted and agent._interrupt_message:

@@ -17,6 +17,10 @@ from typing import Any, Dict, List, Optional
 
 from agent.agent_runtime_helpers_placeholders import hidden_interrupt_placeholder_row
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.conversation_compression import (
+    compression_blocked_transiently, compression_skipped_due_to_lock,
+    context_compression_timed_out, conversation_history_after_compression,
+)
 from agent.fast_mode import begin_turn as begin_fast_mode_turn
 from agent.message_metadata import append_message, without_persistence_fields
 from agent.message_sanitization import _repair_tool_call_arguments, _sanitize_surrogates
@@ -64,6 +68,92 @@ from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches
 
 logger = logging.getLogger(__name__)
+
+
+def _interrupt_exit_reason(agent) -> str:
+    """Return a truthful, non-user-facing provenance label for an interrupt."""
+    message = str(getattr(agent, "_interrupt_message", "") or "")
+    if message.startswith("Cron job timed out (inactivity)"):
+        return "cron_inactivity_timeout"
+    if message.startswith("Session turn lease lost"):
+        return "session_turn_lease_lost"
+    if message.startswith("Session turn lease could not be refreshed"):
+        return "session_turn_lease_refresh_failed"
+    hard_event = getattr(agent, "_hard_interrupt_requested", None)
+    if hard_event is not None and callable(getattr(hard_event, "is_set", None)) and hard_event.is_set():
+        return "hard_interrupt"
+    return "interrupted_by_user"
+
+
+def _surface_recent_interruption_warnings(agent) -> None:
+    """Render recent interrupted-session markers once, then acknowledge them."""
+    try:
+        from tools.checkpoint_manager import clear_interrupted_marker, list_interrupted_markers
+        now = time.time()
+        recent = [m for m in list_interrupted_markers() if now - m.get("timestamp", 0) < 86400]
+        # Markers are global to the Hermes home. Never render another
+        # conversation's failure (including one on the same transport).
+        recent = [m for m in recent if m.get("session_id") == getattr(agent, "session_id", None)]
+        if not recent:
+            return
+        agent._vprint(
+            "⚠️  Previous long-running session was interrupted before completing its task.", force=True)
+        for marker in recent[:3]:
+            sid = marker.get("session_id", "")
+            agent._vprint(
+                "   • session "
+                f"{sid[:12] or '?'} at {marker.get('iso_time', '')} — "
+                f"{marker.get('reason', '')} "
+                f"last_action={(marker.get('last_action', '') or '')[:80]}", force=True)
+        agent._vprint(
+            "   Partial file mutations may have been left on disk. "
+            "Check `hermes checkpoints` / `/rollback` before trusting state.", force=True)
+        for marker in recent:
+            sid = marker.get("session_id", "")
+            if sid:
+                clear_interrupted_marker(sid)
+    except Exception:
+        logger.debug("Could not surface interrupted-session markers", exc_info=True)
+
+
+def _record_session_interruption(agent, reason: str, last_action: str = "") -> None:
+    """Best-effort cross-session recovery marker for an interrupted turn."""
+    try:
+        sid = getattr(agent, "session_id", "") or ""
+        if not sid:
+            return
+        action = (last_action or str(getattr(agent, "_last_tool_action", "") or ""))[:2000]
+        from tools.checkpoint_manager import write_interrupted_marker
+        write_interrupted_marker(sid, last_action=action, reason=(reason or "interrupted")[:500])
+    except Exception:
+        logger.debug("Could not record interrupted-session marker", exc_info=True)
+
+
+def _append_auto_continue_request(messages: list, used: int) -> list:
+    """Carry the continuation through the compressed user turn without adjacent user rows."""
+    instruction = (
+        f"{used} iterations complete. Previous conversation compacted. "
+        "Keep working towards the user's stated goal."
+    )
+    continued = list(messages)
+    if continued and isinstance(continued[-1], dict) and continued[-1].get("role") == "user":
+        tail = dict(continued[-1])
+        for key in ("content", "api_content"):
+            if key == "api_content" and key not in tail:
+                continue
+            old = tail.get(key)
+            if isinstance(old, list):
+                tail[key] = [*old, {"type": "text", "text": instruction}]
+            else:
+                tail[key] = f"{old or ''}\n\n{instruction}".strip()
+        tail["display_kind"] = "auto_continue"
+        continued[-1] = tail
+    else:
+        append_message(continued, {
+            "role": "user", "content": instruction, "display_kind": "auto_continue",
+        })
+    return continued
+
 
 # Must mirror _STALE_TOOL_CALL_MARKER_RE in hermes_state.py; kept local so importing
 # hermes_state (module-level DEFAULT_DB_PATH) is not forced at load time.
@@ -1697,12 +1787,16 @@ def _run_conversation_turn(
     agent._ephemeral_reasoning_off = False
     agent._auth_pool_refresh_counts = {}
     agent._last_turn_usage = None
+    # One-shot post-outage resume pin (connectivity pause) must never leak across turns
+    # on a cached gateway agent: a turn that ended mid-resume re-pins on its next pause.
+    agent._connectivity_resume_keep = False
 
     s = _LoopState(
         system_message=system_message, moa_config=moa_config,
         max_compression_attempts=getattr(agent, "max_compression_attempts", 3),
         **{f.name: getattr(_ctx, f.name.lstrip("_")) for f in fields(_LoopState) if f.name in _CTX_FIELDS},
     )
+    _surface_recent_interruption_warnings(agent)
     # Opt-in runtime: api_mode == codex_app_server hands the whole turn to the codex
     # app-server subprocess (see agent/transports/codex_app_server_session.py).
     if agent.api_mode == "codex_app_server" and (codex_result := _codex_app_server_turn(agent, s)) is not None:
@@ -1711,9 +1805,59 @@ def _run_conversation_turn(
     _prelude_action, _prelude_result = play_prelude(agent, s, prelude)
     if _prelude_action == "return":
         return _prelude_result
-    while _prelude_action != "break" and (
-        (s.api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call
-    ):
+    cycle_call_limit = agent.max_iterations
+    while _prelude_action != "break":
+        if not agent._budget_grace_call and (
+            s.api_call_count >= cycle_call_limit or agent.iteration_budget.remaining <= 0
+        ):
+            if agent._interrupt_requested:
+                s.interrupted = True
+                s._turn_exit_reason = _interrupt_exit_reason(agent)
+                break
+            if _review_input_budget_exhausted(agent):
+                s._turn_exit_reason = "review_input_budget_exhausted"
+                break
+            from hermes_cli.config import load_config
+            from agent.iteration_budget import IterationBudget
+            try:
+                continuation_limit = (load_config().get("agent") or {}).get("max_auto_continue", 3)
+            except Exception:
+                logger.warning("Could not read iteration continuation limit", exc_info=True)
+                continuation_limit = 0
+            budget = agent.iteration_budget
+            if (type(continuation_limit) is not int or continuation_limit <= 0
+                    or not isinstance(budget, IterationBudget)
+                    or budget.auto_continue_count >= continuation_limit
+                    or agent.max_iterations <= 0):
+                break
+            try:
+                compacted, compacted_prompt = agent._compress_context(
+                    s.messages, s.system_message, task_id=s.effective_task_id)
+                if (context_compression_timed_out(agent) or compression_skipped_due_to_lock(agent)
+                        or compression_blocked_transiently(agent) or not compacted
+                        or compacted == s.messages):
+                    break
+                s.conversation_history = conversation_history_after_compression(
+                    agent, compacted, s.conversation_history)
+                s.messages = compacted
+                s.active_system_prompt = compacted_prompt
+                if agent._interrupt_requested:
+                    s.interrupted = True
+                    s._turn_exit_reason = _interrupt_exit_reason(agent)
+                    break
+                if not budget.extend_for_continuation(agent.max_iterations, continuation_limit):
+                    break
+                cycle_call_limit = s.api_call_count + agent.max_iterations
+                s.messages = _append_auto_continue_request(s.messages, budget.used)
+                s.current_turn_user_idx = -1
+                s.pending_moa_prepared_request = None
+                s._last_preflight_pressure = None
+                agent._persist_session(s.messages, s.conversation_history)
+                agent._emit_status(
+                    f"Continuing after compaction ({budget.auto_continue_count}/{continuation_limit})")
+            except Exception:
+                logger.warning("Iteration continuation failed; using limit fallback", exc_info=True)
+                break
         if _run_phase(begin_iteration, agent, s).action == "break":
             break
         _run_phase(prepare_iteration, agent, s)
@@ -1761,10 +1905,16 @@ def _run_conversation_turn(
                 break
 
     # Post-loop finalization lives in agent/turn_finalizer.finalize_turn.
-    result = finalize_turn(agent, **{
-        name: getattr(s, name)
-        for name in inspect.signature(finalize_turn).parameters if name != "agent"
-    })
+    if s.interrupted and s._turn_exit_reason == "unknown":
+        s._turn_exit_reason = _interrupt_exit_reason(agent)
+    finalizer_params = inspect.signature(finalize_turn).parameters
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in finalizer_params.values()):
+        # Keep test/plugin wrappers that accept ``**kwargs`` able to observe the
+        # complete loop state. Production finalize_turn has explicit parameters.
+        finalizer_kwargs = {f.name: getattr(s, f.name) for f in fields(s)}
+    else:
+        finalizer_kwargs = {name: getattr(s, name) for name in finalizer_params if name != "agent"}
+    result = finalize_turn(agent, **finalizer_kwargs)
     if s._compression_timeout_exhausted:
         # Reuse the gateway's context-recovery contract: transcript stays intact while
         # future input can move to a clean session (#98722).
@@ -1827,6 +1977,28 @@ def run_conversation(
         finally:
             end_voice_turn_route(agent)
     settle_held_final(agent, result)
+    # Record interrupted/failed sessions for cross-session checkpoint triage.
+    try:
+        response_text = str(result.get("final_response") or "")
+        reason = ""
+        if result.get("interrupted"):
+            reason = f"interrupted:{result.get('failure_reason') or _interrupt_exit_reason(agent)}"
+        elif result.get("failed"):
+            reason = f"failed:{result.get('failure_reason') or response_text[:300]}"
+        elif result.get("compression_exhausted"):
+            reason = "compression_exhausted"
+        # Only actual turn-state failures warrant recovery markers. Searching
+        # final prose for "auth error"/"timeout" falsely flags successful
+        # answers that quote an earlier error or report a resolved problem.
+        if reason:
+            _record_session_interruption(agent, reason, last_action=result.get("failure_reason", ""))
+        elif result.get("completed", True):
+            from tools.checkpoint_manager import clear_interrupted_marker
+            sid = getattr(agent, "session_id", "") or ""
+            if sid:
+                clear_interrupted_marker(sid)
+    except Exception:
+        logger.debug("Could not update interrupted-session marker", exc_info=True)
     result = export_current_turn_boundary(agent, result, user_message)
     if isinstance(result, dict):
         result["user_intervened"] = bool(getattr(agent, "_turn_user_intervened", False))
