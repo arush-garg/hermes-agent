@@ -55,7 +55,8 @@ def test_bundle_stages_git_tree_and_runs_native_children_before_manifest(tmp_pat
     source = Path(__file__).resolve().parents[2]
     shutil.copytree(source / "pm", repo / "pm", ignore=shutil.ignore_patterns("__pycache__"))
     (repo / "hermes_cli").mkdir()
-    for name in ("__init__.py", "runtime_state.py"):
+    # macos_signing: on macOS, pm's python package stage() ad-hoc signs the staged interpreter through it.
+    for name in ("__init__.py", "runtime_state.py", "macos_signing.py"):
         shutil.copy2(source / "hermes_cli" / name, repo / "hermes_cli" / name)
     shutil.copy2(source / "hermes_constants.py", repo / "hermes_constants.py")
     wheels = repo / "wheels"

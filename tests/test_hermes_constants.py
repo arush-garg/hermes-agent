@@ -459,6 +459,16 @@ class TestSecureParentDir:
         silently widen into a string-prefix match.
         """
         install_root = Path(hermes_constants.__file__).resolve().parent
+        # HOME is redirected per test, so ask the account database for the operator's real home.
+        native_home = None
+        if os.name != "nt":
+            import pwd
+
+            native_home = (Path(pwd.getpwuid(os.getuid()).pw_dir) / ".hermes").resolve()
+        if native_home is not None and install_root.is_relative_to(native_home):
+            # A checkout inside the operator's Hermes home (~/.hermes/hermes-agent) would harden a real
+            # sibling of the live install; this boundary is pinned on a standalone checkout (CI).
+            pytest.skip("checkout lives inside the native Hermes home")
 
         # Prefix-named sibling of the install root (/opt/hermes-data/...).
         prefix_sibling = Path(str(install_root) + "-data")

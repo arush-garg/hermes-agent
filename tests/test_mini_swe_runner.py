@@ -1,6 +1,16 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_dotenv_walk(monkeypatch):
+    # mini_swe_runner calls load_dotenv() at import, which searches up from the module's directory; a
+    # checkout inside ~/.hermes would read the operator's real .env.
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: False)
+
+
 def test_run_task_kimi_omits_temperature():
     """Kimi models should NOT have client-side temperature overrides.
 
