@@ -29,6 +29,7 @@ from typing import Any, Callable, Iterable
 
 import hermes_yaml as yaml
 
+from tests.e2e.core._gateway_reaper import stop_home_gateway
 from tests.fakes.fake_llm_provider import Error, FakeLLMServer, Text
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -304,6 +305,8 @@ def run_hermes(argv: list[str], home: Path, *, hermes_home: Path | None = None, 
         out, err = proc.communicate()
         err += f"\n[c11 harness] killed after {timeout}s"
     _kill_group(proc)  # reap any grandchild left in our own session
+    for pid_file in (hermes_home or home).rglob("gateway.pid"):  # the auto-started gateway detaches
+        stop_home_gateway(pid_file.parent)
     return RunResult(argv, proc.returncode, out, err, time.monotonic() - start)
 
 

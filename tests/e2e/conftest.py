@@ -42,6 +42,18 @@ def _stop_auto_started_gateways(request):
     for pid_file in request.getfixturevalue("tmp_path").rglob("gateway.pid"):
         stop_home_gateway(pid_file.parent)
 
+
+@pytest.fixture(scope="module", autouse=True)
+def _stop_module_gateways(tmp_path_factory):
+    """Module-scoped fixtures build homes with ``tmp_path_factory``; stop the gateways under every
+    basetemp entry this module created once its tests (and those fixtures) are done."""
+    root = tmp_path_factory.getbasetemp()
+    before = set(root.iterdir())
+    yield
+    for entry in set(root.iterdir()) - before:
+        for pid_file in entry.rglob("gateway.pid"):
+            stop_home_gateway(pid_file.parent)
+
 # Platform library mocks
 
 # Ensure telegram module is available (mock it if not installed)
