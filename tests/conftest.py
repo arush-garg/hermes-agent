@@ -464,7 +464,10 @@ def _refuse_launchd_bootstrap(request, tmp_path_factory, monkeypatch):
     ``bootstrap``/``submit`` fails like "no GUI session" (callers fall back to a plain child); every
     other verb reaches the real binary. The module's own real-launchd test opts out by living in its file."""
     real = shutil.which("launchctl") if sys.platform == "darwin" else None
-    if real is None or request.node.path.name == "test_gateway_launchd_runtime.py":
+    if request.node.path.name == "test_gateway_launchd_runtime.py":
+        monkeypatch.setenv("HERMES_ALLOW_LAUNCHD_IN_TESTS", "1")  # the in-code guard, too
+        return
+    if real is None:
         return
     shim_dir = tmp_path_factory.mktemp("launchctl-shim")
     shim = shim_dir / "launchctl"
