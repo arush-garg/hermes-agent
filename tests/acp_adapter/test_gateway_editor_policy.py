@@ -10,6 +10,10 @@ from gateway.session_policy import build_policy, policy_scope, restore_policy
 
 def test_acp_policy_uses_its_own_tools_and_restores_frozen_cwd(tmp_path):
     from hermes_cli.tools_config import _get_platform_tools
+    from tools import terminal_tool
+    # The one-shot terminal.* -> env bridge is lazy and process-global (build_policy's project .mcp.json
+    # discovery can trigger it); settle it first so only the policy's own env effects are measured.
+    terminal_tool._ensure_terminal_env_bridged()
     cfg = {'platform_toolsets': {'cli': ['terminal'], 'acp': ['file']}}
     params = {'source': 'acp', 'cwd': str(tmp_path), 'model': 'fixture',
               'editor': {'mcp_servers': [], 'edit_approval_policy': 'ask'}}
