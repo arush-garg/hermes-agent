@@ -1250,7 +1250,8 @@ def _finalize_tool_batch(agent, messages: list, effective_task_id: str, num_tool
     sync_rewritten_tool_rows(agent, batch, contents_before)
     record_tool_batch(agent, batch, contents_before)
     agent._apply_pending_steer_to_tool_results(messages, num_tools)
-    agent._apply_pending_yolo_action()
+    if (apply_yolo := getattr(agent, "_apply_pending_yolo_action", None)) is not None:  # absent on test stubs
+        apply_yolo()
 
 
 def _tool_progress_enabled(agent) -> bool:
