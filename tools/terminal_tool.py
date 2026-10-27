@@ -48,7 +48,7 @@ def _redact_terminal_error_text(value: Any) -> str:
 # they are re-exported here because callers and tests import them from this module.
 
 
-def _parse_terminal_config_from_getter(env_get) -> Dict[str, Any]:
+def _parse_terminal_config_from_getter(env_get) -> dict[str, Any]:
     """Build the terminal config dict reading every ``TERMINAL_*`` key through *env_get*.
 
     Mirrors :func:`_get_env_config`, but never consults the ambient environment, so a routed
@@ -133,7 +133,7 @@ def _parse_terminal_config_from_getter(env_get) -> Dict[str, Any]:
     }
 
 
-def build_isolated_terminal_config(isolated_env: Dict[str, str]) -> Dict[str, Any]:
+def build_isolated_terminal_config(isolated_env: dict[str, str]) -> dict[str, Any]:
     """Parse a profile's ``TERMINAL_*`` env mapping into a terminal config dict."""
     return _parse_terminal_config_from_getter(lambda k, d: isolated_env.get(k, d))
 
@@ -148,6 +148,16 @@ from tools.terminal_tool_config import (
     _is_windows_drive_path, _parse_env_var, _plugin_env_flag, _quiet, _safe_getcwd, _tenv, _tenv_bool,
     _in_sandbox_home, coerce_ssh_remote_cwd, translate_mounted_host_path,
 )
+try:
+    from tools.terminal_tool_config import _TERMINAL_CONFIG_ISOLATION, _TERMINAL_ENV_ISOLATION
+except ImportError:  # pragma: no cover - mixed-version live update: a long-lived process may
+    # hold a pre-feature terminal_tool_config in sys.modules, so the new names are missing
+    # and every terminal requirements check fails until restart. Degrade to unisolated.
+    from contextvars import ContextVar as _IsolationContextVar
+    _TERMINAL_ENV_ISOLATION: _IsolationContextVar = _IsolationContextVar(
+        "_TERMINAL_ENV_ISOLATION", default=None)
+    _TERMINAL_CONFIG_ISOLATION: _IsolationContextVar = _IsolationContextVar(
+        "_TERMINAL_CONFIG_ISOLATION", default=None)
 from tools.terminal_tool_backends import (
     _REQUIREMENT_CHECKERS, _VERCEL_SANDBOX_DEFAULT_CWD, _check_plugin_requirements,
     _record_unavailable_reason, terminal_backend_unavailable_reason,
@@ -1612,6 +1622,9 @@ def terminal_tool(
             from tools.approval import get_current_session_key
 
             session_key = get_current_session_key(default="") or (task_id or "")
+            # A delegated child inherits the parent's approval session key through copy_context:
+            # key its cwd record by its own task id so the child's `cd` never rewrites the parent's.
+            cwd_key = _cwd_record_key(task_id, session_key)
 
             # The supervised-gateway identity probe ends in a kernel process query
             # (psutil create_time) that has wedged for the better part of an hour on
@@ -1673,6 +1686,7 @@ def terminal_tool(
                 command, env, plan,
                 task_id=task_id, session_id=session_id, session_key=session_key,
                 workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
+                cwd_key=cwd_key,
                 metered=not _host_local,
             ))
     except _Rejected as r:

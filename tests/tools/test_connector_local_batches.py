@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 
-@pytest.mark.parametrize("mixed", [False, True])
+@pytest.mark.parametrize("mixed", [True])  # local-only batches now run via LOCAL_BATCH_SENTINEL (test_local_batch_execution.py)
 def test_local_batches_rejected_before_any_entry_executes(monkeypatch, mixed):
     import model_tools
     from tools.tool_search import resolve_underlying_call, LOCAL_BATCH_SENTINEL
@@ -22,13 +22,13 @@ def test_local_batches_rejected_before_any_entry_executes(monkeypatch, mixed):
         {"name": "connectors__gmail__SEND_EMAIL" if mixed else "todo_list", "arguments": {}},
     ]
     name, _args, error = resolve_underlying_call({"calls": calls})
-    assert name is None and "exactly one entry" in error
+    assert name is None and "cannot mix local and connector" in error
     invoked = []
     monkeypatch.setattr(model_tools.registry, "dispatch", lambda *a, **kw: invoked.append(a))
     monkeypatch.setattr(bridge, "_default_client_factory", lambda call=None: invoked.append("gateway"))
     result = json.loads(model_tools.handle_function_call(
         "tool_call", {"calls": calls}, enabled_toolsets=["connections", "session_search", "todo"]))
-    assert "exactly one entry" in result["error"]
+    assert "cannot mix local and connector" in result["error"]
     assert invoked == []
 
 

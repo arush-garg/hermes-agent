@@ -5,6 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from tools.delegate_tool import DELEGATE_TASK_SCHEMA, _build_children, _resolve_task_routes
+from tools.delegate_tool_routes import TaskRoute
 from tools.delegate_tool_config import _resolve_child_runtime
 
 
@@ -91,8 +92,8 @@ def test_build_children_receives_distinct_credentials_and_route_policy():
          patch("tools.delegate_tool._build_child_preserving_parent_tools", side_effect=build):
         children, err = _build_children(
             [{"goal": "a"}, {"goal": "b"}], [None, None],
-            {**DEFAULT, "_per_task": [DEFAULT, selected]}, top_role="leaf", max_iterations=2,
-            parent_agent=PARENT, routing_cfg={"_per_task": [CONFIG, {"provider": "other"}]},
+            [TaskRoute(creds=DEFAULT, routing_cfg=CONFIG), TaskRoute(creds=selected, routing_cfg={"provider": "other"})],
+            top_role="leaf", max_iterations=2, parent_agent=PARENT,
             live_deleg_id=None, live_writers=[None, None],
         )
     assert err is None
@@ -127,7 +128,7 @@ def test_live_manifest_keeps_each_task_route(tmp_path, monkeypatch):
     import json
     from tools import delegation_live_log
 
-    monkeypatch.setattr(delegation_live_log, "live_transcript_root", lambda: tmp_path)
+    monkeypatch.setattr(delegation_live_log, "live_transcript_root", lambda home=None: tmp_path)
     (tmp_path / "deleg_test").mkdir()
     delegation_live_log._write_manifest(
         "deleg_test", [{"goal": "a"}, {"goal": "b"}], ["a.log", "b.log"],

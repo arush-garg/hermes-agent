@@ -129,6 +129,7 @@ def execute_shell_command(
     try:
         proc = subprocess.Popen(
             command,
+            stdin=subprocess.DEVNULL,  # never read the TUI's stdin
             **{k: v for k, v in kwargs.items() if k != "args"},
             cwd=cwd,
         )

@@ -61,12 +61,12 @@ from tools.delegate_tool_results import (
     _apply_summary_budget, _build_child_preserving_parent_tools, _run_child_lifecycle, _summarize_tool_arguments,
 )
 
-import json  # noqa: E402
+import json
 
 # job_id -> {status, n_tasks, completed, results, started_at, done_event}. Populated by async
 # delegate_task calls (async_mode=True) and consumed by get_delegate_result.
 _pending_jobs_lock = threading.Lock()
-_pending_jobs: Dict[str, Dict[str, Any]] = {}
+_pending_jobs: dict[str, dict[str, Any]] = {}
 
 _ROLES = frozenset({"leaf", "orchestrator"})
 
@@ -375,7 +375,7 @@ def _build_child_agent(
         )
     return child
 
-def _compressed_parent_history(parent_agent) -> Optional[List[Dict[str, Any]]]:
+def _compressed_parent_history(parent_agent) -> Optional[list[dict[str, Any]]]:
     """Return a deterministic pruned copy of the parent's persisted history.
 
     Feeds ``give_compressed_context``. The shared helper snapshots nested payloads before
@@ -493,7 +493,7 @@ def _build_children(
     task_list: list[dict[str, Any]], task_schemas: list[Optional[dict[str, Any]]], routes: list[Any], *,
     top_role: str, max_iterations: int, parent_agent,
     live_deleg_id: Optional[str], live_writers: list, task_images: Optional[list[Optional[list[str]]]] = None,
-    task_cwds: Optional[List[Optional[str]]] = None,
+    task_cwds: Optional[list[Optional[str]]] = None,
 ) -> tuple[list[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe), each on its task's route;
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
@@ -749,6 +749,12 @@ def delegate_task(
     from tools.delegation_live_log import create_live_transcripts
     live_deleg_id, live_writers, live_paths = create_live_transcripts(
         task_list, context, model=creds.get("model"), provider=creds.get("provider"),
+        # Per-task route for the manifest: the batch-level labels above are blank when tasks took
+        # different routes, so each task's own model/provider is recorded here.
+        task_routes=[{
+            "model": (r.creds or {}).get("model") or getattr(parent_agent, "model", None),
+            "provider": (r.creds or {}).get("provider") or getattr(parent_agent, "provider", None),
+        } for r in routes],
         home=_live_home,
     )
     if refused:  # settled before anything runs: transcripts and manifest show the refusal (async units skip them)
@@ -800,7 +806,7 @@ def _build_top_level_description(*, independent_completions=None) -> str:
 _DELIVERY_INDEPENDENT, _DELIVERY_JOINED = "each ungrouped task / `group` returns on its own", "one message per call"
 
 _DESCRIPTION_DELIVERY = (
-    "Sessions without a later-result consumer (including one-shot CLI and cron) join parallel children "
+    "Sessions without a later-result consumer (e.g. one-shot CLI, cron) join parallel children "
     "and return results in this tool call. "
     "Otherwise runs in the background: dispatch returns live transcript paths and results re-enter "
     "as a new message when subagents finish ({delivery}). Background results are delivered only "
@@ -1140,15 +1146,15 @@ registry.register(
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
-from concurrent.futures import TimeoutError as FuturesTimeoutError  # noqa: F401,E402
-import contextvars  # noqa: F401,E402
-import enum  # noqa: F401,E402
-import json  # noqa: F401,E402
-import os  # noqa: F401,E402
-import re  # noqa: F401,E402
-import threading  # noqa: F401,E402
-from urllib.parse import urlsplit  # noqa: F401,E402
-from urllib.parse import urlunsplit  # noqa: F401,E402
+from concurrent.futures import TimeoutError as FuturesTimeoutError
+import contextvars
+import enum
+import json
+import os
+import re
+import threading
+from urllib.parse import urlsplit
+from urllib.parse import urlunsplit
 
 
 _PLUGIN_COMPAT_LAZY = {

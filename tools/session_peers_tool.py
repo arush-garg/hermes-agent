@@ -184,7 +184,8 @@ def handle_sessions_peers(args: dict, **kw) -> str:
 SESSIONS_PEERS_SCHEMA = {
     "name": "sessions_peers",
     "description": (
-        "List the other live Hermes sessions on this machine, or send one a short text message by id. "
+        "List other live Hermes sessions on this machine, or message one by id. "
+        "Messages are short text only. "
         "The message arrives in that session like a /steer (mid-turn if it is busy, otherwise as its next "
         "turn), clearly marked as coming from this session — not from the user. Use it to hand over findings "
         "or ask a peer a question. Don't spam: one concise message beats many. No file transfer — pass file "

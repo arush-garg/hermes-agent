@@ -44,8 +44,8 @@ _DELIVER_MODES = ("local", "discord", "disposable")
 _NO_ACTION_TOKEN = "[NO_ACTION]"
 
 _lock = threading.Lock()
-_monitors: Dict[str, "MonitorState"] = {}  # uuid -> MonitorState
-_agent_registry: Dict[str, weakref.ref] = {}  # session_id -> weak agent ref
+_monitors: dict[str, MonitorState] = {}  # uuid -> MonitorState
+_agent_registry: dict[str, weakref.ref] = {}  # session_id -> weak agent ref
 
 
 @dataclass
@@ -73,7 +73,7 @@ class MonitorState:
 # ---------------------------------------------------------------------------
 
 
-def _load_persisted_monitors() -> List[dict]:
+def _load_persisted_monitors() -> list[dict]:
     """Load persisted monitor definitions from disk."""
     if not _MONITORS_FILE.exists():
         return []
@@ -198,7 +198,6 @@ def _cleanup_session(session_id: str) -> None:
     for mid in to_remove:
         state = _monitors.get(mid)  # already popped; use local ref
         # Re-fetch from the dict before pop to cancel timer
-        pass
     # Cancel timers (we popped above, so re-acquire to get state)
     with _lock:
         for mid, state in list(_monitors.items()):
@@ -519,8 +518,8 @@ def handle_list_monitors(args: dict, **kw) -> str:
 ADD_MONITOR_SCHEMA = {
     "name": "add_monitor",
     "description": (
-        "Set up a periodic monitor that injects a message into the "
-        "conversation every N seconds.  The message wakes the agent up to "
+        "Inject a message into the conversation every N seconds.  "
+        "This periodic monitor's message wakes the agent up to "
         "take action.  Use for periodic checks, reminders, or keeping the "
         "agent aware of changing state during long operations."
     ),
@@ -589,7 +588,7 @@ DELETE_MONITORS_SCHEMA = {
 LIST_MONITORS_SCHEMA = {
     "name": "list_monitors",
     "description": (
-        "List all active monitors for the current session, showing "
+        "List this session's active monitors.  Shows "
         "message, interval, ticks remaining, and tick count."
     ),
     "parameters": {

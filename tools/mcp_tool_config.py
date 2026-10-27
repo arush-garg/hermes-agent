@@ -551,14 +551,7 @@ def _packaged_npx_entry(command: str, args: list) -> Optional[tuple]:
     return node, [str(manifest.parent / bin_field), *rest[1:]]
 
 
-def _interpolate_env_vars(value):
-    """Recursively resolve ``${VAR}`` / Cursor ``${env:VAR}`` placeholders and context vars. Env
-    refs resolve from the active profile's secret scope when multiplexing (the routed profile's
-    value, not another profile's in ``os.environ``). Unset (or empty) vars keep the literal placeholder;
-    a templated string comes back as a ``_RenderedStr`` recording how it resolved."""
-
-
-def _split_env_default(expr: str) -> Tuple[str, Optional[str]]:
+def _split_env_default(expr: str) -> tuple[str, Optional[str]]:
     """Split a shell-style ``VAR:-default`` / ``VAR-default`` placeholder body into
     ``(name, default)``; ``(expr, None)`` when no default is present. Claude Code / Cursor
     ``.mcp.json`` files commonly carry ``${KEY:-fallback}``; without this the whole body was
@@ -574,7 +567,8 @@ def _interpolate_env_vars(value):
     """Recursively resolve ``${VAR}`` / Cursor ``${env:VAR}`` / shell ``${VAR:-default}``
     placeholders and context vars. Env refs resolve from the active profile's secret scope when
     multiplexing (the routed profile's value, not another profile's in ``os.environ``). Unset vars
-    fall back to their inline default when one is given, else keep the literal placeholder."""
+    fall back to their inline default when one is given, else keep the literal placeholder; a
+    templated string comes back as a ``_RenderedStr`` recording how it resolved."""
     from agent.secret_scope import get_secret as _get_secret
     if isinstance(value, str):
         if isinstance(value, _RenderedStr) and not value.missed:
@@ -590,8 +584,14 @@ def _interpolate_env_vars(value):
             resolved = _get_secret(_env_ref_name(name), "")
             if resolved:
                 return resolved
-            return default if default is not None else m.group(0)
-        return _ENV_VAR_PATTERN.sub(_replace, value)
+            if default is not None:
+                return default
+            missed.append(m.group(0))
+            return m.group(0)
+        if not _ENV_VAR_PATTERN.search(template):
+            return value
+        text = _ENV_VAR_PATTERN.sub(_replace, template)
+        return _RenderedStr(text, template, missed=bool(missed), unset_ref=missed == [template])
     if isinstance(value, dict):
         return {k: _interpolate_env_vars(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -741,7 +741,7 @@ def _translate_claude_mcp_entry(entry: dict) -> Optional[dict]:
     return None
 
 
-def _load_project_mcp_json(workspace_root: Optional[str] = None) -> Dict[str, dict]:
+def _load_project_mcp_json(workspace_root: Optional[str] = None) -> dict[str, dict]:
     """Load additive MCP servers from ``<workspace>/.mcp.json``.
 
     The file follows Claude/Cursor's ``{"mcpServers": {...}}`` shape. Invalid files or entries are
@@ -765,7 +765,7 @@ def _load_project_mcp_json(workspace_root: Optional[str] = None) -> Dict[str, di
     if not isinstance(entries, dict):
         return {}
 
-    servers: Dict[str, dict] = {}
+    servers: dict[str, dict] = {}
     for name, entry in entries.items():
         if not isinstance(name, str) or not name.strip():
             continue
