@@ -26,7 +26,7 @@ def test_title_create_if_missing_then_resume_by_title_is_deterministic(tmp_path,
         "model": {"provider": "custom", "default": "local-wire-stub", "base_url": model_url},
         "auxiliary": {"title_generation": {"enabled": False}},
     }), encoding="utf-8")
-    env = {k: os.environ[k] for k in ("PATH", "LANG", "TZ") if k in os.environ}
+    env = {k: os.environ[k] for k in ("PATH", "LANG", "TZ", "HERMES_DISABLE_LAZY_INSTALLS") if k in os.environ}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                PYTHONUNBUFFERED="1", OPENAI_API_KEY="loopback-only", OPENAI_BASE_URL=model_url)
     witness = tmp_path / "client-owner.json"

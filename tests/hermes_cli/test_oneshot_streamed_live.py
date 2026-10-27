@@ -37,7 +37,7 @@ def test_streamed_oneshot_prints_the_reply(tmp_path):
         "streaming": {"enabled": True},
         "model": {"provider": "custom", "default": "oneshot-model", "base_url": url},
         "auxiliary": {"title_generation": {"enabled": False}}}))
-    env = {k: os.environ[k] for k in ("PATH", "LANG", "TZ") if k in os.environ}
+    env = {k: os.environ[k] for k in ("PATH", "LANG", "TZ", "HERMES_DISABLE_LAZY_INSTALLS") if k in os.environ}
     env.update(HOME=str(user), USERPROFILE=str(user), HERMES_HOME=str(home), PYTHONPATH=str(root),
                PYTHONUNBUFFERED="1", OPENAI_API_KEY="loopback-only", OPENAI_BASE_URL=url)
 
