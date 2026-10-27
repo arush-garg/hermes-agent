@@ -32,11 +32,11 @@ def test_missing_explicit_bundle_falls_back_to_the_platform_store(tmp_path, capl
 
 
 def test_missing_bundle_under_a_cert_env_var_shares_the_platform_context(tmp_path, monkeypatch):
-    """With SSL_CERT_FILE exported the platform store is handed over as one
-    shared context (httpx would otherwise read the env var itself); a missing
-    bundle must land on that same object, not a second pool. The long-lived
-    clients' platform_ssl_context() honours the bundle ON TOP of the platform
-    store (as httpx verify=True did), cached once."""
+    """With SSL_CERT_FILE exported, every client gets the same shared context
+    (httpx would otherwise read the env var itself): the bundle ON TOP of the
+    platform store, as httpx verify=True did. macOS/Windows verifiers never read
+    the env var, so a platform-only context would drop the bundle there. A
+    missing explicit bundle lands on that same object, not a second pool."""
     import ssl
 
     import certifi
@@ -45,15 +45,21 @@ def test_missing_bundle_under_a_cert_env_var_shares_the_platform_context(tmp_pat
 
     monkeypatch.setattr(ssl_verify, "_CA_CONTEXTS", {})
     monkeypatch.setenv("SSL_CERT_FILE", certifi.where())
-    platform = resolve_httpx_verify()
-    assert platform is not True
-    assert resolve_httpx_verify(ca_bundle=str(tmp_path / "nope.pem")) is platform
+    shared = resolve_httpx_verify()
+    assert shared is not True
+    assert resolve_httpx_verify(ca_bundle=str(tmp_path / "nope.pem")) is shared
+    assert shared is ssl_verify.platform_ssl_context()
+    assert type(shared) is ssl.SSLContext  # truststore-injected: bundle + OS store
+    assert shared is ssl_verify._CA_CONTEXTS[(str(Path(certifi.where()).resolve()), True)]
 
-    bundle_ctx = ssl_verify.platform_ssl_context()
-    assert bundle_ctx is ssl_verify.platform_ssl_context()
-    assert bundle_ctx is not platform
-    assert type(bundle_ctx) is ssl.SSLContext  # truststore-injected: bundle + OS store
-    assert bundle_ctx is ssl_verify._CA_CONTEXTS[(str(Path(certifi.where()).resolve()), True)]
+
+def test_stale_cert_env_var_falls_back_to_the_platform_context(tmp_path, monkeypatch):
+    """A SSL_CERT_FILE pointing nowhere must not break client construction."""
+    from agent import ssl_verify
+
+    monkeypatch.setattr(ssl_verify, "_CA_CONTEXTS", {})
+    monkeypatch.setenv("SSL_CERT_FILE", str(tmp_path / "gone.pem"))
+    assert resolve_httpx_verify() is ssl_verify._CA_CONTEXTS[(None, False)]
 
 
 @pytest.mark.parametrize("value", [False, "false", "0", "no", "off", "FALSE"])

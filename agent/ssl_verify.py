@@ -337,7 +337,9 @@ def resolve_httpx_verify(
         )
     # HTTPX reads CA env vars before the injected verifier gets control. Pass
     # the platform context directly so stale paths cannot break construction;
-    # proxy environment handling remains enabled.
+    # proxy environment handling remains enabled. An existing SSL_CERT_FILE
+    # bundle is trusted on top of the platform store (platform_ssl_context):
+    # macOS/Windows verifiers never read the env var themselves.
     if os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"):
-        return _shared_context(None)
+        return platform_ssl_context()
     return _default_verify()
