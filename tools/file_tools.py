@@ -611,15 +611,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
     → negative-result cache → dedup stub → real read.
     """
     try:
-        offset, limit = normalize_read_pagination(offset, limit)
-
-        # On the RAW model-supplied string, before any expanduser()/resolve():
-        # on Windows resolving \??\UNC\host\share already sends SMB auth (NTLM
-        # leak); on POSIX the task-base join would anchor the prefix as a
-        # relative segment and hide it from every resolved-path check below.
+        # On the RAW model-supplied string, before any expanduser()/resolve() — and first of all,
+        # ahead of pagination (whose config read resolves HERMES_HOME): on Windows resolving
+        # \??\UNC\host\share already sends SMB auth (NTLM leak); on POSIX the task-base join
+        # would anchor the prefix as a relative segment and hide it from every resolved-path check.
         nt_err = get_nt_namespace_error(path, verb="Read")
         if nt_err:
             return tool_error(nt_err)
+
+        offset, limit = normalize_read_pagination(offset, limit)
 
         device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
         if _is_blocked_device(path, base_dir=device_base):
