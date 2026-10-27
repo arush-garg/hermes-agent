@@ -92,7 +92,8 @@ def run_session(tmp: Path) -> dict[str, Any]:
     ])
     nh = _home(tmp, "session", fake)
     args = (*FILE_ONLY, "--reasoning", "high")
-    turn1 = run_chat(nh, "Read note1.txt and tell me what it says.", env=fake.child_env(), args=args)
+    turn1 = run_chat(nh, "Read note1.txt and tell me what it says.", env=fake.child_env(), args=args,
+                     keep_gateway=True)  # turn 2 must reuse this daemon's token
     boundary = len(fake.requests)
     tokens_after_turn1 = len(fake.token_requests)
     sid = latest_session(nh) if turn1.returncode == 0 else None

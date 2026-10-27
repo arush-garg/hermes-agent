@@ -125,8 +125,11 @@ class ChatResult:
 
 
 def run_chat(nh: NativeHome, prompt: str, *, resume: str | None = None, env: dict[str, str] | None = None,
-             args: tuple[str, ...] = (), timeout: float = TURN_TIMEOUT) -> ChatResult:
-    """One real ``hermes chat -q`` turn (optionally ``--resume <id>``) against the fake provider."""
+             args: tuple[str, ...] = (), timeout: float = TURN_TIMEOUT, keep_gateway: bool = False) -> ChatResult:
+    """One real ``hermes chat -q`` turn (optionally ``--resume <id>``) against the fake provider.
+
+    The gateway the turn auto-starts is stopped afterwards unless ``keep_gateway`` (a follow-up turn
+    must reach the same daemon); otherwise it idles for ``unmanaged_idle_exit_seconds``."""
     argv = [sys.executable, "-m", "hermes_cli.main", "chat", "-q", prompt, "-Q", *args]
     if resume:
         argv += ["--resume", resume]
@@ -135,7 +138,8 @@ def run_chat(nh: NativeHome, prompt: str, *, resume: str | None = None, env: dic
         proc = subprocess.run(argv, cwd=nh.project, env=nh.env(env), capture_output=True, text=True,
                               timeout=timeout, stdin=subprocess.DEVNULL, check=False)
     finally:
-        stop_home_gateway(nh.hermes_home)
+        if not keep_gateway:
+            stop_home_gateway(nh.hermes_home)
     return ChatResult(proc.returncode, proc.stdout, proc.stderr, time.monotonic() - started)
 
 
