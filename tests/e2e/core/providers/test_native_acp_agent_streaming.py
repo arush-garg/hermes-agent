@@ -33,6 +33,7 @@ from typing import Any, Callable
 
 import pytest
 
+from tests.e2e.core._pool import pool_workers
 from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers._native_helpers import TURN_TIMEOUT, KnownSymptom, NativeHome, make_home
 from tests.fakes.providers import fake_acp_agent as acp
@@ -196,7 +197,7 @@ SURFACES: dict[str, Callable[[Path], Observed]] = {"tui_stream": _tui_gateway, "
 @pytest.fixture(scope="module")
 def observed(tmp_path_factory: pytest.TempPathFactory):
     base = tmp_path_factory.mktemp("acp_agent_stream")
-    with ThreadPoolExecutor(max_workers=len(SURFACES)) as pool:
+    with ThreadPoolExecutor(max_workers=pool_workers(len(SURFACES))) as pool:
         futures = {name: pool.submit(fn, base / name) for name, fn in SURFACES.items()}
         done = {name: fut.result() for name, fut in futures.items()}
     yield done

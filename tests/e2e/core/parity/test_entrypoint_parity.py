@@ -38,6 +38,7 @@ from typing import Callable
 
 import pytest
 
+from tests.e2e.core._pool import pool_workers
 from tests.e2e.core.parity import _drive_acp, _drive_cli, _drive_cron, _drive_gateway, _drive_rpc
 from tests.e2e.core.parity._helpers import (
     FINAL_ANSWER,
@@ -144,7 +145,7 @@ def matrix(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Row]:
     Everything, including the orphan sweep, completes during setup, while the
     first test's live-guard bypass is in effect."""
     roots = {ep: tmp_path_factory.mktemp(f"parity{i}") for i, ep in enumerate(DRIVERS)}
-    with ThreadPoolExecutor(max_workers=len(DRIVERS), thread_name_prefix="parity") as pool:
+    with ThreadPoolExecutor(max_workers=pool_workers(len(DRIVERS)), thread_name_prefix="parity") as pool:
         futures = {ep: pool.submit(_run_row, ep, roots[ep]) for ep in DRIVERS}
         rows = {ep: fut.result() for ep, fut in futures.items()}
     out = os.environ.get("PARITY_TABLE_OUT")

@@ -40,6 +40,7 @@ from typing import Any, Callable
 
 import pytest
 
+from tests.e2e.core._pool import pool_workers
 from tests.e2e.core.chaos._helpers import (
     API_MAX_RETRIES,
     INTERRUPT_DEADLINE_S,
@@ -417,7 +418,7 @@ def runs(request, tmp_path_factory) -> dict[str, Future]:
         if item.module is request.module and hasattr(item, "callspec")
         and "scenario_id" in item.callspec.params
     ]
-    pool = ThreadPoolExecutor(max_workers=SCENARIO_WORKERS, thread_name_prefix="chaos")
+    pool = ThreadPoolExecutor(max_workers=pool_workers(SCENARIO_WORKERS), thread_name_prefix="chaos")
     futures = {
         sid: pool.submit(Run(BY_ID[sid], tmp_path_factory.mktemp(sid)).execute)
         for sid in dict.fromkeys(selected)

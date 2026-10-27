@@ -28,6 +28,7 @@ from typing import Callable, Iterator
 
 import pytest
 
+from tests.e2e.core._pool import pool_workers
 from tests.e2e.core.upgrade import _helpers as H
 from tests.e2e.core.upgrade import _install_helpers as I
 from tests.e2e.core.upgrade.git._smart_http import GitHTTPServer, serve_bare
@@ -244,7 +245,7 @@ def in_parallel(jobs: dict[str, Callable[[], object]]) -> dict[str, object]:
     """Run independent scenarios concurrently; each value is the job's result or the exception it
     raised (re-raised by the cell that reads it, so one broken install fails only its own cells)."""
     out: dict[str, object] = {}
-    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+    with ThreadPoolExecutor(max_workers=pool_workers(len(jobs))) as pool:
         futures = {name: pool.submit(job) for name, job in jobs.items()}
         for name, fut in futures.items():
             try:

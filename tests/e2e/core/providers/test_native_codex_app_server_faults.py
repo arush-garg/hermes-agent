@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from tests.e2e.core._pool import pool_workers
 from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers._native_helpers import KnownSymptom, messages, wait_until
 from tests.fakes.providers.codex_app_server import CodexRun, pid_alive, run_codex_scenario
@@ -65,7 +66,7 @@ SCENARIOS = {
 
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory) -> Iterator[dict[str, CodexRun]]:
-    with ThreadPoolExecutor(max_workers=len(SCENARIOS)) as pool:
+    with ThreadPoolExecutor(max_workers=pool_workers(len(SCENARIOS))) as pool:
         futures = {name: pool.submit(run_codex_scenario, tmp_path_factory.mktemp(f"codex_{name}"), **spec)
                    for name, spec in SCENARIOS.items()}
         done = {name: future.result() for name, future in futures.items()}

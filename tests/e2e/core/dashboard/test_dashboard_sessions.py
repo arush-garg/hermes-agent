@@ -36,6 +36,7 @@ WRITE_SECONDS = 8.0
 _WRITER = r"""
 import sys, time
 from hermes_state import SessionDB
+from tests.e2e.core._pool import pool_workers
 deadline = time.monotonic() + float(sys.argv[1])
 db = SessionDB()
 n = 0
@@ -142,7 +143,7 @@ def test_session_routes_stay_consistent_under_a_concurrent_writer(env) -> None:
             series.append(r.json()["total"])
         return out
 
-    with ThreadPoolExecutor(max_workers=5) as pool:
+    with ThreadPoolExecutor(max_workers=pool_workers(5)) as pool:
         futs = [pool.submit(reader) for _ in range(4)] + [pool.submit(ordered)]
         for f in futs:
             problems += f.result(timeout=WRITE_SECONDS + 120)

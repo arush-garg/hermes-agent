@@ -26,6 +26,7 @@ import pytest
 import hermes_yaml as yaml
 
 from . import _helpers as H
+from tests.e2e.core._pool import pool_workers
 
 pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="POSIX dashboard process")
 
@@ -120,7 +121,7 @@ def test_interleaved_profile_requests_never_cross(fleet) -> None:
                 out.append(f"{name}: session total {total} != {SEEDS[name]}")
         return out
 
-    with ThreadPoolExecutor(max_workers=6) as pool:
+    with ThreadPoolExecutor(max_workers=pool_workers(6)) as pool:
         problems = [x for f in [pool.submit(hammer, n) for n in NAMES * 2] for x in f.result(timeout=240)]
     assert not problems, "interleaved profile requests crossed:\n  " + "\n  ".join(problems[:30])
     leaks = [f"{p.name}: {path.relative_to(p.home)} carries {leak}"

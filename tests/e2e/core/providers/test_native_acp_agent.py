@@ -36,6 +36,7 @@ from typing import Any, Callable
 
 import pytest
 
+from tests.e2e.core._pool import pool_workers
 from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers._native_helpers import (
     ChatResult,
@@ -178,7 +179,7 @@ SCENARIOS: dict[str, Callable[[Path], Scenario]] = {"flow": _flow, "late": _late
 @pytest.fixture(scope="module")
 def outcomes(tmp_path_factory: pytest.TempPathFactory):
     base = tmp_path_factory.mktemp("acp_agent")
-    with ThreadPoolExecutor(max_workers=len(SCENARIOS)) as pool:
+    with ThreadPoolExecutor(max_workers=pool_workers(len(SCENARIOS))) as pool:
         futures = {name: pool.submit(fn, base / name) for name, fn in SCENARIOS.items()}
         done = {name: fut.result() for name, fut in futures.items()}
     yield done

@@ -26,6 +26,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.e2e.core._pool import pool_workers
 from tests.e2e.core.providers._catalog_helpers import (
     Known, Row, decoy_keys, discover_catalog, gate, hermetic_env, known_gate, write_home,
 )
@@ -110,7 +111,7 @@ def _probe(row: Row, root: Path, kind: str) -> dict:
 def probes(tmp_path_factory: pytest.TempPathFactory) -> dict[tuple[str, str], dict]:
     jobs = [(r, k) for r in ROWS for k in ("list", "switch")] + [
         (r, k) for r in CONTROL_ROWS for k in ("list404", "listhang")]
-    with ThreadPoolExecutor(max_workers=8, thread_name_prefix="listing") as pool:
+    with ThreadPoolExecutor(max_workers=pool_workers(8), thread_name_prefix="listing") as pool:
         futs = {(r.name, k): pool.submit(_probe, r, Path(tmp_path_factory.mktemp(f"{k}-{r.name}")), k)
                 for r, k in jobs}
         return {key: f.result() for key, f in futs.items()}

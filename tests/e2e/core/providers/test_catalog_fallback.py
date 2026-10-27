@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.e2e.core._pool import pool_workers
 from tests.e2e.core.providers._catalog_helpers import (
     AUTH_HEADER_OF_DIALECT, FINAL, Known, Row, decoy_keys, discover_catalog, gate, known_gate, run_hermes, write_home,
 )
@@ -75,7 +76,7 @@ def _drive(primary: Row, fallback: Row, root: Path) -> dict:
 @pytest.fixture(scope="module")
 def results(tmp_path_factory: pytest.TempPathFactory) -> dict[str, dict]:
     pairs = {r.name: (r, ROWS[(i + 1) % len(ROWS)]) for i, r in enumerate(ROWS)}
-    with ThreadPoolExecutor(max_workers=8, thread_name_prefix="fallback") as pool:
+    with ThreadPoolExecutor(max_workers=pool_workers(8), thread_name_prefix="fallback") as pool:
         futs = {n: pool.submit(_drive, p, f, Path(tmp_path_factory.mktemp(f"fb-{n}"))) for n, (p, f) in pairs.items()}
         out = {n: f.result() for n, f in futs.items()}
     for n, (_p, f) in pairs.items():

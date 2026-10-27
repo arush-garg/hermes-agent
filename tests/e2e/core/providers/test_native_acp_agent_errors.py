@@ -27,6 +27,7 @@ from typing import Any
 
 import pytest
 
+from tests.e2e.core._pool import pool_workers
 from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers._native_helpers import (
     ChatResult,
@@ -116,7 +117,7 @@ def _drive(root: Path, row: Row) -> Outcome:
 @pytest.fixture(scope="module")
 def outcomes(tmp_path_factory: pytest.TempPathFactory):
     base = tmp_path_factory.mktemp("acp_agent_errors")
-    with ThreadPoolExecutor(max_workers=len(ROWS)) as pool:
+    with ThreadPoolExecutor(max_workers=pool_workers(len(ROWS))) as pool:
         futures = {name: pool.submit(_drive, base / name, row) for name, row in ROWS.items()}
         done = {name: fut.result() for name, fut in futures.items()}
     yield done

@@ -30,6 +30,7 @@ from urllib.parse import urlsplit
 import pytest
 import hermes_yaml as yaml
 
+from tests.e2e.core._pool import pool_workers
 from tests.e2e.core._gateway_reaper import stop_home_gateway
 from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core._pm_dependencies import select_test_dependencies
@@ -374,7 +375,7 @@ def drive_shard(shard: int, tmp_path_factory: pytest.TempPathFactory) -> dict[st
     catalog = discover_catalog()
     runnable = [r for r in shard_rows(shard) if r.skip_reason() is None and r.dialect]
     roots = {r.name: Path(tmp_path_factory.mktemp(f"cat-{r.name}")) for r in runnable}
-    with ThreadPoolExecutor(max_workers=8, thread_name_prefix="catalog") as pool:
+    with ThreadPoolExecutor(max_workers=pool_workers(8), thread_name_prefix="catalog") as pool:
         futs = {r.name: pool.submit(drive_turn, r, roots[r.name], catalog) for r in runnable}
         return {name: f.result() for name, f in futs.items()}
 

@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 
 import pytest
 
+from tests.e2e.core._pool import pool_workers
 from tests.fakes.fake_llm_provider import MODEL_ID, Error, ToolCall
 
 from ._routing_helpers import (
@@ -295,7 +296,7 @@ def _run_case(case: Case, root: Path) -> tuple[Fleet, list[LegOutcome]]:
 def cli_outcomes(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
     """All CLI scenarios run concurrently (each owns its own fleet and HOME)."""
     root = tmp_path_factory.mktemp("c11-cli")
-    with cf.ThreadPoolExecutor(max_workers=6, thread_name_prefix="c11-case") as pool:
+    with cf.ThreadPoolExecutor(max_workers=pool_workers(6), thread_name_prefix="c11-case") as pool:
         futures = {case.id: pool.submit(_run_case, case, root) for case in CASES}
         return {cid: fut for cid, fut in futures.items()}
 

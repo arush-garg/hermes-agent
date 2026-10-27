@@ -25,6 +25,7 @@ import pytest
 
 pytest.importorskip("google.auth", reason="Vertex minting needs google-auth (CI installs it)")
 
+from tests.e2e.core._pool import pool_workers
 from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers._native_helpers import (
     ChatResult,
@@ -123,7 +124,7 @@ SCENARIOS: dict[str, Callable[[Path], dict[str, Any]]] = {
 @pytest.fixture(scope="module")
 def results(tmp_path_factory: pytest.TempPathFactory) -> Any:
     tmp = tmp_path_factory.mktemp("vertex_tools")
-    with ThreadPoolExecutor(max_workers=len(SCENARIOS)) as pool:
+    with ThreadPoolExecutor(max_workers=pool_workers(len(SCENARIOS))) as pool:
         futures = {name: pool.submit(fn, tmp) for name, fn in SCENARIOS.items()}
         out = {name: f.result() for name, f in futures.items()}
     yield out
