@@ -157,7 +157,9 @@ def probe(tmp_path):
                 assert all('LAUNCH_POLICY_OK' in x for x in pool.map(cli, keys))
             after = config.read_bytes()
             assert after == before, (after, sorted(str(x.relative_to(home)) for x in home.rglob('*') if 'config' in x.name))
-            cfg['agent'] = {'reasoning_effort': 'none', 'max_turns': 40}
+            # max_auto_continue=0: this probe measures the max_turns budget stop (exit 1 + the tool-carrying summary
+            # round); the fork's default auto-continue would instead compact (a tool-less summarizer call) and go on.
+            cfg['agent'] = {'reasoning_effort': 'none', 'max_turns': 40, 'max_auto_continue': 0}
             config.write_text(json.dumps(cfg))
             for side in keys:
                 assert 'LAUNCH_POLICY_OK' in cli(side, sessions[side])
