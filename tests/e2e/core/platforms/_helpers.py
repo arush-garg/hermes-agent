@@ -60,6 +60,8 @@ def hermetic_env(home: Path, extra: Optional[dict[str, str]] = None) -> dict[str
         AWS_EC2_METADATA_DISABLED="true",
     )
     env.update(extra or {})
+    env["HERMES_NO_LAUNCHD"] = "1"  # never bootstrap a real launchd job from a test child
+    env.setdefault("HERMES_DISABLE_LAZY_INSTALLS", "1")  # a temp HOME would otherwise run a full dependency sync
     return env
 
 

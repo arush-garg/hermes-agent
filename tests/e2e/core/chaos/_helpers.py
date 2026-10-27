@@ -133,6 +133,8 @@ def hermetic_env(home: Path, hermes_home: Path, tag: str) -> dict[str, str]:
         "TZ": "UTC",
         "NO_COLOR": "1",
     })
+    env["HERMES_NO_LAUNCHD"] = "1"  # never bootstrap a real launchd job from a test child
+    env.setdefault("HERMES_DISABLE_LAZY_INSTALLS", "1")  # a temp HOME would otherwise run a full dependency sync
     return env
 
 

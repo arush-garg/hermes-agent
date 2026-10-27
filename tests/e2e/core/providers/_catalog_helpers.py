@@ -30,6 +30,7 @@ from urllib.parse import urlsplit
 import pytest
 import hermes_yaml as yaml
 
+from tests.e2e.core._gateway_reaper import stop_home_gateway
 from tests.e2e.core._pending_fixes import known_failure
 from tests.e2e.core._pm_dependencies import select_test_dependencies
 from tests.fakes.providers.catalog_fake import USAGE_IN, USAGE_OUT, CatalogFake, Recorded
@@ -204,6 +205,8 @@ def hermetic_env(home: Path, extra: dict[str, str]) -> dict[str, str]:
         "HERMES_STATE_DB_GUARD_BYPASS": "1",
     })
     env.update(extra)
+    env["HERMES_NO_LAUNCHD"] = "1"  # never bootstrap a real launchd job from a test child
+    env.setdefault("HERMES_DISABLE_LAZY_INSTALLS", "1")  # a temp HOME would otherwise run a full dependency sync
     return env
 
 
@@ -233,6 +236,8 @@ def run_hermes(home: Path, cwd: Path, env_extra: dict[str, str], *args: str,
             proc.kill()
             proc.wait()
             rc, why = -9, f"\nTIMEOUT after {timeout}s"
+        finally:
+            stop_home_gateway(home / ".hermes")
         out.seek(0)
         err.seek(0)
         return subprocess.CompletedProcess(proc.args, rc, out.read(), err.read() + why)

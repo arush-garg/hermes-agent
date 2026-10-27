@@ -31,6 +31,18 @@ _reset_version_info_cache()
 
 E2E_MESSAGE_SETTLE_DELAY = 0.3
 
+
+@pytest.fixture(autouse=True)
+def _stop_auto_started_gateways(request):
+    """Stop every gateway whose home lives under this test's ``tmp_path`` (see _gateway_reaper)."""
+    yield
+    if "tmp_path" not in request.fixturenames:
+        return
+    from tests.e2e.core._gateway_reaper import stop_home_gateway
+
+    for pid_file in request.getfixturevalue("tmp_path").rglob("gateway.pid"):
+        stop_home_gateway(pid_file.parent)
+
 # Platform library mocks
 
 # Ensure telegram module is available (mock it if not installed)

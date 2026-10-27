@@ -36,13 +36,16 @@ def _budget(deadline: float | None, cap: float) -> float:
 # would outlive the test and run in the developer's real GUI session. The one test that needs real
 # launchd sets ALLOW_ENV.
 _TEST_MARKER_ENV = "HERMES_TEST_ISOLATION"
+# Hermetic e2e children strip HERMES_* (including the marker above) but carry this narrow opt-out.
+_NO_LAUNCHD_ENV = "HERMES_NO_LAUNCHD"
 _ALLOW_IN_TESTS_ENV = "HERMES_ALLOW_LAUNCHD_IN_TESTS"
 
 
 def _launchctl(*args: str, timeout: float) -> subprocess.CompletedProcess[str] | None:
     if timeout <= 0:
         return None
-    if (args and args[0] == "bootstrap" and os.environ.get(_TEST_MARKER_ENV)
+    if (args and args[0] == "bootstrap"
+            and (os.environ.get(_TEST_MARKER_ENV) or os.environ.get(_NO_LAUNCHD_ENV))
             and not os.environ.get(_ALLOW_IN_TESTS_ENV)):
         return None  # as if launchd had no GUI session: the caller starts a plain child
     try:

@@ -73,6 +73,8 @@ def hermetic_env(home: Path, hermes_home: Path | None = None, proxy: str | None 
     if proxy:
         env.update(HTTP_PROXY=proxy, HTTPS_PROXY=proxy, ALL_PROXY=proxy, http_proxy=proxy, https_proxy=proxy,
                    all_proxy=proxy, NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost")
+    env["HERMES_NO_LAUNCHD"] = "1"  # never bootstrap a real launchd job from a test child
+    env.setdefault("HERMES_DISABLE_LAZY_INSTALLS", "1")  # a temp HOME would otherwise run a full dependency sync
     return env
 
 
