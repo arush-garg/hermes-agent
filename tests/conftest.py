@@ -454,20 +454,19 @@ def _reset_foreground_exit_fence():
         base._exit_fenced = False
 
 
-@pytest.fixture(autouse=True)
-def _refuse_launchd_bootstrap(request, tmp_path_factory, monkeypatch):
+@pytest.fixture(scope="session", autouse=True)
+def _launchctl_shim_dir(tmp_path_factory):
     """Never let a test register a real job in the developer's GUI launchd session.
 
     ``start_gateway_job`` bootstraps a one-off ``com.nousresearch.hermes.runtime.*`` job that outlives
     the test and the gateway it launches. It runs in the code under test AND in the ``hermes`` children
     those tests spawn, so the guard is a ``launchctl`` shim first on PATH (children inherit it): a
     ``bootstrap``/``submit`` fails like "no GUI session" (callers fall back to a plain child); every
-    other verb reaches the real binary. The module's own real-launchd test opts out by living in its file."""
+    other verb reaches the real binary. Session-scoped so it is already on PATH when a module-scoped
+    fixture drives its batch of CLI children (a function fixture comes up only after those ran)."""
     real = shutil.which("launchctl") if sys.platform == "darwin" else None
-    if request.node.path.name == "test_gateway_launchd_runtime.py":
-        monkeypatch.setenv("HERMES_ALLOW_LAUNCHD_IN_TESTS", "1")  # the in-code guard, too
-        return
     if real is None:
+        yield None
         return
     shim_dir = tmp_path_factory.mktemp("launchctl-shim")
     shim = shim_dir / "launchctl"
@@ -476,7 +475,30 @@ def _refuse_launchd_bootstrap(request, tmp_path_factory, monkeypatch):
         'case "$1" in bootstrap|submit|load) echo "launchctl $1 refused under pytest" >&2; exit 1;; esac\n'
         f'exec {real} "$@"\n')
     shim.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    saved = os.environ.get("PATH")
+    os.environ["PATH"] = f"{shim_dir}{os.pathsep}{saved or ''}"
+    yield shim_dir
+    if saved is None:
+        os.environ.pop("PATH", None)
+    else:
+        os.environ["PATH"] = saved
+
+
+@pytest.fixture(autouse=True)
+def _refuse_launchd_bootstrap(request, _launchctl_shim_dir, monkeypatch):
+    """Keep the session shim first on PATH for every test (a test may have rewritten PATH); the
+    module's own real-launchd test opts out by living in its file."""
+    if request.node.path.name == "test_gateway_launchd_runtime.py":
+        monkeypatch.setenv("HERMES_ALLOW_LAUNCHD_IN_TESTS", "1")  # the in-code guard, too
+        if _launchctl_shim_dir is not None:
+            monkeypatch.setenv("PATH", os.pathsep.join(
+                p for p in os.environ.get("PATH", "").split(os.pathsep) if p != str(_launchctl_shim_dir)))
+        return
+    if _launchctl_shim_dir is None:
+        return
+    path = os.environ.get("PATH", "")
+    if not path.startswith(f"{_launchctl_shim_dir}{os.pathsep}"):
+        monkeypatch.setenv("PATH", f"{_launchctl_shim_dir}{os.pathsep}{path}")
 
 
 @pytest.fixture(autouse=True)

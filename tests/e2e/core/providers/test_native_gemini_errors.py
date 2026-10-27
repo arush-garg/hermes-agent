@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.e2e.core._pool import pool_workers
 from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers import _native_helpers as nh
 from tests.fakes.providers.gemini_native import (
@@ -94,7 +95,7 @@ def _run(root: Path, name: str, case: Case) -> Outcome:
 @pytest.fixture(scope="module")
 def outcomes(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Outcome]:
     base = tmp_path_factory.mktemp("gemini_errors")
-    with ThreadPoolExecutor(len(CASES)) as pool:
+    with ThreadPoolExecutor(pool_workers(len(CASES))) as pool:
         futures = {name: pool.submit(_run, base, name, case) for name, case in CASES.items()}
         return {name: f.result() for name, f in futures.items()}
 

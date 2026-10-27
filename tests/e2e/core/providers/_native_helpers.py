@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 import hermes_yaml as yaml
 from hermes_cli.observability.shared_metrics_consent import OFFER_VERSION
+from tests.e2e.core._gateway_reaper import stop_home_gateway
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 TURN_TIMEOUT = 180.0
@@ -79,6 +80,8 @@ class NativeHome:
             "NO_GCE_CHECK": "True",
         })
         env.update(extra or {})
+        env["HERMES_NO_LAUNCHD"] = "1"  # never bootstrap a real launchd job from a test child
+        env.setdefault("HERMES_DISABLE_LAZY_INSTALLS", "1")  # a temp HOME would otherwise run a full dependency sync
         return env
 
 
@@ -128,8 +131,11 @@ def run_chat(nh: NativeHome, prompt: str, *, resume: str | None = None, env: dic
     if resume:
         argv += ["--resume", resume]
     started = time.monotonic()
-    proc = subprocess.run(argv, cwd=nh.project, env=nh.env(env), capture_output=True, text=True,
-                          timeout=timeout, stdin=subprocess.DEVNULL, check=False)
+    try:
+        proc = subprocess.run(argv, cwd=nh.project, env=nh.env(env), capture_output=True, text=True,
+                              timeout=timeout, stdin=subprocess.DEVNULL, check=False)
+    finally:
+        stop_home_gateway(nh.hermes_home)
     return ChatResult(proc.returncode, proc.stdout, proc.stderr, time.monotonic() - started)
 
 

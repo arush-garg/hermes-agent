@@ -20,6 +20,7 @@ import pytest
 
 pytest.importorskip("botocore")
 
+from tests.e2e.core._pool import pool_workers
 from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers._native_helpers import (
     ChatResult, KnownSymptom, NativeHome, latest_session, make_home, messages, run_chat, session_ids, tool_calls_of,
@@ -141,7 +142,7 @@ SCENARIOS: dict[str, Callable[[Path], dict[str, Any]]] = {
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory: pytest.TempPathFactory) -> dict[str, dict[str, Any]]:
     base = tmp_path_factory.mktemp("bedrock_turns")
-    with ThreadPoolExecutor(len(SCENARIOS)) as pool:
+    with ThreadPoolExecutor(pool_workers(len(SCENARIOS))) as pool:
         futures = {name: pool.submit(fn, base / name) for name, fn in SCENARIOS.items()}
         return {name: fut.result() for name, fut in futures.items()}
 

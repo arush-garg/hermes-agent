@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from tests.e2e.core._pool import pool_workers
 from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.providers import _native_helpers as nh
 from tests.fakes.providers.gemini_native import HERMES_ENV, Call, Calls, GeminiFake, Recorded, Text, hermes_model
@@ -128,7 +129,7 @@ SCENARIOS = {"v1beta": (HOSTILE, None), "v1": (HOSTILE, V1), "v1_itemless": (ITE
 @pytest.fixture(scope="module")
 def outcomes(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Outcome]:
     base = tmp_path_factory.mktemp("gemini_schema")
-    with ThreadPoolExecutor(len(SCENARIOS)) as pool:
+    with ThreadPoolExecutor(pool_workers(len(SCENARIOS))) as pool:
         futures = {k: pool.submit(_scenario, base / k, *v) for k, v in SCENARIOS.items()}
         return {k: f.result() for k, f in futures.items()}
 
