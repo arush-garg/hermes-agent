@@ -65,6 +65,8 @@ export const prepareSlashSubmission = (display: string, tokens: ComposerToken[])
   display
 })
 
+export const shouldQueueDuringCompaction = (state: Pick<ReturnType<typeof getUiState>, 'compacting'>) => state.compacting
+
 export const shouldInterpolateSubmission = (display: string) => hasInterpolation(display)
 
 /**
@@ -127,7 +129,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       showUserMessage = true,
       displayText?: string,
       expandOverride?: (value: string) => string,
-      submitOpts: { attachments?: Array<{ path: string; mime: string }>; skipDetectDrop?: boolean; destination?: SubmissionDestination; queueItem?: QueueItem; behindTurn?: boolean } = {}
+      submitOpts: { attachments?: Array<{ path: string; mime: string }>; keepCurrentModel?: boolean; skipDetectDrop?: boolean; destination?: SubmissionDestination; queueItem?: QueueItem; behindTurn?: boolean } = {}
     ) => {
       // Read tokens off the ref, not render state: a paste immediately followed
       // by Enter submits before React has re-rendered with the new token.
@@ -411,6 +413,15 @@ export function useSubmission(opts: UseSubmissionOptions) {
       const unbound = !live.sid || live.gatewayConnected === false
 
       if (unbound) {
+        composerActions.pushHistory(toHistory)
+        journaled(() => composerActions.enqueue(submission.text, submission.display, destination, submission.attachments))
+
+        return
+      }
+
+      // Auto/preflight compaction can run while the turn is otherwise idle without setting `busy`.
+      // Treat it like an active turn: the prompt waits in the client queue and drains on `compacted`.
+      if (shouldQueueDuringCompaction(live)) {
         composerActions.pushHistory(toHistory)
         journaled(() => composerActions.enqueue(submission.text, submission.display, destination, submission.attachments))
 

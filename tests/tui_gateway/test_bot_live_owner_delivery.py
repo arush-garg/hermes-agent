@@ -71,28 +71,44 @@ def test_imported_crash_marker_never_autocontinues(tmp_path):
 
 
 def test_viewer_poller_never_discovers_or_claims_bot_execution(monkeypatch, tmp_path):
+    import logging
     import queue
     import time
     import tools.bot_live_delivery as mailbox
     from tools.process_registry import process_registry
-    calls = []
-    monkeypatch.setattr(mailbox, 'find_canonical_live_owner', lambda home: calls.append(home))
+    from tui_gateway.session_lifecycle import _session_turn_admission
+    owners, claims = [], []
+    # A mailbox exists, but this viewer's lease/live id owns nothing in it: the poll may look the owner
+    # up, and must stop there — the canonical owner's process executes that delivery, not a viewer.
+    monkeypatch.setattr(mailbox, 'has_mailbox', lambda home: True)
+    monkeypatch.setattr(mailbox, 'find_canonical_live_owner',
+                        lambda home: (owners.append(home), None)[1])
+    monkeypatch.setattr(mailbox, 'claim_pending_delivery',
+                        lambda home, owner: (claims.append((home, owner)), None)[1])
     stop = threading.Event()
     events = queue.Queue()
     events.put({'type': 'owned-completion'})
     monkeypatch.setattr(process_registry, 'completion_queue', events)
     delivered = []
-    poll = rebind(session_notifications._notification_poller_scoped_loop, {
+    noop = lambda *a, **kw: None
+    g = {
         'time': time, '_LOOP_POLL_SECONDS': 0, '_KANBAN_POLL_SECONDS': 0,
-        '_poll_bot_live_delivery_once': lambda *a: calls.append('legacy-claim'),
-        '_maybe_fire_tui_loop_tick': lambda *a: None,
-        '_maybe_fire_tui_heartbeat_tick': lambda *a: None,
-        '_notif_poll_kanban': lambda *a: None,
+        '_BOT_DELIVERY_POLL_SECONDS': 0, '_PEER_INBOX_POLL_SECONDS': 0,
+        'logger': logging.getLogger(__name__),
+        '_poll_peer_inbox_guarded': noop,
+        '_maybe_fire_tui_loop_tick': noop, '_maybe_fire_tui_wait_tick': noop,
+        '_maybe_fire_tui_heartbeat_tick': noop, '_notif_poll_kanban': noop,
+        '_notif_log_failure': noop,
         '_session_profile_runtime_scope': lambda session: contextlib.nullcontext(),
         '_session_home': lambda session: tmp_path,
+        '_session_turn_admission': _session_turn_admission,
         '_notif_handle_ready': lambda sid, session, ready, *a, **kw: (delivered.extend(ready), stop.set()),
-    })
+    }
+    g['_poll_bot_live_delivery_once'] = rebind(session_notifications._poll_bot_live_delivery_once, g)
+    g['_poll_bot_live_delivery_guarded'] = rebind(session_notifications._poll_bot_live_delivery_guarded, g)
+    poll = rebind(session_notifications._notification_poller_scoped_loop, g)
     poll(stop, 'live', {'agent': object(), 'history_lock': threading.RLock(), 'session_key': 'chat',
                       'active_session_lease': SimpleNamespace(lease_id='lease', released=False)})
     assert delivered == [{'type': 'owned-completion'}]
-    assert calls == []
+    assert owners == [tmp_path]
+    assert claims == []

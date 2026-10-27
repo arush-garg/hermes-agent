@@ -42,6 +42,7 @@ SURFACE_SPECIFIC = {
     "commands": "gateway: paginated command list (TUI has /help + completion)",
     "restart": "gateway: restart the messaging gateway process",
     "platform": "gateway: per-platform settings",
+    "discard": "gateway: drop a turn lost to a restart so the chat queue runs again",
 }
 
 # Worker-routed handlers that touch self.agent but degrade correctly without one.
@@ -211,10 +212,10 @@ def test_tui_context_and_refine_use_the_live_agent(monkeypatch):
     assert kw["messages_snapshot"] == session["history"]
     assert "(focus: naming)" in out
 
-    # No live agent: /refine says so; /context falls through (None) to the existing route.
+    # No live agent: /refine says so; /context answers from persisted session state (no breakdown grid).
     bare = _live_session(None, [])
     assert server._live_slash_command_output("sid", bare, "refine", "") == "Nothing to refine yet — send a message first."
-    assert server._live_slash_command_output("sid", bare, "context", "") is None
+    assert "GRID" not in (server._live_slash_command_output("sid", bare, "context", "") or "")
 
 
 def test_tui_palette_answers_instead_of_opening_a_headless_modal():

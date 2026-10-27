@@ -52,7 +52,7 @@ def server_write_error(name: str, origins: Mapping[str, tuple[str, str | None]])
     return None
 
 
-def summarize_server(name: str, cfg: dict, plugin: str | None = None) -> dict[str, Any]:
+def summarize_server(name: str, cfg: dict, plugin: str | None = None, source: str | None = None) -> dict[str, Any]:
     from hermes_cli.mcp_config import _oauth_tokens_present
     from tools.mcp_tool_common import mcp_server_enabled
 
@@ -73,7 +73,7 @@ def summarize_server(name: str, cfg: dict, plugin: str | None = None) -> dict[st
         "oauth_tokens_present": _oauth_tokens_present(name) if auth == "oauth" else None,
         "enabled": mcp_server_enabled(cfg),
         "tools": cfg.get("tools"),
-        "source": "plugin" if plugin is not None else "config",
+        "source": source or ("plugin" if plugin is not None else "config"),
         "plugin": plugin}
 
 

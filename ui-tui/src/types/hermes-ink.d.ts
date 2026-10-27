@@ -31,6 +31,7 @@ declare module '@hermes/ink' {
     readonly isControlChord: boolean
     readonly key: Key
     readonly keypress: { readonly isPasted?: boolean; readonly name?: string; readonly raw?: string }
+    stopPropagation(): void
   }
 
   export type InputHandler = (input: string, key: Key, event: InputEvent) => void

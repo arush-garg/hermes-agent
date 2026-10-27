@@ -148,7 +148,7 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
 _KANBAN_NOTIFY_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked")
 # kanban, /loop + /heartbeat and the bot mailbox share one idle-poll cadence; probing the lease registry on
 # every 0.5s queue timeout cost ~a core at 11 sessions (#108005).
-_KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = 5.0
+_KANBAN_POLL_SECONDS = _LOOP_POLL_SECONDS = _BOT_DELIVERY_POLL_SECONDS = 5.0
 
 
 def _notif_release_turn(session: dict) -> None:
@@ -287,6 +287,36 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
         _notif_log_failure("heartbeat dispatch failed", exc)
     if not started:
         # _run_prompt_submit releases ``running`` itself when it refuses the turn; make it unconditional.
+        _notif_release_turn(session)
+        with contextlib.suppress(Exception):
+            mgr.abandon_fire()
+
+
+def _maybe_fire_tui_wait_tick(sid: str, session: dict) -> None:
+    """Send a due /wait message for an idle TUI/Desktop/dashboard session — the heartbeat tick's shape (claim the
+    idle session first, re-enter as a plain user turn, refund a claim whose turn never started), except the
+    message goes out verbatim: it is the user's own deferred message, not an instruction template."""
+    try:
+        from hermes_cli.waits import WaitManager
+    except Exception:
+        return
+    if not (sid_key := session.get("session_key") or ""):
+        return
+    mgr = WaitManager(session_id=sid_key)
+    if not mgr.is_due() or _notif_gateway_owns_heartbeat(session, sid_key):
+        return  # not due, or the gateway poller owns the routed conversation — stays due there
+    if not _notif_claim_turn(session):
+        return  # busy — stays due for the next idle poll
+    if not (prompt := mgr.due_prompt()):
+        _notif_release_turn(session)
+        return
+    started = False
+    try:
+        _emit("status.update", sid, {"kind": "wait", "text": "⏳ /wait elapsed — sending…"})
+        started = bool(_run_prompt_submit(f"__wait__{int(time.time() * 1000)}", sid, session, prompt))
+    except Exception as exc:
+        _notif_log_failure("wait dispatch failed", exc)
+    if not started:
         _notif_release_turn(session)
         with contextlib.suppress(Exception):
             mgr.abandon_fire()
@@ -717,9 +747,252 @@ def _notif_handle_ready(sid, session, events, emitted, registry, fmt, deferred, 
     _notif_dispatch_completions(sid, session, completions, registry, deferred)
 
 
+def _poll_bot_live_delivery_once(sid: str, session: dict) -> bool:
+    """Run one durable envelope only after local FIFO/continuations yield the idle boundary."""
+    from tools.bot_live_delivery import claim_pending_delivery, complete_delivery, find_canonical_live_owner, has_mailbox
+
+    home = _session_home(session)
+    # Most profiles never receive a delivery: without a mailbox there is nothing to claim, and the owner
+    # lookup below costs a state.db open plus the exclusive active-session registry lock every pass (#111719).
+    if not has_mailbox(home):
+        return False
+    with _session_turn_admission(session) as admitted:
+        if not admitted or any(session.get(key) for key in (
+                "running", "_closing", "_finalized", "queued_prompt", "queued_prompts",
+                "_auto_continue_scheduled")) or session.get("agent") is None:
+            return False
+        lease = session.get("active_session_lease")
+        if lease is None or getattr(lease, "released", False):
+            return False
+        owner = find_canonical_live_owner(home)
+        if (not owner or owner.get("lease_id") != lease.lease_id
+                or owner.get("live_session_id") != sid
+                or owner.get("session_id") != session.get("session_key")):
+            return False
+        # The mailbox matches each envelope to this pinned lease/live id and compression lineage.
+        claimed = claim_pending_delivery(home, owner)
+        if claimed is None:
+            return False
+        session["running"] = True
+
+    delivery_id = str(claimed["id"])
+
+    def terminal_receipt(terminal: dict) -> None:
+        status = str(terminal.get("status") or "failed")
+        error = str(terminal.get("error") or "")
+        reason = "cancelled" if status == "cancelled" else ""
+        if status not in {"settled", "cancelled"}:
+            from tools.bot_failure_reasons import classify_agent_error
+            reason = classify_agent_error(error)
+        # Let a failed write propagate: the turn must not retire its crash marker without its receipt.
+        complete_delivery(home, delivery_id, status=status,
+                          reply=str(terminal.get("text") or "") if status == "settled" else "",
+                          error=error, reason=reason)
+
+    try:
+        started = _run_prompt_submit(f"__bot_dm__{delivery_id}", sid, session, claimed["message"],
+                                     image_paths=[], terminal_callback=terminal_receipt,
+                                     turn_author=claimed.get("author") or None,
+                                     **({"display_metadata": {"notification_category": "diagnostic"}}
+                                        if claimed.get("notification_category") == "diagnostic" else {}))
+    except Exception as exc:
+        _notif_release_turn(session)
+        terminal_receipt({"status": "failed", "error": str(exc)})
+        raise
+    if not started:
+        _notif_release_turn(session)
+        terminal_receipt({"status": "failed", "error": "live session owner could not start the delivery turn"})
+    return started
+
+
+# A failing mailbox poll (typically the active-session registry lock unavailable under contention) is
+# retried on the next ``_BOT_DELIVERY_POLL_SECONDS`` pass; log the failure once per window, not per attempt.
+_BOT_POLL_WARN_INTERVAL_S = 60.0
+
+
+def _poll_bot_live_delivery_guarded(sid: str, session: dict, now: float) -> None:
+    """One poller-loop pass of the mailbox poll. A failure is logged at WARNING once per
+    ``_BOT_POLL_WARN_INTERVAL_S`` (with the count of suppressed repeats) and at DEBUG otherwise. An
+    unthrottled poll logged ``Bot live-owner delivery poll failed`` ~2×/minute per session for days,
+    91% of an install's WARNING output (#111719)."""
+    try:
+        _poll_bot_live_delivery_once(sid, session)
+    except Exception:
+        suppressed = int(session.get("_bot_poll_warn_suppressed", 0))
+        if now - session.get("_bot_poll_warned_at", -_BOT_POLL_WARN_INTERVAL_S) < _BOT_POLL_WARN_INTERVAL_S:
+            session["_bot_poll_warn_suppressed"] = suppressed + 1
+            logger.debug("Bot live-owner delivery poll failed (repeat)", exc_info=True)
+            return
+        session["_bot_poll_warned_at"], session["_bot_poll_warn_suppressed"] = now, 0
+        logger.warning("Bot live-owner delivery poll failed (%d repeat(s) suppressed since the last report)",
+                       suppressed, exc_info=True)
+        return
+    session["_bot_poll_warn_suppressed"] = 0
+
+
+# Cross-session peer inbox (tools/peer_inbox.py): presence heartbeat + delivery, checked every pass of
+# the poller loop at most once per second. Keyed on the DURABLE ``session_key`` (what other sessions see),
+# never the ephemeral UI ``sid``; read fresh each tick because compression rotates it.
+_PEER_INBOX_POLL_SECONDS = 1.0
+_PEER_TITLE_REFRESH_SECONDS = 30.0
+_PEER_POLL_WARN_INTERVAL_S = 60.0
+
+
+def _peer_messaging_settings(session: dict) -> tuple[bool, str]:
+    """``(enabled, inbound)`` from ``peer_messaging`` config, read once per session (defaults: on, accept)."""
+    cached = session.get("_peer_messaging_cfg")
+    if cached is None:
+        section: object = {}
+        with contextlib.suppress(Exception):
+            section = (_load_cfg() or {}).get("peer_messaging") or {}
+        section = section if isinstance(section, dict) else {}
+        enabled = section.get("enabled", True)
+        enabled = enabled if isinstance(enabled, bool) else str(enabled).strip().lower() not in {
+            "0", "false", "no", "off"}
+        inbound = "refuse" if str(section.get("inbound") or "accept").strip().lower() == "refuse" else "accept"
+        cached = session["_peer_messaging_cfg"] = (enabled, inbound)
+    return cached
+
+
+def _peer_presence_title(session: dict, key: str) -> str:
+    """Session title for the presence record; the state.db lookup is refreshed at most every 30 s."""
+    now = time.monotonic()
+    cached = session.get("_peer_title_cache")
+    if cached and cached[0] == key and now - cached[2] < _PEER_TITLE_REFRESH_SECONDS:
+        return cached[1]
+    title = ""
+    with contextlib.suppress(Exception):
+        title = str(_session_live_title(session, key) or "")
+    session["_peer_title_cache"] = (key, title, now)
+    return title
+
+
+def _peer_inbox_release(session: dict) -> None:
+    """Drop this session's presence (best effort) so peers stop seeing it as a live receiver."""
+    key = session.pop("_peer_presence_key", None)
+    if key:
+        from tools import peer_inbox
+        with contextlib.suppress(Exception):
+            peer_inbox.clear_presence(key)
+
+
+def _peer_agent_accepts_sender(agent) -> bool:
+    import inspect
+    steer = getattr(agent, "steer", None)
+    if not callable(steer):
+        return False
+    try:
+        params = inspect.signature(steer).parameters
+    except (TypeError, ValueError):
+        return False
+    return "sender" in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+def _poll_peer_inbox_once(sid: str, session: dict) -> str | None:
+    """Heartbeat presence and deliver at most one queued peer message.
+
+    Busy (running with a built, in-process agent) → ``agent.steer(body, sender=...)`` exactly like /steer;
+    idle → the framed message becomes the next prompt. Returns the receipt outcome, or None when nothing
+    was delivered this tick (no message, or a window where delivery must wait: turn build, compute-host
+    turn, compression, close)."""
+    from tools import peer_inbox
+
+    enabled, inbound = _peer_messaging_settings(session)
+    key = str(session.get("session_key") or "")
+    previous = session.get("_peer_presence_key")
+    if previous and previous != key:
+        _peer_inbox_release(session)  # compression split / rebind: the old id is no longer a receiver
+    if not enabled or not key or session.get("_closing") or session.get("_finalized"):
+        _peer_inbox_release(session)
+        return None
+    session["_peer_presence_key"] = key
+    peer_inbox.write_presence(
+        key, pid=os.getpid(), surface="tui", busy=bool(session.get("running")), inbound=inbound,
+        title=_peer_presence_title(session, key), cwd=str(session.get("cwd") or ""))
+    if not peer_inbox.has_pending(key):
+        return None
+
+    if session.get("running"):
+        agent = session.get("agent")
+        # Turn-build window (agent None), an isolated compute-host turn (the parent's agent is not the one
+        # running; the steer RPC is not proxied) or compression in flight: leave it queued.
+        if agent is None or not _peer_agent_accepts_sender(agent) or _session_uses_compute_host(session) \
+                or _session_compression_in_flight(session):
+            return None
+        with session["history_lock"]:
+            if not session.get("running") or session.get("agent") is not agent \
+                    or session.get("_closing") or session.get("_finalized"):
+                return None
+            env = peer_inbox.claim_next(key)
+            if env is None:
+                return None
+            try:
+                accepted = agent.steer(env["body"], sender={
+                    "session_id": env.get("from_session_id") or "", "title": env.get("from_title") or ""})
+            except Exception as exc:
+                peer_inbox.complete(key, env["id"], "failed", f"steer failed: {exc}")
+                return "failed"
+            session["last_active"] = time.time()
+        if not accepted:
+            peer_inbox.complete(key, env["id"], "failed", "receiver rejected the message")
+            return "failed"
+        peer_inbox.complete(key, env["id"], "delivered_steer")
+        return "delivered_steer"
+
+    from agent.prompt_builder import format_peer_message
+
+    if session.get("history_lock") is None:
+        return None
+    if session.get("agent") is None and not _session_uses_compute_host(session):
+        # No turn can start without an agent: kick the deferred build (a no-op for a lazy watch tab spectating a
+        # running child, or when already building) and deliver on a later tick once it is attached.
+        with contextlib.suppress(Exception):
+            _start_agent_build(sid, session)
+        return None
+    with _session_turn_admission(session) as admitted:
+        if not admitted or any(session.get(k) for k in (
+                "running", "_closing", "_finalized", "queued_prompt", "queued_prompts", "_auto_continue_scheduled")):
+            return None  # a local follow-up owns the idle boundary; retry next tick
+        env = peer_inbox.claim_next(key)
+        if env is None:
+            return None
+        framed = format_peer_message(from_session_id=env.get("from_session_id") or "",
+                                     from_title=env.get("from_title") or "", body=env["body"])
+        try:
+            _enqueue_prompt(session, framed, None)
+        except Exception as exc:
+            peer_inbox.complete(key, env["id"], "failed", f"enqueue failed: {exc}")
+            return "failed"
+        session["last_active"] = time.time()
+    peer_inbox.complete(key, env["id"], "delivered_turn")
+    threading.Thread(target=_drain_queued_prompt, args=(f"peer-{uuid.uuid4().hex[:8]}", sid, session),
+                     daemon=True, name=f"tui-peer-{sid[:8]}").start()
+    return "delivered_turn"
+
+
+def _poll_peer_inbox_guarded(sid: str, session: dict, now: float) -> None:
+    """One poller pass of the peer inbox; failures are logged at WARNING at most once per minute."""
+    try:
+        _poll_peer_inbox_once(sid, session)
+    except Exception:
+        suppressed = int(session.get("_peer_poll_warn_suppressed", 0))
+        if now - session.get("_peer_poll_warned_at", -_PEER_POLL_WARN_INTERVAL_S) < _PEER_POLL_WARN_INTERVAL_S:
+            session["_peer_poll_warn_suppressed"] = suppressed + 1
+            logger.debug("Peer inbox poll failed (repeat)", exc_info=True)
+            return
+        session["_peer_poll_warned_at"], session["_peer_poll_warn_suppressed"] = now, 0
+        logger.warning("Peer inbox poll failed (%d repeat(s) suppressed since the last report)",
+                       suppressed, exc_info=True)
+        return
+    session["_peer_poll_warn_suppressed"] = 0
+
+
 def _notification_poller_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
     with _session_profile_runtime_scope(session):
-        _notification_poller_scoped_loop(stop_event, sid, session)
+        try:
+            _notification_poller_scoped_loop(stop_event, sid, session)
+        finally:
+            _peer_inbox_release(session)
 
 
 def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
@@ -740,16 +1013,23 @@ def _notification_poller_scoped_loop(stop_event: threading.Event, sid: str, sess
     emitted = session.setdefault("_notification_emitted", set())
     handle = lambda events, deferred: _notif_handle_ready(
         sid, session, events, emitted, process_registry, format_process_notification, deferred)
-    last_kanban_poll = last_loop_poll = 0.0
+    last_kanban_poll = last_loop_poll = last_bot_poll = last_peer_poll = 0.0
     while not stop_event.is_set() and not session.get("_finalized"):
         now = time.monotonic()
+        if now - last_peer_poll >= _PEER_INBOX_POLL_SECONDS:  # peer message → steer / next turn within ~1 s
+            last_peer_poll = now
+            _poll_peer_inbox_guarded(sid, session, now)
         # Completions whose owner process died after this one started (#97202); throttled per profile home.
         async_delegation.maybe_sweep_orphaned_completions(queue)
-        # /loop and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
+        if now - last_bot_poll >= _BOT_DELIVERY_POLL_SECONDS:  # bot DM → live-owner delivery latency ≤ 5 s
+            last_bot_poll = now
+            _poll_bot_live_delivery_guarded(sid, session, now)
+        # /loop, /wait and /heartbeat wakeup drivers: fire a due tick for THIS session while idle (same claim-under-lock
         # as kanban dispatch). An active non-parked /goal owns the idle boundary and defers the loop tick.
         if now - last_loop_poll >= _LOOP_POLL_SECONDS:
             last_loop_poll = now
-            for what, fire in (("loop wakeup", _maybe_fire_tui_loop_tick), ("heartbeat", _maybe_fire_tui_heartbeat_tick)):
+            for what, fire in (("loop wakeup", _maybe_fire_tui_loop_tick), ("wait", _maybe_fire_tui_wait_tick),
+                               ("heartbeat", _maybe_fire_tui_heartbeat_tick)):
                 try:
                     fire(sid, session)
                 except Exception as tick_exc:

@@ -625,6 +625,11 @@ def _startup_system_prompt(cfg: dict, task_id: str) -> str:
     return system_prompt
 
 
+def _merged_request_overrides(runtime_overrides: dict | None, fast_overrides: dict | None) -> dict | None:
+    """Static fast mode (pinned at build time on both surfaces) layered over the provider's own body."""
+    return {**(runtime_overrides or {}), **(fast_overrides or {})} or None
+
+
 def _make_agent(
     sid: str, key: str, session_id: str | None = None, session_db=None,
     model_override: dict | str | None = None, provider_override: str | None = None,
@@ -637,6 +642,8 @@ def _make_agent(
     if synthetic is not None:
         return synthetic
     from agent.onboarding_session import onboarding_toolsets
+    from hermes_cli.agent_build_options import (
+        checkpoint_settings, fast_mode_request_overrides, openrouter_min_coding_score)
     from run_agent import AIAgent
     # MCP discovery runs in a daemon thread (a dead server can't freeze the shell); the agent snapshots its tool
     # list once, so briefly wait for in-flight discovery. Dashboard /api/ws uses mcp_startup; TUI stdio uses entry.
@@ -653,6 +660,7 @@ def _make_agent(
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
+    _tier = service_tier_override if service_tier_override is not None else _load_service_tier()
     with _sessions_lock:
         session = _sessions.get(sid)
     agent = AIAgent(
@@ -664,7 +672,7 @@ def _make_agent(
         verbose_logging=False,  # DEBUG agent logging; independent of tool_progress_mode
         reasoning_config=(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
-        service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
+        service_tier=_tier,
         enabled_toolsets=onboarding_toolsets(_load_enabled_toolsets(platform),
                                              session_db if session_db is not None else _get_db(), session_id or key),
         disabled_toolsets=_load_disabled_toolsets(),
@@ -677,11 +685,15 @@ def _make_agent(
         # Builds that run before the record exists (branch, eager resume, compute host) pass it explicitly.
         user_id=auth_user_id if auth_user_id is not None else _session_auth_user_id(session),
         session_db=session_db if session_db is not None else _get_db(), ephemeral_system_prompt=system_prompt or None,
-        checkpoints_enabled=_resolve_checkpoints_enabled(cfg),
+        # Configured limits/interval + min coding score: same builders the CLI uses (parity).
+        **{**checkpoint_settings(cfg), "checkpoints_enabled": _resolve_checkpoints_enabled(cfg)},
+        openrouter_min_coding_score=openrouter_min_coding_score(cfg),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
         # The resolved provider's request body (a custom entry's extra_body), as the CLI/cron/gateway pass it.
-        request_overrides=runtime.get("request_overrides"),
+        request_overrides=_merged_request_overrides(
+            runtime.get("request_overrides"),
+            fast_mode_request_overrides(_tier, model, runtime.get("provider"), runtime.get("base_url"))),
         prefill_messages=_load_prefill_messages() or None, **_agent_cbs(sid))
     if context_cwd_is_launch_artifact is None:
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)

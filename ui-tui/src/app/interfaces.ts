@@ -588,7 +588,7 @@ export interface SlashHandlerContext {
     page: (text: string, title?: string) => void
     panel: (title: string, sections: PanelSection[]) => void
     send: (text: string, showUserMessage?: boolean, displayText?: string, expandOverride?: (value: string) => string,
-      submitOpts?: { attachments?: Array<{ path: string; mime: string }> }) => void
+      submitOpts?: { attachments?: Array<{ path: string; mime: string }>; keepCurrentModel?: boolean }) => void
     setHistoryItems: StateSetter<Msg[]>
     sys: (text: string) => void
     trimLastExchange: (items: Msg[]) => Msg[]
@@ -610,6 +610,7 @@ export interface AppLayoutActions {
   answerVaultUnlock: (password: string) => void
   cancelClarify: () => void
   clearSelection: () => void
+  continueFromMessage: (msg: Msg) => void
   activateLiveSession: (id: string) => void
   closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
   newLiveSession: () => void

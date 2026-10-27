@@ -876,9 +876,13 @@ def _status_update(sid: str, kind: str, text: str | None = None):
     # Auto-compaction arrives as a generic "lifecycle" status; re-tag so drivers can show a
     # summarizing indicator — otherwise idle/preflight compaction looks like a hung turn.
     # See #97239.
+    # Diagnostics (DiagnosticText) ride the lifecycle rail too, and several mention compression without
+    # being progress ("Session compressed N times", the aux-model feasibility notice). Re-tagging those
+    # latched the TUI spinner for a whole turn; only plain routine lifecycle lines are progress.
     if out_kind == "lifecycle":
         from agent.conversation_compression import is_compaction_progress_status
-        if is_compaction_progress_status(body):
+        from gateway.warning_notifications import DiagnosticText
+        if not isinstance(text, DiagnosticText) and is_compaction_progress_status(body):
             out_kind = "compacting"
     _emit("status.update", sid, {"kind": out_kind, "text": body})
 
@@ -2144,6 +2148,7 @@ from .mcp_rpc_helpers import summarize_server as _mcp_summarize_server
 # ── Split @method handler modules (see method_ctx.py): imported last so every global the handlers close
 # over exists; register() rebinds them onto this namespace.
 from hermes_state import _BARE_BILLING_PROVIDERS
+from .command_discovery import _TUI_EXTRA, _TUI_HIDDEN  # re-exported: parity tests / callers read them off the server namespace
 
 from . import (
     session_registry as _session_registry, agent_factory as _agent_factory,

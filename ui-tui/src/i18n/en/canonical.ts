@@ -34,7 +34,9 @@ export const canonicalEn = {
       imageNotSubmitted: (message: string) => `image not submitted: ${message} — input retained`,
       statusImageNotSubmitted: 'image not submitted',
       interruptFailed: (message: string) => `interrupt failed: ${message}`,
-      startupQuerySwitched: 'startup query skipped: active session changed'
+      startupQuerySwitched: 'startup query skipped: active session changed',
+      drainingResend: '⏳ Hermes is restarting — your message will be sent when the gateway is back',
+      statusDraining: 'waiting for gateway restart…'
     },
     // hooks/useQueue.ts, app/useSubmission.ts, app/useComposerState.ts — the local input journal.
     queue: {

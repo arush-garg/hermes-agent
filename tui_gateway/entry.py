@@ -270,6 +270,25 @@ def _write_or_exit(payload: dict, reason: str) -> None:
         sys.exit(0)
 
 
+def _pin_launch_terminal_cwd() -> None:
+    """Anchor ``TERMINAL_CWD`` to the folder ``hermes --tui`` was launched in (local backend only).
+
+    Without it a later lazy ``import gateway.run`` resolves the ``cwd: .`` placeholder to
+    ``$HOME`` and project ``.mcp.json`` discovery reads ``~/.mcp.json`` instead.
+    """
+    if os.environ.get("TERMINAL_CWD", "").strip() not in {"", ".", "auto", "cwd"}:
+        return
+    if (os.environ.get("TERMINAL_ENV") or "local").strip().lower() != "local":
+        return
+    launch = os.environ.get("HERMES_CWD", "").strip()
+    if not (launch and os.path.isdir(launch)):
+        try:
+            launch = os.getcwd()
+        except OSError:
+            return
+    os.environ["TERMINAL_CWD"] = os.path.abspath(launch)
+
+
 def _claim_launch_home():
     """Reserve the launch home exactly as the gateway does, or None when it is already owned.
 
@@ -289,6 +308,8 @@ def _claim_launch_home():
 
 
 def main():
+    # Before anything can lazily import gateway.run (which would pin $HOME instead).
+    _pin_launch_terminal_cwd()
     home = _claim_launch_home()
     if home is None:
         _log_exit(f"refused: {server._launch_home()} is owned by a running gateway; attach to it instead")

@@ -102,7 +102,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
       if (!parsed.arg.trim()) {
         sys('Usage: /keep <prompt>')
       } else {
-        send(parsed.arg, true, cmd, { keepCurrentModel: true })
+        send(parsed.arg, true, cmd, undefined, { keepCurrentModel: true })
       }
       return true
     }

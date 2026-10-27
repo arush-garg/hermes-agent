@@ -18,6 +18,34 @@ const SESSION_BUSY_RE = /session busy|waiting for model response/i
 
 export const isSessionBusyError = (e: unknown) => e instanceof Error && SESSION_BUSY_RE.test(e.message)
 
+// A `hermes gateway restart` drains the owner before replacing it: new admissions are refused with
+// `runtime_draining` until the next owner announces `gateway.ready` on the reconnected socket.
+const RUNTIME_DRAINING_RE = /runtime_draining/
+
+// Re-try cadence when no `gateway.ready` arrives (the drain was cancelled, or the socket never dropped).
+export const DRAIN_RETRY_FALLBACK_MS = 30_000
+
+// ~30 minutes at the fallback cadence — past the default agent.restart_after_turn_timeout.
+const MAX_DRAIN_RETRIES = 60
+
+export const isRuntimeDrainingError = (e: unknown) => e instanceof Error && RUNTIME_DRAINING_RE.test(e.message)
+
+/** Resolve once the gateway is back (`gateway.ready`), or after the fallback delay. */
+function waitForGatewayBack(gw: GatewayClient): Promise<void> {
+  return new Promise(resolve => {
+    const done = () => {
+      clearTimeout(timer)
+      gw.off('event', onEvent)
+      resolve()
+    }
+
+    const onEvent = (ev: { type?: string }) => ev?.type === 'gateway.ready' && done()
+    const timer = setTimeout(done, DRAIN_RETRY_FALLBACK_MS)
+
+    gw.on('event', onEvent)
+  })
+}
+
 export interface SubmitPromptDeps {
   appendMessage: (msg: Msg) => void
   enqueue: (text: string, display?: string, destination?: SubmissionDestination) => void
@@ -69,6 +97,10 @@ interface SubmitPromptOpts {
   destination?: SubmissionDestination
   queueItem?: QueueItem
   behindTurn?: boolean
+  // `/keep`: this turn only stays on the current model instead of following the auto-router.
+  keepCurrentModel?: boolean
+  // A resend after a restart drain: the already-prepared text, sent as-is with its bubble kept.
+  drainRetry?: { attempt: number; displayText: string; submitText: string }
 }
 
 type PendingOwner = ReturnType<typeof pendingInputOwner>
@@ -125,7 +157,8 @@ function submitParams(
   submitText: string,
   attachments: SubmitPromptOpts['attachments'],
   voice: boolean,
-  clarifyBatch: boolean
+  clarifyBatch: boolean,
+  keepCurrentModel = false
 ) {
   return {
     session_id: sid,
@@ -136,7 +169,8 @@ function submitParams(
     // A busy correction (steer/redirect) is not a turn: it never claims the voice route.
     ...(!item?.controlMethod && voice && { voice_turn: true }),
     // Ink renders a whole question set as one form; undeclared, the owner asks one card per question.
-    ...(!item?.controlMethod && clarifyBatch && { clarify_batch: true })
+    ...(!item?.controlMethod && clarifyBatch && { clarify_batch: true }),
+    ...(!item?.controlMethod && keepCurrentModel && { keep_current_model: true })
   }
 }
 
@@ -404,7 +438,8 @@ export function submitPrompt(
           submitText,
           opts.attachments,
           voiceTranscript === submitText.trim(),
-          deps.gw.clarifyBatch === true
+          deps.gw.clarifyBatch === true,
+          opts.keepCurrentModel === true
         )
       )
       .then(r => {
@@ -491,6 +526,28 @@ export function submitPrompt(
           return deps.sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)
         }
 
+        const attempt = opts.drainRetry?.attempt ?? 0
+
+        if (isRuntimeDrainingError(e) && attempt < MAX_DRAIN_RETRIES) {
+          if (focused()) {
+            if (attempt === 0) {
+              deps.sys(t('canonical.submit.drainingResend'))
+            }
+
+            patchUiState({ status: t('canonical.submit.statusDraining') })
+          }
+
+          void waitForGatewayBack(deps.gw).then(() =>
+            submitPrompt(text, deps, false, displayOverride, {
+              ...opts,
+              destination,
+              drainRetry: { attempt: attempt + 1, displayText, submitText }
+            })
+          )
+
+          return
+        }
+
         if (!focused()) {
           return
         }
@@ -509,6 +566,10 @@ export function submitPrompt(
   // shows as an `[[ Image N ]]` token, and a matched non-image path is rewritten
   // in place. Announcing it a second time above the status bar was the old
   // out-of-band attachment UI.
+  if (opts.drainRetry) {
+    return startSubmit(opts.drainRetry.displayText, opts.drainRetry.submitText, showUserMessage)
+  }
+
   if (opts.queueItem?.preparedText !== undefined) {
     return startSubmit(text, opts.queueItem.preparedText, showUserMessage)
   }

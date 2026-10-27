@@ -1,4 +1,5 @@
 import { Box, NoSelect, Text } from '@hermes/ink'
+import type { SubagentStatus } from '@hermes/shared/gateway-events'
 import { useStore } from '@nanostores/react'
 import { memo, useEffect, useMemo, useState } from 'react'
 
@@ -7,7 +8,7 @@ import { $uiState } from '../app/uiStore.js'
 import { $viewState, patchViewState } from '../app/viewStore.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import type { Theme } from '../theme.js'
-import type { SubagentProgress, SubagentStatus } from '../types.js'
+import type { SubagentProgress } from '../types.js'
 
 import { SubagentSteerInput } from './subagentSteerInput.js'
 
@@ -96,6 +97,7 @@ export const SubagentDotsBar = memo(function SubagentDotsBar({
     if (!hasRunning) {
       return
     }
+
     const id = setInterval(() => setSpinnerIdx(i => (i + 1) % SPINNER_FRAMES.length), 100)
 
     return () => clearInterval(id)

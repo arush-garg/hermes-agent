@@ -1,4 +1,5 @@
 import { Box, NoSelect, Text } from '@hermes/ink'
+import type { SubagentStatus } from '@hermes/shared/gateway-events'
 import { useStore } from '@nanostores/react'
 import { memo, useEffect, useMemo, useState } from 'react'
 
@@ -6,7 +7,6 @@ import { $turnState } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { $viewState, patchViewState } from '../app/viewStore.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
-import type { SubagentStatus } from '../types.js'
 
 import { SubagentSteerInput } from './subagentSteerInput.js'
 
@@ -65,6 +65,7 @@ export const SubagentPanel = memo(function SubagentPanel({ onInterrupt, onSteerS
     if (!hasRunning) {
       return
     }
+
     const id = setInterval(() => setSpinnerIdx(i => (i + 1) % SPINNER_FRAMES.length), 500)
 
     return () => clearInterval(id)

@@ -981,6 +981,7 @@ export function useMainApp(gw: GatewayClient) {
       !ui.sid ||
       ui.gatewayConnected === false ||
       ui.busy ||
+      ui.compacting ||
       composerRefs.queueEditRef.current !== null ||
       composerRefs.queueRef.current.length === 0
     ) {
@@ -993,7 +994,7 @@ export function useMainApp(gw: GatewayClient) {
       patchUiState({ busy: true, status: 'running…' })
       sendQueued(next)
     }
-  }, [ui.sid, ui.busy, ui.gatewayConnected, composerActions, composerRefs, sendQueued])
+  }, [ui.sid, ui.busy, ui.compacting, ui.gatewayConnected, composerActions, composerRefs, sendQueued])
 
   const { pagerPageSize } = useInputHandlers({
     actions: {
@@ -1516,6 +1517,11 @@ export function useMainApp(gw: GatewayClient) {
       answerVaultUnlock,
       cancelClarify,
       clearSelection,
+      continueFromMessage: (msg: Msg) => {
+        if (msg.role === 'user' && msg.text) {
+          composerActions.setInput(msg.text)
+        }
+      },
       newLiveSession: () => session.newLiveSession(),
       newPromptSession,
       onModelSelect,
@@ -1533,6 +1539,7 @@ export function useMainApp(gw: GatewayClient) {
       setStickyPrompt
     }),
     [
+      composerActions,
       answerApproval,
       answerClarifyQuestion,
       answerSecret,

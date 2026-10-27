@@ -1,6 +1,15 @@
+import { EventEmitter } from 'node:events'
+
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { isSessionBusyError, markNextSubmitVoice, submitPrompt, type SubmitPromptDeps } from '../app/submissionCore.js'
+import {
+  DRAIN_RETRY_FALLBACK_MS,
+  isRuntimeDrainingError,
+  isSessionBusyError,
+  markNextSubmitVoice,
+  submitPrompt,
+  type SubmitPromptDeps
+} from '../app/submissionCore.js'
 import { captureDestination } from '../app/submissionDestination.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
@@ -394,5 +403,114 @@ describe('submissionCore.submitPrompt — typed voice stop on the shared gateway
     expect(publishLocalEvent).toHaveBeenCalled()
     expect(getUiState().busy).toBe(true)
     expect(getUiState().status).toBe('running…')
+  })
+})
+
+describe('submissionCore.isRuntimeDrainingError', () => {
+  it('matches the restart-drain refusal only', () => {
+    expect(isRuntimeDrainingError(new Error('runtime_draining'))).toBe(true)
+    expect(isRuntimeDrainingError(new Error('session busy'))).toBe(false)
+    expect(isRuntimeDrainingError('runtime_draining')).toBe(false)
+  })
+})
+
+describe('submissionCore.submitPrompt — gateway restart drain', () => {
+  beforeEach(() => {
+    resetUiState()
+    patchUiState({ sid: 'sess-1' })
+  })
+
+  function makeDrainingGateway(refusals: number) {
+    const emitter = new EventEmitter()
+    let remaining = refusals
+
+    const request = vi.fn(async (method: string) => {
+      if (method !== 'prompt.submit') {
+        return { matched: false }
+      }
+
+      if (remaining > 0) {
+        remaining -= 1
+        throw new Error('runtime_draining')
+      }
+
+      return { status: 'streaming' }
+    })
+
+    const gw = Object.assign(emitter, { request }) as unknown as GatewayClient
+
+    return { emitter, gw, request }
+  }
+
+  it('resends the same prompt once the restarted gateway is ready, without repainting the bubble', async () => {
+    // Arrange
+    const { emitter, gw, request } = makeDrainingGateway(1)
+    const appendMessage = vi.fn()
+    const sys = vi.fn()
+
+    // Act
+    submitPrompt('hello', makeDeps(gw, { appendMessage, sys }), true, undefined, { skipDetectDrop: true })
+    await vi.waitFor(() => expect(sys).toHaveBeenCalledWith(expect.stringMatching(/restarting/i)))
+    emitter.emit('event', { type: 'gateway.ready', payload: {} })
+
+    // Assert
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2))
+    expect(request.mock.calls[1]).toEqual(['prompt.submit', { session_id: 'sess-1', text: 'hello' }])
+    expect(appendMessage).toHaveBeenCalledTimes(1)
+    expect(sys).not.toHaveBeenCalledWith(expect.stringMatching(/^error:/))
+    expect(emitter.listenerCount('event')).toBe(0)
+  })
+
+  it('ignores unrelated events while waiting for the gateway', async () => {
+    // Arrange
+    const { emitter, gw, request } = makeDrainingGateway(1)
+    const sys = vi.fn()
+
+    // Act
+    submitPrompt('hello', makeDeps(gw, { sys }), true, undefined, { skipDetectDrop: true })
+    await vi.waitFor(() => expect(sys).toHaveBeenCalledWith(expect.stringMatching(/restarting/i)))
+    emitter.emit('event', { type: 'message.delta', payload: {} })
+    await new Promise(resolve => setTimeout(resolve, 10))
+
+    // Assert
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(getUiState().busy).toBe(true)
+  })
+
+  it('falls back to a timed retry when no gateway.ready arrives', async () => {
+    vi.useFakeTimers()
+
+    try {
+      // Arrange
+      const { gw, request } = makeDrainingGateway(1)
+
+      // Act
+      submitPrompt('hello', makeDeps(gw), true, undefined, { skipDetectDrop: true })
+      await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1))
+      await vi.advanceTimersByTimeAsync(DRAIN_RETRY_FALLBACK_MS)
+
+      // Assert
+      await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('announces the restart wait only once across repeated refusals', async () => {
+    // Arrange
+    const { emitter, gw, request } = makeDrainingGateway(2)
+    const sys = vi.fn()
+
+    // Act
+    submitPrompt('hello', makeDeps(gw, { sys }), true, undefined, { skipDetectDrop: true })
+    await vi.waitFor(() => expect(emitter.listenerCount('event')).toBe(1))
+    emitter.emit('event', { type: 'gateway.ready', payload: {} })
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(emitter.listenerCount('event')).toBe(1))
+    emitter.emit('event', { type: 'gateway.ready', payload: {} })
+
+    // Assert
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(3))
+    expect(sys.mock.calls.filter(([m]) => /restarting/i.test(String(m)))).toHaveLength(1)
   })
 })

@@ -113,22 +113,9 @@ def _format_live_refine_output(sid: str, session: Optional[dict], arg: str) -> s
     if not snapshot:
         return "Nothing to refine yet — the conversation is empty."
 
-    review_skills = "skill_manage" in getattr(agent, "valid_tool_names", set())
-    try:
-        agent._spawn_background_review(
-            messages_snapshot=list(snapshot),
-            review_memory=True,
-            review_skills=review_skills,
-            focus=arg.strip() or None,
-            explicit=True,
-        )
-    except Exception as exc:
-        return f"/refine failed to start: {exc}"
-    tail = f" (focus: {arg.strip()})" if arg.strip() else ""
-    return (
-        f"⚗ Reviewing this conversation in the background{tail} — "
-        "any memory/skill updates will be reported when done."
-    )
+    from hermes_cli.live_slash_core import start_refine  # one body shared with the classic CLI
+    with _session_profile_runtime_scope(session):
+        return start_refine(agent, snapshot, arg.strip())[1]
 
 
 def _usage_account_blocks(session: dict) -> list[str]:
@@ -288,6 +275,22 @@ def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
     return "\n".join(lines)
 
 
+def _format_live_context_breakdown(sid: str, session: dict, arg: str) -> str:
+    """/context against the live agent — the same body as the classic CLI (hermes_cli.live_slash_core)."""
+    from hermes_cli.live_slash_core import context_breakdown_lines
+    agent = session["agent"]
+    with session["history_lock"]:
+        history = list(session.get("history", []))
+    tokens = _set_session_context(session["session_key"], cwd=_session_cwd(session))
+    try:
+        return "\n".join(context_breakdown_lines(agent, history, arg, model=getattr(agent, "model", "")))
+    except Exception:
+        logger.debug("shared /context breakdown failed; using the persisted-state view", exc_info=True)
+        return _format_live_context_output(sid, session, arg)
+    finally:
+        _clear_session_context(tokens)
+
+
 def _format_live_tools_output(sid: str, session: dict, arg: str) -> str:
     info = _session_info(session.get("agent"), session)
     groups = info.get("tools") if isinstance(info, dict) else {}
@@ -340,6 +343,7 @@ _LIVE_SLASH_OUTPUT = {
     "context": ("Conversation is empty (no messages yet).", _format_live_context_output),
     "tools": ("No tools available.", _format_live_tools_output),
     "help": (None, _format_live_help_output),
+    "palette": (None, "The Ctrl+P command palette is classic-CLI only; type / here to browse and complete commands."),
     "clear": (None, "Screen clear is terminal-only; desktop/TUI chat left unchanged."),
     "models": (None, "Use /model to view or switch the current model; desktop users can also open the model picker."),
     "rename": (None, "Use /title <name> to rename this session."),
@@ -352,6 +356,9 @@ def _live_slash_command_output(sid: str, session: Optional[dict], name: str, arg
     arg = arg or ""
     if name == "model" and not arg.strip():
         return _format_live_model_output(session or {})
+    if name == "context" and session is not None and session.get("agent") is not None \
+            and not _session_uses_compute_host(session):
+        return _format_live_context_breakdown(sid, session, arg)
     if (
         name in _CONTEXT_LOCAL_IN_PROCESS
         and session is not None
