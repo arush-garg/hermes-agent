@@ -455,6 +455,28 @@ def _reset_foreground_exit_fence():
 
 
 @pytest.fixture(autouse=True)
+def _refuse_launchd_bootstrap(request, tmp_path_factory, monkeypatch):
+    """Never let a test register a real job in the developer's GUI launchd session.
+
+    ``start_gateway_job`` bootstraps a one-off ``com.nousresearch.hermes.runtime.*`` job that outlives
+    the test and the gateway it launches. It runs in the code under test AND in the ``hermes`` children
+    those tests spawn, so the guard is a ``launchctl`` shim first on PATH (children inherit it): a
+    ``bootstrap``/``submit`` fails like "no GUI session" (callers fall back to a plain child); every
+    other verb reaches the real binary. The module's own real-launchd test opts out by living in its file."""
+    real = shutil.which("launchctl") if sys.platform == "darwin" else None
+    if real is None or request.node.path.name == "test_gateway_launchd_runtime.py":
+        return
+    shim_dir = tmp_path_factory.mktemp("launchctl-shim")
+    shim = shim_dir / "launchctl"
+    shim.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in bootstrap|submit|load) echo "launchctl $1 refused under pytest" >&2; exit 1;; esac\n'
+        f'exec {real} "$@"\n')
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{shim_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+
+
+@pytest.fixture(autouse=True)
 def _reset_session_context_vars():
     """Return the gateway session ContextVars to "never bound" after every test.
 
