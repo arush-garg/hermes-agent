@@ -46,6 +46,8 @@ def test_terminal_descendants_cannot_mutate_even_after_task_is_removed(tmp_path,
         "out['show'] = json.loads(kt._handle_show({'task_id':own}))\n"
         "out['tools'] = [json.loads(kt._handle_complete({'task_id': t, 'summary':'must refuse'})) for t in (own,foreign)]\n"
         "os.environ.pop('HERMES_KANBAN_TASK', None)\n"
+        # No dependency sync for the nested `hermes kanban` launch under this temporary HOME.
+        "os.environ['HERMES_DISABLE_LAZY_INSTALLS'] = '1'\n"
         f"p = subprocess.run([sys.executable, '-m', 'hermes_cli.main', 'kanban', 'complete', foreign, '--result', 'must refuse'], cwd={str(ROOT)!r}, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=45)\n"
         "out['later_cli'] = {'rc': p.returncode, 'out':p.stdout, 'err':p.stderr}\n"
         "print('SCOPE_RESULT=' + json.dumps(out))\n"

@@ -392,17 +392,19 @@ class TestSensitivePathCheck:
         assert _check_sensitive_path("/private/etc/hosts") is not None
 
     @patch("tools.file_tools._get_file_ops")
-    def test_normal_file_not_blocked(self, mock_get, monkeypatch):
+    def test_normal_file_not_blocked(self, mock_get, monkeypatch, tmp_path):
+        # A fresh path: a pre-existing /tmp/other.txt on the host would trip the read-before-overwrite guard.
+        target = str(tmp_path / "other.txt")
         monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved", "/home/user/.hermes/config.yaml")
         monkeypatch.setattr("tools.file_tools_write_guards._hermes_config_resolved_loaded", True)
         mock_ops = MagicMock()
         result_obj = MagicMock()
-        result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/other.txt", "bytes": 5}
+        result_obj.to_dict.return_value = {"status": "ok", "path": target, "bytes": 5}
         mock_ops.write_file.return_value = result_obj
         mock_get.return_value = mock_ops
 
         from tools.file_tools import write_file_tool
-        result = json.loads(write_file_tool("/tmp/other.txt", "hello"))
+        result = json.loads(write_file_tool(target, "hello"))
         assert result["status"] == "ok"
 
 
