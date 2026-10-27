@@ -41,8 +41,10 @@ def _load_plugin_module(module_name: str, relpath: str):
 
 
 def _reset_modules(prefixes: tuple[str, ...]):
+    # Package-boundary match: a bare startswith("tools") also drops the top-level toolsets /
+    # toolset_distributions modules, which the restore fixture then never brings back.
     for name in list(sys.modules):
-        if name.startswith(prefixes):
+        if any(name == prefix or name.startswith(prefix + ".") for prefix in prefixes):
             sys.modules.pop(name, None)
 
 
