@@ -152,6 +152,7 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**fastmcp**](../user-guide/skills/optional/mcp/mcp-fastmcp.md) | Build, test, and deploy Python MCP servers. |
+| [**hermes-docs**](../user-guide/skills/optional/mcp/mcp-hermes-docs.md) | Search and read Hermes docs via MCP. |
 | [**mcp-oauth-remote-gateway**](../user-guide/skills/optional/mcp/mcp-mcp-oauth-remote-gateway.md) | Manual OAuth for remote MCP servers on headless gateways. |
 | [**mcporter**](../user-guide/skills/optional/mcp/mcp-mcporter.md) | List, auth, and call MCP servers/tools from the terminal. |
 
