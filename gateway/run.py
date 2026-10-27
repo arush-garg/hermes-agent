@@ -1859,15 +1859,18 @@ def _terminal_isolation_scope(profile_home: Path):
     from tools.terminal_scope import get_terminal_scope
 
     # Seed with the profile's installed scope (code defaults < its .env < its config.yaml) so a dotenv-only
-    # profile keeps its TERMINAL_*; the bridge then lets only explicit config.yaml keys override it.
+    # profile keeps its TERMINAL_*.
     scope = get_terminal_scope()
     env: dict[str, str] = dict(scope) if isinstance(scope, dict) else {}
-    try:
-        from hermes_cli.config import apply_terminal_config_to_env
+    if not env:
+        # No installed scope: bridge from config. (Not done otherwise — loading config scaffolds the
+        # profile home, and the scope is already the total, config-derived policy.)
+        try:
+            from hermes_cli.config import apply_terminal_config_to_env
 
-        apply_terminal_config_to_env(env=env)
-    except Exception as exc:
-        raise RuntimeError(f"terminal isolation admission failed: {exc}") from exc
+            apply_terminal_config_to_env(env=env)
+        except Exception as exc:
+            raise RuntimeError(f"terminal isolation admission failed: {exc}") from exc
     env_token = set_terminal_env_isolation(dict(env))
     config_token = None
     try:

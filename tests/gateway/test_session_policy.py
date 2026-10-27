@@ -11,6 +11,10 @@ def test_policy_selects_surface_and_isolates_cwd(tmp_path):
     from tools.terminal_scope import terminal_env
     from hermes_state_runtime import RuntimeStoreError
 
+    from tools import terminal_tool
+    # The launch profile's one-shot terminal.* -> env bridge is lazy and process-global (any first terminal
+    # read, e.g. project .mcp.json discovery in build_policy, runs it); settle it so only policy_scope is measured.
+    terminal_tool._ensure_terminal_env_bridged()
     cfg = {'platform_toolsets': {'cli': ['terminal']}}
     before = dict(os.environ)
     policies = []
