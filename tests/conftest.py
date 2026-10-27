@@ -511,6 +511,10 @@ def _reset_session_context_vars():
     yield
     if (ctx := sys.modules.get("gateway.session_context")) is not None:
         ctx.reset_session_vars()
+    # An agent built in a test binds the main runtime (set_runtime_main) in the shared context; left
+    # bound, later auxiliary-client tests resolve that test's endpoint instead of their own setup.
+    if (aux := sys.modules.get("agent.auxiliary_client")) is not None:
+        aux.clear_runtime_main()
 
 
 @pytest.fixture(autouse=True)
