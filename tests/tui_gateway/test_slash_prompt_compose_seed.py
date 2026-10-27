@@ -83,13 +83,16 @@ class _SeedingWorker:
 
 
 def test_slash_exec_routes_seed_as_send_dispatch(monkeypatch):
-    """slash.exec must return {type: "send", message: <seed>} when the worker harvested one."""
+    """slash.exec must return {type: "send", message: <seed>} when the worker harvested one.
+
+    Bare ``/prompt`` answers from the live session (the current system prompt, see
+    ``_LIVE_SLASH_OUTPUT``), so the compose flow is exercised through its ``/compose`` alias."""
     sid = "seed-sid"
     session = _live_session()
     server._sessions[sid] = session
     monkeypatch.setattr(server, "_SlashWorker", _SeedingWorker)
     try:
-        resp = server._methods["slash.exec"](1, {"session_id": sid, "command": "/prompt"})
+        resp = server._methods["slash.exec"](1, {"session_id": sid, "command": "/compose"})
     finally:
         server._sessions.pop(sid, None)
 

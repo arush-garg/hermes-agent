@@ -386,9 +386,17 @@ def test_agent_rebuild_keeps_pre_compression_process_owners(server, registry, de
     assert not server._session_is_reapable(sid, session)
     monkeypatch.setattr(server, "_make_agent", lambda *a, **k: SimpleNamespace(
         _process_owner_task_ids={session["session_key"]}, _session_db=None))
-    monkeypatch.setattr(server, "_release_build_profile_scopes", lambda *_: None)
+    release = server._release_build_profile_scopes
+    scopes = []
+    # The rebuild binds the profile scopes and hands them to the release hook; run the real release
+    # afterwards so the secret-scope ContextVar is not left bound for later tests in this process.
+    monkeypatch.setattr(server, "_release_build_profile_scopes", scopes.append)
 
-    server._rebuild_session_agent(sid, session)
+    try:
+        server._rebuild_session_agent(sid, session)
+    finally:
+        for bound in scopes:
+            release(bound)
 
     assert "pre-compression-id" in session["agent"]._process_owner_task_ids
     assert not server._session_is_reapable(sid, session)
