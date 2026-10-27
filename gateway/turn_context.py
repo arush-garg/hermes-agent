@@ -10,7 +10,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 
-from agent.session_activity import AwakeIdleMeter
+try:
+    from agent.session_activity import AwakeIdleMeter
+except ImportError:  # pragma: no cover - mixed-version live update (see below)
+    # A long-lived process may still hold the pre-update agent.session_activity
+    # in sys.modules while lazily importing this post-update module, so the new
+    # name is missing and every turn fails until restart. Degrade to the
+    # pre-feature behavior (sleep counts as idle) instead of bricking requests.
+    class AwakeIdleMeter:  # type: ignore[no-redef]
+        """Identity fallback when the cached session_activity predates it."""
+
+        def __init__(self) -> None:
+            pass
+
+        def measure(self, idle_s: float) -> float:
+            return max(0.0, float(idle_s))
 
 
 @dataclass

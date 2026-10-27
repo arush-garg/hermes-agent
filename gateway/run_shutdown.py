@@ -1973,7 +1973,17 @@ class GatewayShutdownMixin(GatewaySessionEndMixin):
                 await self._bounded_adapter_teardown(adapter, platform, profile=_prof)
             _amap.clear()
         _profile_adapters.clear()
-        self._tenant_drain()
+        _tenant_drain = getattr(self, "_tenant_drain", None)
+        if callable(_tenant_drain):
+            _tenant_drain()
+        else:
+            _supervisor = getattr(self, "_tenant_supervisor", None)
+            _sup_drain = getattr(_supervisor, "drain", None)
+            if callable(_sup_drain):
+                try:
+                    _sup_drain()
+                except Exception:
+                    logger.debug("Tenant supervisor drain failed", exc_info=True)
         logger.info("Shutdown phase: all adapters disconnected at +%.2fs", ctx.elapsed())
 
     async def _stop_release_runtime_state(self, ctx: GatewayShutdownMixin._StopContext) -> None:

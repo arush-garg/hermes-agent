@@ -225,6 +225,13 @@ class GatewayTurnPersistenceMixin:
         await self.hooks.emit("agent:end", {
             **hook_ctx, "response": (response or "")[:500], "model": agent_result.get("model", ""),
             "provider": agent_result.get("provider", ""),
+            # Raw failure descriptor: handlers (error cards, alerting) need the provider's error
+            # class, HTTP status, and the retry budget this turn actually used.
+            "error_type": agent_result.get("error_type"),
+            "status_code": agent_result.get("status_code"),
+            "retry_count": agent_result.get("retry_count"),
+            "max_retries": agent_result.get("max_retries"),
+            "rate_limit": agent_result.get("rate_limit"),
         })
 
         # Pending process watchers (check_interval on background processes)

@@ -707,7 +707,6 @@ class GatewayConfig:
             "quick_commands": self.quick_commands,
             "sessions_dir": str(self.sessions_dir),
             **{name: getattr(self, name) for name in self._SCALAR_DICT_FIELDS},
-            "multiplex_profile_allowlist": self.multiplex_profile_allowlist,
             "tenant_isolation": self.tenant_isolation,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,

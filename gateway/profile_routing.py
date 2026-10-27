@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from functools import lru_cache
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -178,15 +179,54 @@ def parse_profile_routes(raw: Optional[list[dict[str, Any]]]) -> list[ProfileRou
     return routes
 
 
-def match_profile_route(
-    routes: list[ProfileRoute], platform: str, guild_id: Optional[str] = None, chat_id: Optional[str] = None,
-    thread_id: Optional[str] = None, parent_chat_id: Optional[str] = None,
-    adapter_profile: Optional[str] = None, user_id: Optional[str] = None,
+@lru_cache(maxsize=512)
+def _cached_match(
+    routes_key: tuple[ProfileRoute, ...],
+    platform: str,
+    guild_id: Optional[str],
+    chat_id: Optional[str],
+    thread_id: Optional[str],
+    parent_chat_id: Optional[str],
+    adapter_profile: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> Optional[ProfileRoute]:
-    """Return the first (most specific) matching route, or None."""
-    for route in routes:
+    """Cached linear scan (most-specific-first). Routes are frozen & hashable."""
+    for route in routes_key:
         if route.matches(platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id,
                          parent_chat_id=parent_chat_id, adapter_profile=adapter_profile,
                          user_id=user_id):
             return route
     return None
+
+
+def match_profile_route(
+    routes: list[ProfileRoute], platform: str, guild_id: Optional[str] = None, chat_id: Optional[str] = None,
+    thread_id: Optional[str] = None, parent_chat_id: Optional[str] = None,
+    adapter_profile: Optional[str] = None, user_id: Optional[str] = None,
+) -> Optional[ProfileRoute]:
+    """Return the best-matching route, or None for no match.
+
+    Cached: the tuple conversion is cheap for the typical small route table (2-10 entries) and the
+    LRU avoids re-scanning the same (platform, guild, chat, thread) on every message in a busy chat
+    (perf, #99986). Falls back to a direct scan on any hashing/type error so a malformed route
+    never breaks delivery."""
+    if not routes:
+        return None
+    try:
+        return _cached_match(tuple(routes), platform, guild_id, chat_id, thread_id, parent_chat_id,
+                             adapter_profile, user_id)
+    except Exception:
+        for route in routes:
+            if route.matches(platform, guild_id=guild_id, chat_id=chat_id, thread_id=thread_id,
+                             parent_chat_id=parent_chat_id, adapter_profile=adapter_profile,
+                             user_id=user_id):
+                return route
+        return None
+
+
+def clear_profile_route_cache() -> None:
+    """Clear the route-match LRU (for tests and config reload)."""
+    try:
+        _cached_match.cache_clear()
+    except Exception:
+        pass

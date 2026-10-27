@@ -42,7 +42,22 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.interrupt_compat import request_hard_interrupt
 from agent.message_metadata import ABSORBED_MESSAGE_UIDS, MESSAGE_UID, copy_identity_fields, is_compaction_scaffolding, scaffolding_replay_fields
 from agent.turn_context import compression_made_progress
-from agent.session_activity import ActivityProvenance, AwakeIdleMeter
+from agent.session_activity import ActivityProvenance
+try:
+    from agent.session_activity import AwakeIdleMeter
+except ImportError:  # pragma: no cover - mixed-version live update (see below)
+    # A long-lived process may still hold the pre-update agent.session_activity
+    # in sys.modules while lazily importing this post-update module, so the new
+    # name is missing and every turn fails until restart. Degrade to the
+    # pre-feature behavior (sleep counts as idle) instead of bricking requests.
+    class AwakeIdleMeter:  # type: ignore[no-redef]
+        """Identity fallback when the cached session_activity predates it."""
+
+        def __init__(self) -> None:
+            pass
+
+        def measure(self, idle_s: float) -> float:
+            return max(0.0, float(idle_s))
 from hermes_cli.config import _is_ssh_remote_tilde_cwd, cfg_get, config_exists
 from gateway.run_common import _csv_or_list_to_set
 from hermes_cli.fallback_config import pre_agent_fallback_notice
@@ -624,8 +639,11 @@ def _format_exec_approval_fallback(
 # been answered by it), a REFUSED/unroutable connect is the endpoint-down case #86570 wrote the
 # wording for, and a cause-free SDK ``APIConnectionError: Connection error.`` supports neither
 # diagnosis, so the catch-all names the failure without asserting a cause.
-# ``(pattern, catalog key)`` — the reply text is resolved with ``t()`` at reply time so the active
-# ``display.language`` applies; ``gateway.errors.*`` in ``locales/en.yaml`` holds the wording.
+# ``(pattern, catalog key, config category)`` — the reply text is resolved with ``t()`` at reply
+# time so the active ``display.language`` applies; ``gateway.errors.*`` in ``locales/en.yaml``
+# holds the wording. ``gateway.provider_error_replies.<category>`` lets an operator replace one
+# category's wording (bot-owned host, custom support text) without patching the locale catalog;
+# an empty/blank value falls back to the builtin localized reply.
 _PROVIDER_ERROR_REPLIES = (
     (_GATEWAY_RATE_LIMIT_RE, "gateway.errors.rate_limited"),
     (_GATEWAY_AUTH_ERROR_RE, "gateway.errors.auth_failed"),
@@ -633,6 +651,16 @@ _PROVIDER_ERROR_REPLIES = (
     (_GATEWAY_CONNECTION_INTERRUPTED_RE, "gateway.errors.connection_interrupted"),
     (_GATEWAY_ENDPOINT_UNREACHABLE_RE, "gateway.errors.unreachable"),
     (_GATEWAY_CONNECTION_ERROR_RE, "gateway.errors.connection_unknown"))
+
+#: ``gateway.provider_error_replies`` category per entry of the table above, in the same order. The
+#: three connection causes share one category (an operator wants their own wording for all of them).
+_PROVIDER_ERROR_CATEGORIES = (
+    "rate_limit", "authentication", "policy", "connection", "connection", "connection")
+
+# Every category ``gateway.provider_error_replies`` accepts; ``generic`` is the no-pattern-match
+# catch-all, the rest mirror the pattern table above.
+PROVIDER_ERROR_REPLY_CATEGORIES = (
+    "rate_limit", "authentication", "policy", "connection", "generic")
 
 
 def _context_overflow_reply() -> str:
@@ -652,12 +680,26 @@ def _rate_limit_reply(text: str) -> str:
     return t("gateway.errors.usage_limit_resets", window=format_reset_window(seconds))
 
 
+def _configured_provider_error_reply(category: str) -> Optional[str]:
+    """Operator wording for one provider-failure *category*, or ``None`` to use the builtin one.
+
+    Best-effort: an unreadable/absent config never costs the user their error reply.
+    """
+    try:
+        section = (_load_gateway_config().get("gateway") or {}).get("provider_error_replies") or {}
+        configured = section.get(category)
+    except (AttributeError, TypeError):
+        return None
+    return configured if isinstance(configured, str) and configured.strip() else None
+
+
 def _gateway_provider_error_reply(text: str) -> str:
-    """Map raw provider/API errors to a short user-safe Telegram reply."""
-    for pattern, reply_key in _PROVIDER_ERROR_REPLIES:
+    """Map raw provider/API errors to a short user-safe reply, honoring a configured override."""
+    for (pattern, reply_key), category in zip(_PROVIDER_ERROR_REPLIES, _PROVIDER_ERROR_CATEGORIES):
         if pattern.search(text):
-            return _rate_limit_reply(text) if pattern is _GATEWAY_RATE_LIMIT_RE else t(reply_key)
-    return t("gateway.errors.provider_kept_failing")
+            return (_configured_provider_error_reply(category)
+                    or (_rate_limit_reply(text) if pattern is _GATEWAY_RATE_LIMIT_RE else t(reply_key)))
+    return _configured_provider_error_reply("generic") or t("gateway.errors.provider_kept_failing")
 
 
 # Provider/API failure envelope preambles (not ordinary assistant prose), anchored at line start.
@@ -1792,6 +1834,58 @@ def _load_profile_secret_scope(profile_home: Path) -> dict:
 
 
 @_contextmanager
+def _terminal_isolation_scope(profile_home: Path):
+    """Install the routed profile's ``TERMINAL_*`` isolation for this turn — fail closed.
+
+    The terminal tool resolves every setting through ``_TERMINAL_ENV_ISOLATION`` when it is
+    installed, so a turn runs with ITS profile's backend/cwd/timeouts and never with whatever a
+    sibling profile pinned into the process environment (#68559, #99986).
+
+    Admission is the point: if the profile's terminal config cannot be bridged or parsed, the turn
+    is refused with ``RuntimeError`` rather than falling back to the launch profile's policy — a
+    tenant that asked for docker must never silently execute on the host. The tokens are always
+    reset, so a failed or nested admission cannot leak isolation to the next turn.
+    """
+    from tools.terminal_tool_config import (
+        reset_terminal_config_isolation, reset_terminal_env_isolation,
+        set_terminal_config_isolation, set_terminal_env_isolation,
+    )
+
+    if not Path(profile_home).is_dir():
+        # An archived/never-created profile has no terminal policy to bridge, and loading its config would
+        # re-scaffold it (#94590). Nothing can run for it: the turn fails at its first home-bound access.
+        yield
+        return
+    from tools.terminal_scope import get_terminal_scope
+
+    # Seed with the profile's installed scope (code defaults < its .env < its config.yaml) so a dotenv-only
+    # profile keeps its TERMINAL_*; the bridge then lets only explicit config.yaml keys override it.
+    scope = get_terminal_scope()
+    env: dict[str, str] = dict(scope) if isinstance(scope, dict) else {}
+    try:
+        from hermes_cli.config import apply_terminal_config_to_env
+
+        apply_terminal_config_to_env(env=env)
+    except Exception as exc:
+        raise RuntimeError(f"terminal isolation admission failed: {exc}") from exc
+    env_token = set_terminal_env_isolation(dict(env))
+    config_token = None
+    try:
+        try:
+            from tools.terminal_tool import _parse_terminal_config_from_getter
+
+            parsed = _parse_terminal_config_from_getter(lambda name, default="": env.get(name, default))
+        except Exception as exc:
+            raise RuntimeError(f"terminal isolation admission failed: {exc}") from exc
+        config_token = set_terminal_config_isolation(parsed)
+        yield
+    finally:
+        if config_token is not None:
+            reset_terminal_config_isolation(config_token)
+        reset_terminal_env_isolation(env_token)
+
+
+@_contextmanager
 def _profile_runtime_scope(
     profile_home: Path, prepared_secret_scope: Optional[dict] = None, *,
     hydrate_secrets: bool = True):
@@ -1819,7 +1913,9 @@ def _profile_runtime_scope(
         from tools.terminal_scope import install_and_reset_profile_terminal_scope
 
         with install_and_reset_profile_terminal_scope(Path(profile_home)):
-            yield
+            # …and the per-turn TERMINAL_* isolation the terminal tool reads first (fail closed).
+            with _terminal_isolation_scope(Path(profile_home)):
+                yield
     finally:
         if secret_token is not None:
             reset_secret_scope(secret_token)
@@ -3195,6 +3291,167 @@ def _preserve_queued_followup_history_offset(
     return {**followup_result, "history_offset": current_offset}
 
 
+def _counter_delta(current: Any, baseline: Any) -> Optional[int]:
+    """Return a monotonic counter delta, or ``None`` on invalid rollback."""
+    if isinstance(current, bool) or isinstance(baseline, bool):
+        return None
+    try:
+        current_int = int(current)
+        baseline_int = int(baseline)
+    except (TypeError, ValueError):
+        return None
+    if current_int < 0 or baseline_int < 0 or current_int < baseline_int:
+        return None
+    return current_int - baseline_int
+
+
+def _requested_reasoning_effort(reasoning_config: Any) -> str:
+    """Describe Hermes' active request intent without provider inference."""
+    if not isinstance(reasoning_config, dict):
+        return "default"
+    if reasoning_config.get("enabled") is False:
+        return "none"
+    effort = str(reasoning_config.get("effort") or "").strip().lower()
+    return effort or "default"
+
+
+def _gateway_turn_runtime_metadata(
+    agent: Any,
+    *,
+    uncached_input_tokens_start: Any,
+    completion_tokens_start: Any,
+    cache_read_tokens_start: Any,
+    cache_write_tokens_start: Any,
+    usage_report_calls_start: Any,
+    cache_usage_report_calls_start: Any,
+    context_usage_report_calls_start: Any,
+    result_api_calls: Any,
+) -> dict[str, Any]:
+    """Snapshot final runtime identity and honest reported per-turn usage.
+
+    Cached-agent counters are cumulative, so usage is the delta from the
+    baseline captured immediately before ``run_conversation()``. A logical
+    call without usable provider usage makes the known sum explicitly partial;
+    no usable report hides token fields instead of inventing ``0 / 0``.
+    """
+    if agent is None:
+        return {}
+
+    compressor = getattr(agent, "context_compressor", None)
+    last_prompt_tokens = getattr(agent, "session_last_prompt_tokens", 0) or 0
+    context_length = getattr(compressor, "context_length", 0) or 0
+    input_tokens = getattr(agent, "session_prompt_tokens", 0) or 0
+    uncached_input_tokens = getattr(agent, "session_input_tokens", 0) or 0
+    output_tokens = getattr(agent, "session_completion_tokens", 0) or 0
+    cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
+    cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0) or 0
+    usage_report_calls = getattr(agent, "session_usage_report_calls", 0) or 0
+    cache_usage_report_calls = (
+        getattr(agent, "session_cache_usage_report_calls", 0) or 0
+    )
+    context_usage_report_calls = (
+        getattr(agent, "session_context_usage_report_calls", 0) or 0
+    )
+
+    turn_input_tokens = _counter_delta(
+        uncached_input_tokens,
+        uncached_input_tokens_start,
+    )
+    turn_output_tokens = _counter_delta(output_tokens, completion_tokens_start)
+    turn_cache_read_tokens = _counter_delta(
+        cache_read_tokens, cache_read_tokens_start
+    )
+    turn_cache_write_tokens = _counter_delta(
+        cache_write_tokens, cache_write_tokens_start
+    )
+    turn_usage_report_calls = _counter_delta(
+        usage_report_calls, usage_report_calls_start
+    )
+    turn_cache_usage_report_calls = _counter_delta(
+        cache_usage_report_calls, cache_usage_report_calls_start
+    )
+    turn_context_usage_report_calls = _counter_delta(
+        context_usage_report_calls, context_usage_report_calls_start
+    )
+    try:
+        expected_api_calls = (
+            None if isinstance(result_api_calls, bool) else int(result_api_calls)
+        )
+    except (TypeError, ValueError):
+        expected_api_calls = None
+
+    token_usage_status = None
+    if (
+        isinstance(turn_usage_report_calls, int)
+        and turn_usage_report_calls > 0
+        and turn_input_tokens is not None
+        and turn_output_tokens is not None
+    ):
+        token_usage_status = "reported"
+        if (
+            expected_api_calls is None
+            or expected_api_calls < 0
+            or turn_usage_report_calls != expected_api_calls
+        ):
+            token_usage_status = "reported_partial"
+    else:
+        turn_input_tokens = None
+        turn_output_tokens = None
+
+    cache_usage_status = None
+    if (
+        isinstance(turn_cache_usage_report_calls, int)
+        and turn_cache_usage_report_calls > 0
+        and turn_cache_read_tokens is not None
+        and turn_cache_write_tokens is not None
+    ):
+        cache_usage_status = "reported"
+        if (
+            expected_api_calls is None
+            or expected_api_calls < 0
+            or turn_cache_usage_report_calls != expected_api_calls
+        ):
+            cache_usage_status = "reported_partial"
+    else:
+        turn_cache_read_tokens = None
+        turn_cache_write_tokens = None
+
+    context_usage_status = None
+    if (
+        isinstance(turn_context_usage_report_calls, int)
+        and turn_context_usage_report_calls > 0
+        and expected_api_calls is not None
+        and expected_api_calls >= 0
+        and turn_context_usage_report_calls == expected_api_calls
+        and last_prompt_tokens > 0
+    ):
+        context_usage_status = "reported"
+
+    return {
+        "last_prompt_tokens": last_prompt_tokens,
+        "input_tokens": input_tokens,
+        "uncached_input_tokens": uncached_input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_write_tokens": cache_write_tokens,
+        "usage_report_calls": usage_report_calls,
+        "cache_usage_report_calls": cache_usage_report_calls,
+        "context_usage_report_calls": context_usage_report_calls,
+        "turn_input_tokens": turn_input_tokens,
+        "turn_output_tokens": turn_output_tokens,
+        "turn_cache_read_tokens": turn_cache_read_tokens,
+        "turn_cache_write_tokens": turn_cache_write_tokens,
+        "token_usage_status": token_usage_status,
+        "cache_usage_status": cache_usage_status,
+        "context_usage_status": context_usage_status,
+        "reasoning_effort": _requested_reasoning_effort(
+            getattr(agent, "reasoning_config", None)
+        ),
+        "model": getattr(agent, "model", None),
+        "context_length": context_length,
+    }
+
+
 async def _dispose_unused_adapter(adapter: BasePlatformAdapter | None) -> None:
     """Best-effort dispose for an adapter that never made it onto ``self.adapters`` (may be ``None``).
     Nothing else calls ``disconnect()`` on it, so ``__init__`` resources (e.g. SQLite fds) would leak
@@ -3458,6 +3715,13 @@ class GatewayRunner(
         # Each SERVED profile's gateway config, as loaded once by ``_load_secondary_profile_config``.
         # ``self.config`` is only the launch profile's: anything host-wide (restart notices) needs these.
         self._profile_configs: dict[str, Any] = {}
+        # Routed profiles use isolated turn workers when tenant isolation is enabled.
+        self._tenant_supervisor = None
+        try:
+            from gateway.tenant_supervisor import TenantSupervisor
+            self._tenant_supervisor = TenantSupervisor.from_gateway_config(self.config)
+        except Exception as exc:
+            logger.debug("TenantSupervisor init failed: %s", exc, exc_info=True)
         self._warn_if_docker_media_delivery_is_risky()
         _gateway_runner_ref = _weakref.ref(self)
 
@@ -4147,6 +4411,148 @@ class GatewayRunner(
             if hasattr(agent, "_last_flushed_db_idx"):
                 agent._last_flushed_db_idx = 0
         agent._api_call_count = 0
+
+    async def _run_agent_for_tenant(
+        self,
+        source: SessionSource,
+        message: str,
+        correlation_id: str,
+        session_id: str | None = None,
+        session_key: str | None = None,
+        context_prompt: str | None = None,
+        history: list[dict[str, Any]] | None = None,
+        **kwargs,
+    ) -> dict[str, Any]:
+        """Narrow worker call invoked by TenantSupervisor's isolated worker.
+
+        Runs inside ``TenantWorker.run_turn``'s ``_profile_runtime_scope``,
+        so the turn already sees the routed profile's HERMES_HOME, secret
+        scope, and TERMINAL_* isolation. This hook bridges the supervisor's
+        minimal ``(source, message, correlation_id)`` protocol to the
+        gateway's full ``_run_agent_inner`` without re-entering the scope
+        or touching transport tokens.
+
+        Returns an envelope carrying the original route/session +
+        correlation identity so the gateway can validate delivery ownership
+        before sending to the platform.
+        """
+        profile = getattr(source, "profile", None) or self._profile_name_for_source(source) or "default"
+        # If full turn context is available (routed via _run_agent's supervisor branch), run the real agent
+        if session_id is not None and history is not None:
+            inner = await self._run_agent_inner(
+                message=message,
+                context_prompt=context_prompt or "",
+                history=history,
+                source=source,
+                session_id=session_id,
+                session_key=session_key,
+                **kwargs,
+            )
+            # Envelope for delivery validation (gateway checks these fields)
+            if isinstance(inner, dict):
+                inner["profile"] = profile
+                inner["correlation_id"] = correlation_id
+                inner["session_id"] = session_id
+                inner["session_key"] = session_key
+                inner["isolated"] = True
+                inner["route"] = profile
+            return inner
+        # Fallback synthetic path for direct supervisor unit-tests that only
+        # supply (source, message, correlation_id) without full session context.
+        return {
+            "profile": profile,
+            "correlation_id": correlation_id,
+            "session_id": session_id,
+            "session_key": session_key or self._session_key_for_source(source),
+            "home": str(self._resolve_profile_home_for_source(source)),
+            "message": message,
+            "source": source.to_dict() if hasattr(source, "to_dict") else str(source),
+            "isolated": True,
+            "route": profile,
+            "final_response": message,
+        }
+
+    def _validate_tenant_delivery(
+        self,
+        result: dict[str, Any],
+        expected_profile: str,
+        expected_correlation: str,
+        expected_session_id: str,
+        expected_session_key: str,
+    ) -> bool:
+        """Validate worker response ownership before platform delivery (fail-closed).
+
+        The gateway must verify that the isolated worker's response belongs to
+        the original route/session and carries the expected correlation identity;
+        a worker must never be able to send to an arbitrary chat.
+        """
+        if not isinstance(result, dict):
+            logger.error("Tenant delivery validation failed: result not dict (%r)", type(result))
+            return False
+        # Correlation identity must echo exactly (prevents stale replay)
+        returned_corr = result.get("correlation_id")
+        if returned_corr != expected_correlation:
+            logger.error(
+                "Tenant delivery validation failed: correlation %r != %r (profile=%r session=%r)",
+                returned_corr, expected_correlation, expected_profile, expected_session_id,
+            )
+            return False
+        # Profile/route must match (prevents cross-tenant delivery)
+        returned_profile = result.get("profile") or result.get("route")
+        if expected_profile is not None and returned_profile != expected_profile:
+            logger.error(
+                "Tenant delivery validation failed: profile %r != %r (correlation=%r)",
+                returned_profile, expected_profile, expected_correlation,
+            )
+            return False
+        # Session binding: if worker echoes session ids, they must match
+        ret_sid = result.get("session_id")
+        if ret_sid is not None and ret_sid != expected_session_id:
+            logger.error(
+                "Tenant delivery validation failed: session_id %r != %r (profile=%r)",
+                ret_sid, expected_session_id, expected_profile,
+            )
+            return False
+        ret_skey = result.get("session_key")
+        if ret_skey is not None and expected_session_key is not None and ret_skey != expected_session_key and ret_skey != expected_session_id:
+            logger.error(
+                "Tenant delivery validation failed: session_key %r != %r",
+                ret_skey, expected_session_key,
+            )
+            return False
+        return True
+
+    def _tenant_health(self) -> dict[str, Any]:
+        """Supervisor health for gateway status/diagnostics."""
+        sup = getattr(self, "_tenant_supervisor", None)
+        if sup is None:
+            return {"mode": "off", "workers": {}, "total_workers": 0}
+        try:
+            return sup.health()
+        except Exception:
+            logger.debug("tenant health failed", exc_info=True)
+            return {"mode": "unknown", "workers": {}, "total_workers": 0}
+
+    def _tenant_drain(self) -> None:
+        """Drain all tenant workers (gateway shutdown)."""
+        sup = getattr(self, "_tenant_supervisor", None)
+        if sup is None:
+            return
+        try:
+            sup.drain()
+        except Exception:
+            logger.debug("tenant drain failed", exc_info=True)
+
+    def _tenant_cancel(self, correlation_id: str) -> bool:
+        """Cancel an in-flight tenant turn (best-effort)."""
+        sup = getattr(self, "_tenant_supervisor", None)
+        if sup is None or not hasattr(sup, "cancel_turn"):
+            return False
+        try:
+            return bool(sup.cancel_turn(correlation_id))
+        except Exception:
+            logger.debug("tenant cancel_turn failed", exc_info=True)
+            return False
 
     def _profile_name_for_source(
         self, source: SessionSource, adapter_profile: Optional[str] = None,

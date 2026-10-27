@@ -1315,6 +1315,17 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             local_sinks = local_viewer_events.wire(self, agent)
             from gateway.session_usage import TURN_BASE_ATTR
             setattr(agent, TURN_BASE_ATTR, int(getattr(agent, "session_output_tokens", 0) or 0))
+        # Cached agents retain cumulative counters; record this turn's baseline so the reported
+        # usage below is a delta (see ``_gateway_turn_runtime_metadata``).
+        usage_baseline = {
+            "uncached_input_tokens_start": getattr(agent, "session_input_tokens", 0) or 0,
+            "completion_tokens_start": getattr(agent, "session_completion_tokens", 0) or 0,
+            "cache_read_tokens_start": getattr(agent, "session_cache_read_tokens", 0) or 0,
+            "cache_write_tokens_start": getattr(agent, "session_cache_write_tokens", 0) or 0,
+            "usage_report_calls_start": getattr(agent, "session_usage_report_calls", 0) or 0,
+            "cache_usage_report_calls_start": getattr(agent, "session_cache_usage_report_calls", 0) or 0,
+            "context_usage_report_calls_start": getattr(agent, "session_context_usage_report_calls", 0) or 0,
+        }
         try:
             agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
             persist_msg, persist_ts = self._prepare_turn_message(agent_history)
@@ -1348,16 +1359,17 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         final_response = result.get("final_response")
         # Actual token counts from the agent instance used for this run.
         agent = ctx.agent_holder[0]
-        has_comp = bool(agent) and hasattr(agent, "context_compressor")
-        comp = agent.context_compressor if has_comp else None
+        # Final runtime identity and provider-reported usage for this logical turn: cumulative
+        # counters are reported as deltas from ``usage_baseline``, and an unterminated report hides
+        # the token fields instead of inventing ``0 / 0``.
+        from gateway.run import _gateway_turn_runtime_metadata
         usage = {
-            "last_prompt_tokens": getattr(comp, "last_prompt_tokens", 0) if has_comp else 0,
-            "input_tokens": getattr(agent, "session_prompt_tokens", 0) if has_comp else 0,
-            "output_tokens": getattr(agent, "session_completion_tokens", 0) if has_comp else 0,
-            "model": getattr(agent, "model", None) if agent else None,
             # Most failed results name no provider; the error card's sign-in / update-key action needs it.
             "provider": getattr(agent, "provider", None) if agent else None,
-            "context_length": (getattr(comp, "context_length", 0) or 0) if has_comp else 0,
+            **_gateway_turn_runtime_metadata(
+                agent, **usage_baseline,
+                result_api_calls=result.get("api_calls") if isinstance(result, dict) else None,
+            ),
             # The rest of the `-z --usage-file` ledger (hermes_cli/oneshot._USAGE_KEYS): a finite
             # viewer reads the committed result over `prompt.receipt`, so the projection must keep
             # what the in-process one-shot took straight from `run_conversation`.
@@ -1377,6 +1389,11 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             "interrupted": result.get("interrupted", False), "interrupt_message": result.get("interrupt_message"),
             "error": result.get("error"),
             **{key: result[key] for key in _FAILURE_DESCRIPTOR_KEYS if key in result},
+            # The raw failure descriptor the error card and `agent:end` consumers read (kept
+            # alongside upstream's newer classified keys): error class, HTTP status, and the
+            # retry budget the turn actually used.
+            **{key: result.get(key) for key in (
+                "error_type", "status_code", "retry_count", "max_retries", "rate_limit")},
             "compression_exhausted": result.get("compression_exhausted", False),
             "compression_deferred": result.get("compression_deferred", False),
             "tools": ctx.tools_holder[0] or [],

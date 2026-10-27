@@ -996,7 +996,47 @@ class GatewayTurnMixin(GatewayTurnPrepareMixin, GatewayTurnHygieneMixin, Gateway
         source: SessionSource, session_id: str, **turn_kwargs,
     ) -> dict[str, Any]:
         """Profile-scoping wrapper around ``_run_agent_inner`` (same keyword parameters; pass-through
-        when multiplexing is off)."""
+        when multiplexing is off).
+
+        With a tenant supervisor in worker/process mode the turn is handed to the isolated worker
+        instead, and its response is validated for route/session/correlation ownership before the
+        gateway delivers it (fail-closed).
+        """
+        supervisor = getattr(self, "_tenant_supervisor", None)
+        if (
+            getattr(getattr(self, "config", None), "multiplex_profiles", False)
+            and supervisor is not None
+            and getattr(supervisor.config, "mode", "off") not in ("off", "in_process")
+        ):
+            profile = getattr(source, "profile", None) or self._profile_name_for_source(source)
+            validated = supervisor.validate_route(profile)
+            if profile is None:
+                routes = getattr(self.config, "profile_routes", None) or []
+                if routes and getattr(supervisor.config, "unmatched", "deny") == "deny":
+                    raise RuntimeError("tenant isolation: unmatched route denied (unmatched=deny)")
+                with self._profile_scope_for_source(source):
+                    return await self._run_agent_inner(
+                        message, context_prompt, history, source, session_id, **turn_kwargs
+                    )
+            session_key = turn_kwargs.get("session_key")
+            run_generation = turn_kwargs.get("run_generation")
+            correlation_id = (
+                f"{session_key}:{run_generation}:{session_id}"
+                if session_key else f"{session_id}:{run_generation}"
+            )
+            result = await supervisor.run_turn(
+                profile=validated or profile, source=source, message=message,
+                correlation_id=correlation_id, gateway=self, session_id=session_id,
+                session_key=session_key, context_prompt=context_prompt, history=history,
+                **{key: value for key, value in turn_kwargs.items() if key != "session_key"},
+            )
+            if not self._validate_tenant_delivery(
+                result, expected_profile=validated or profile,
+                expected_correlation=correlation_id, expected_session_id=session_id,
+                expected_session_key=session_key,
+            ):
+                raise RuntimeError("tenant delivery validation failed: route/session/correlation mismatch")
+            return result
         with self._profile_scope_for_source(source):
             return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)
 

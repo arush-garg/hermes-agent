@@ -1126,6 +1126,13 @@ def policy_scope(policy, *, authority=None):
         active = replace(policy, toolsets=policy.current_toolsets(policy.config(authority, secrets=False)))
     cwd_token = set_session_cwd(policy.cwd)
     terminal_token = set_terminal_scope(terminal)
+    # The session's frozen terminal policy is the turn's authority: a profile isolation installed by an
+    # enclosing routed scope (_terminal_isolation_scope) would otherwise shadow it in every _tenv read.
+    from tools.terminal_tool_config import (
+        reset_terminal_config_isolation, reset_terminal_env_isolation,
+        set_terminal_config_isolation, set_terminal_env_isolation,
+    )
+    iso_env_token, iso_config_token = set_terminal_env_isolation(None), set_terminal_config_isolation(None)
     policy_token = _ACTIVE_POLICY.set(active)
     from gateway.session_local_editor import editor_scope
     try:
@@ -1139,6 +1146,8 @@ def policy_scope(policy, *, authority=None):
             yield
     finally:
         _ACTIVE_POLICY.reset(policy_token)
+        reset_terminal_config_isolation(iso_config_token)
+        reset_terminal_env_isolation(iso_env_token)
         reset_terminal_scope(terminal_token)
         cwd_token.var.reset(cwd_token)
         _TURN_PROFILE.reset(profile_token)
