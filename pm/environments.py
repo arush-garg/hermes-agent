@@ -38,6 +38,23 @@ def install_state_dir(project_root: Path) -> Path:
     return installs_root() / install_key(project_root)
 
 
+def _live_checkout_under_pytest(root: Path) -> bool:
+    """True when ``root`` is this source checkout and the suite is running.
+
+    Dev installs often live inside the real home (``~/.hermes/hermes-agent``), so
+    ownership/payload probes rooted at the checkout's parent read the operator's
+    real home and trip the home-I/O guard. A live source tree under test is never
+    a sealed payload and never borrows another root's state (same
+    _pytest_owns_live_checkout pattern as hermes_cli/_early_recovery.py).
+    Tmp-path checkouts used by PM tests are unaffected.
+    """
+    try:
+        return ("PYTEST_CURRENT_TEST" in os.environ
+                and Path(root).resolve() == Path(__file__).resolve().parent.parent)
+    except OSError:
+        return False
+
+
 def owning_home_root(project_root: Path) -> Path | None:
     """The data root that owns this checkout when the active root only borrows it, else ``None``.
 
@@ -58,6 +75,8 @@ def owning_home_root(project_root: Path) -> Path | None:
     from hermes_constants import _get_platform_default_hermes_home
 
     root = Path(project_root).resolve()
+    if _live_checkout_under_pytest(root):
+        return None
     key = install_key(root)
     candidates = [candidate for candidate in dict.fromkeys((root.parent, _get_platform_default_hermes_home()))
                   if (candidate / "installs" / key / "facts.json").is_file()]
@@ -155,7 +174,13 @@ def _payload_manifest(root: Path) -> dict | None:
     error. Readers then take each field with ``.get`` and treat an absent one as unset.
     """
     try:
-        manifest = json.loads((root.parent / "manifest.json").read_text(encoding="utf-8-sig"))
+        resolved = Path(root).resolve()
+    except OSError:
+        return None
+    if _live_checkout_under_pytest(resolved):
+        return None
+    try:
+        manifest = json.loads((resolved.parent / "manifest.json").read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
     if not isinstance(manifest, dict) or not isinstance(manifest.get("repo"), str):

@@ -318,7 +318,14 @@ class ProviderProfile:
             return self.hostname
         if self.base_url:
             from urllib.parse import urlparse
-            return urlparse(self.base_url).hostname or ""
+            parsed = urlparse(self.base_url)
+            # Only HTTP(S) endpoints have a host worth claiming. An internal scheme such as
+            # ``claude-cli://local`` or ``acp://<vendor>`` would otherwise leak a meaningless
+            # token ("local") into host-substring detection and capture every host containing it
+            # — e.g. ``localhost:11434`` resolving to claude-cli instead of Ollama.
+            if parsed.scheme not in ("http", "https"):
+                return ""
+            return parsed.hostname or ""
         return ""
 
     def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
