@@ -14357,6 +14357,20 @@ def test_interrupt_resumes_voice_wake_owner_not_a_foreign_lease(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_keep_pin_reaches_turn_only_for_explicit_submit(monkeypatch):
+    """The TUI /keep request must carry its one-turn pin into the run thread."""
+    calls = []
+    session = {"history_lock": threading.RLock(), "running": True}
+    monkeypatch.setattr(server, "_wait_agent_for_prompt", lambda *_: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", lambda *args, **kwargs: calls.append((args, kwargs)))
+    for pinned in (True, False):
+        server._run_after_agent_ready(
+            "rid", "sid", session, "actual prompt", None, None, None,
+            keep_current_model=pinned)
+    assert [kw["keep_current_model"] for _, kw in calls] == [True, False]
+    assert all(args[3] == "actual prompt" for args, _ in calls)
+
+
 def test_run_prompt_submit_registers_turn_thread_for_interrupt(monkeypatch):
     """_run_prompt_submit must expose the actual turn thread to session.interrupt.
 
