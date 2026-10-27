@@ -42,6 +42,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/save` | Save the current conversation |
 | `/prompt` (alias: `/compose`) | Compose your next prompt in `$EDITOR` (markdown) instead of the inline input — useful for long, multi-line, or carefully-formatted prompts. |
 | `/retry` | Retry the last message (resend to agent) |
+| `/keep <prompt>` (alias: `/k`) | Send `<prompt>` using the current model without first restoring your primary model — useful after a fallback switch when you want to stay on the fallback for this message. |
 | `/undo` | Remove the last user/assistant exchange |
 | `/title` | Set a title for the current session (usage: /title My Session Name) |
 | `/id` | Show the current session ID (usable for transcript pulls mid-session) |
@@ -256,6 +257,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/personality [name]` | Set a personality overlay for the session. `/personality none` (or `default` / `neutral`) clears it. |
 | `/fast [normal\|fast\|auto\|cold\|status]` | Fast mode — OpenAI Priority Processing / Anthropic Fast Mode. `auto`/`cold` open a bounded fast window per turn / per session. |
 | `/retry` | Retry the last message. |
+| `/keep <prompt>` (alias: `/k`) | Send a prompt on the current model without restoring the primary. |
 | `/undo` | Remove the last exchange. |
 | `/sethome` (alias: `/set-home`) | Mark the current chat as the platform home channel for deliveries. |
 | `/compress [here [N] \| focus topic]` | Manually compress conversation context. `/compress here [N]` keeps the most recent N exchanges (default 2) verbatim and summarizes the rest. A focus topic narrows what a full summary preserves. |
