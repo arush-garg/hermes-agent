@@ -8,6 +8,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from pm.build_operations import verified_tools
@@ -15,6 +16,33 @@ from pm.environments import install_key, site_packages
 from pm.lock import Facts, Lockfile
 from pm.paths import lockfile_path
 from pm.store import current_target
+
+
+_TOOLS_COPY_PREFIX = "pm-e2e-tools-"
+_STALE_TOOLS_COPY_HOURS = 24
+
+
+def sweep_stale_tool_copies(root: Path, max_age_hours: float = _STALE_TOOLS_COPY_HOURS) -> int:
+    """Remove ``pm-e2e-tools-*`` copies under *root* that are older than *max_age_hours*.
+
+    The ``atexit`` cleanup below never runs when a runner kills a timed-out file, so each such run leaves
+    a few hundred MB behind. A copy younger than the cutoff may belong to a live pytest process and is kept.
+    Returns the number removed."""
+    cutoff = time.time() - max_age_hours * 3600
+    removed = 0
+    try:
+        candidates = [e for e in root.iterdir() if e.name.startswith(_TOOLS_COPY_PREFIX) and e.is_dir()]
+    except OSError:
+        return 0
+    for entry in candidates:
+        try:
+            if entry.stat().st_mtime >= cutoff:
+                continue
+            shutil.rmtree(entry)
+            removed += 1
+        except OSError:
+            continue  # raced with another sweeper, or not ours to delete
+    return removed
 
 
 def _prepare_test_tools() -> tuple[Path, dict] | None:
@@ -47,7 +75,8 @@ def _prepare_test_tools() -> tuple[Path, dict] | None:
     # The source may live under the real ~/.hermes. Per-test guards must never
     # read it, nor follow a sandbox tool symlink back into it. Copy the verified
     # entries once per pytest process into the runner's throwaway scratch root.
-    prepared = Path(tempfile.mkdtemp(prefix="pm-e2e-tools-"))
+    sweep_stale_tool_copies(Path(tempfile.gettempdir()))
+    prepared = Path(tempfile.mkdtemp(prefix=_TOOLS_COPY_PREFIX))
     try:
         for record in records.values():
             assert record is not None
