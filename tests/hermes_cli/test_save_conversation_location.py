@@ -32,6 +32,17 @@ def hermes_home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.fixture
+def fresh_cli(hermes_home, monkeypatch):
+    """Import ``cli`` fresh against the fixture home; restore the originals at teardown.
+
+    Popping ``hermes_constants`` for good would leave later tests importing a second copy
+    while already-imported modules keep the first, splitting process-wide state.
+    """
+    for mod in [m for m in sys.modules if m.startswith("cli") or m == "hermes_constants"]:
+        monkeypatch.delitem(sys.modules, mod)
+
+
 def _make_stub_cli(history):
     """Build a minimal object exposing just what save_conversation uses."""
     return SimpleNamespace(
@@ -42,16 +53,13 @@ def _make_stub_cli(history):
     )
 
 
-def test_save_conversation_writes_under_hermes_home(hermes_home, tmp_path, monkeypatch, capsys):
+def test_save_conversation_writes_under_hermes_home(fresh_cli, hermes_home, tmp_path, monkeypatch, capsys):
     """Snapshot must land under ~/.hermes/sessions/saved/, not CWD."""
     # Change CWD to a different directory to prove the file does NOT go there.
     work = tmp_path / "somewhere-else"
     work.mkdir()
     monkeypatch.chdir(work)
 
-    # Import fresh to pick up the HERMES_HOME fixture
-    for mod in [m for m in sys.modules if m.startswith("cli") or m == "hermes_constants"]:
-        sys.modules.pop(mod, None)
 
     import cli
 
@@ -89,9 +97,7 @@ def test_save_conversation_writes_under_hermes_home(hermes_home, tmp_path, monke
     assert "hermes --resume 20260101_120000_abc123" in out, out
 
 
-def test_save_conversation_empty_history_does_nothing(hermes_home, capsys):
-    for mod in [m for m in sys.modules if m.startswith("cli") or m == "hermes_constants"]:
-        sys.modules.pop(mod, None)
+def test_save_conversation_empty_history_does_nothing(fresh_cli, hermes_home, capsys):
     import cli
 
     stub = _make_stub_cli([])
@@ -105,9 +111,7 @@ def test_save_conversation_empty_history_does_nothing(hermes_home, capsys):
 
 
 
-def test_save_conversation_bad_format_shows_usage(hermes_home, capsys):
-    for mod in [m for m in sys.modules if m.startswith("cli") or m == "hermes_constants"]:
-        sys.modules.pop(mod, None)
+def test_save_conversation_bad_format_shows_usage(fresh_cli, hermes_home, capsys):
     import cli
 
     stub = _make_stub_cli([{"role": "user", "content": "hi"}])

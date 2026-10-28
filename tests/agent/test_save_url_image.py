@@ -88,12 +88,6 @@ def http_server(tmp_path, monkeypatch):
     url_safety._reset_allow_private_cache()
     (tmp_path / ".hermes").mkdir()
 
-    # Force the constants/image cache helpers to re-read HERMES_HOME.
-    import sys
-    for mod in list(sys.modules):
-        if mod.startswith("hermes_constants") or mod.startswith("agent.image_gen_provider"):
-            sys.modules.pop(mod, None)
-
     httpd = socketserver.TCPServer(("127.0.0.1", 0), _TinyImageHandler)
     port = httpd.server_address[1]
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
