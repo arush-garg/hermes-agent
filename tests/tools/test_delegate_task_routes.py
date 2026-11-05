@@ -5,8 +5,9 @@ from unittest.mock import patch
 import pytest
 
 from tools.delegate_tool import DELEGATE_TASK_SCHEMA, _build_children, _resolve_task_routes
-from tools.delegate_tool_routes import TaskRoute
+from tools.delegate_tool_routes import TaskRoute, _route_one
 from tools.delegate_tool_config import _resolve_child_runtime
+from plugins.delegation.default import DefaultDelegationProvider
 
 
 PARENT = SimpleNamespace(
@@ -23,6 +24,38 @@ CONFIG = {
     "api_key": "configured-key", "request_overrides": {"parent_filter": True},
     "fallback_providers": [{"provider": "openrouter", "model": "fallback"}],
 }
+
+
+@pytest.mark.parametrize(
+    "task,expected",
+    [
+        ({"goal": "default"}, {"model": "configured-model", "provider": "openrouter"}),
+        ({"goal": "model", "model": "chosen-model"}, {"model": "chosen-model", "provider": "openrouter"}),
+        ({"goal": "provider", "provider": "other"}, {"provider": "other"}),
+        ({"goal": "both", "model": "chosen-model", "provider": "other"},
+         {"model": "chosen-model", "provider": "other"}),
+    ],
+)
+def test_default_backend_honors_task_pins(task, expected):
+    config = {**CONFIG, "api_mode": "chat_completions"}
+    route = _route_one(DefaultDelegationProvider(), {}, 0, task, config)
+    for key, value in expected.items():
+        assert route[key] == value
+    assert config["model"] == "configured-model"  # never mutate the shared configuration
+    if task.get("model") or task.get("provider"):
+        assert route["fallback_providers"] == []
+    if task.get("provider"):
+        for key in ("base_url", "api_key", "api_mode", "request_overrides"):
+            assert key not in route
+        assert ("model" in route) == bool(task.get("model"))
+    else:
+        assert route["base_url"] == CONFIG["base_url"]
+
+
+@pytest.mark.parametrize("field,value", [("model", ""), ("provider", " "), ("model", 3)])
+def test_default_backend_rejects_invalid_task_pins(field, value):
+    with pytest.raises(ValueError, match=field):
+        _route_one(DefaultDelegationProvider(), {}, 0, {"goal": "bad", field: value}, CONFIG)
 
 
 def test_schema_advertises_optional_routes_and_default_behavior():

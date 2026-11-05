@@ -296,7 +296,16 @@ def _route_one(provider: DelegationProvider, declared: dict[str, dict[str, Any]]
         error = _param_error(index, name, value, declared[name])
         if error:
             raise DelegationRouteError(error)
-    payload = {"goal": task.get("goal"), "context": task.get("context"), "index": index, **params}
+    # Include per-task model/provider pins in the payload so providers can honor them.
+    # These are reserved for core but must be visible to the routing decision.
+    payload = {
+        "goal": task.get("goal"),
+        "context": task.get("context"),
+        "index": index,
+        "model": task.get("model"),
+        "provider": task.get("provider"),
+        **params,
+    }
     try:
         return _clean_route(provider.name, provider.route_task(payload, config))
     except DelegationRouteError as exc:
