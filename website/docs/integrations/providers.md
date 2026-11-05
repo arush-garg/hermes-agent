@@ -169,6 +169,17 @@ Auxiliary authentication recovery refreshes the credential used by the failed
 request, not an unrelated ambient login; rotating a borrowed login can otherwise
 invalidate its owner's refresh token.
 
+To prefer OAuth across every native Anthropic model while retaining an API key
+as the rate-limit fallback, set `auth.anthropic_oauth_first: true` with
+`hermes config set auth.anthropic_oauth_first true`. Keep your OAuth login in
+`hermes auth add anthropic` and your API key in `ANTHROPIC_API_KEY`. Available
+OAuth credentials take precedence regardless of pool selection strategy; a 429
+rotates to the next available credential, and OAuth becomes preferred again when
+its cooldown expires. Explicit per-request API keys still override the policy.
+The setting defaults to false to preserve API-only setups, applies to native
+Anthropic rather than Claude models served by other providers, and does not
+change Anthropic's subscription eligibility or billing rules.
+
 :::caution Requires Claude Max "extra usage" credits
 When you authenticate via `hermes model` → Anthropic OAuth (or via `hermes auth add anthropic --type oauth`), Hermes routes as Claude Code against your Anthropic account. **It only works if you're on a Claude Max plan and have purchased extra usage credits.** The base Max plan allowance (the usage included in Claude Code by default) is not consumed by Hermes — only the extra/overage credits you've added on top are. Claude Pro subscribers cannot use this path.
 

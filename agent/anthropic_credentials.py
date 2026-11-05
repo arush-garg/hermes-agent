@@ -702,6 +702,9 @@ def resolve_anthropic_token(*, model: Optional[str] = None) -> Optional[str]:
 
     With *model*, a token the credential pool has benched for that model resolves to ``None``
     instead of being handed straight back to the caller that just saw it rate-limited."""
+    from agent.anthropic_auth_policy import oauth_first_enabled, resolve_preferred_token
+    if oauth_first_enabled():
+        return resolve_preferred_token(model)
     _read_creds = functools.cache(read_claude_code_credentials)  # read the file at most once per resolve
     token = _first_env("ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
     if token:

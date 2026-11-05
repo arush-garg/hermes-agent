@@ -973,37 +973,6 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
     return True, has_retried_429
 
 
-def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, credential_id, rotate_and_swap):
-    # Already-exhausted credential: rotate immediately. Avoids the "cancel-between-429s" trap where
-    # the local has_retried_429 resets per prompt and retries forever.
-    current_entry = None
-    if credential_id:
-        current_entry = next((e for e in pool.entries() if e.id == credential_id), None)
-    if api_key_hint:
-        current_entry = current_entry or next(
-            (e for e in pool.entries() if e.runtime_api_key == api_key_hint), None
-        )
-    if current_entry is None:
-        current_entry = pool.current()
-    current_last_status = getattr(current_entry, "last_status", None) if current_entry else None
-    if current_last_status == STATUS_EXHAUSTED:
-        _ra().logger.info(
-            "Credential already exhausted (last_status=%s) — rotating immediately instead of retrying",
-            current_last_status,
-        )
-        return (True, False) if rotate_and_swap(429, "rate limit, pre-exhausted") else (False, True)
-    usage_limit_reached = False
-    if error_context:
-        context_reason = str(error_context.get("reason") or "").lower()
-        context_message = str(error_context.get("message") or "").lower()
-        usage_limit_reached = any(t in context_reason for t in _USAGE_LIMIT_REASON_TOKENS) or any(
-            t in context_message for t in _USAGE_LIMIT_MESSAGE_TOKENS
-        )
-    if not has_retried_429 and not usage_limit_reached:
-        return False, True
-    return (True, False) if rotate_and_swap(429, "rate limit") else (False, True)
-
-
 def recover_with_credential_pool(
     agent, *, status_code: Optional[int], has_retried_429: bool,
     classified_reason: Optional[FailoverReason] = None,
@@ -1112,7 +1081,14 @@ def recover_with_credential_pool(
         # match the key that failed, not a different account.
         return (True, False) if _rotate_and_swap(402, "billing") else (False, has_retried_429)
     if effective_reason == FailoverReason.rate_limit:
-        return _recover_rate_limit(
+        from agent.anthropic_auth_policy import oauth_first_enabled
+        from agent.anthropic_credentials import is_native_anthropic_host
+        failed = next((entry for entry in pool.entries() if entry.id == credential_id), None)
+        if (current_provider == "anthropic" and is_native_anthropic_host(getattr(agent, "base_url", None))
+                and failed is not None and failed.auth_type == "oauth" and oauth_first_enabled()):
+            return (True, False) if _rotate_and_swap(429, "OAuth rate limit") else (False, True)
+        from agent.agent_runtime_pool_recovery import recover_rate_limit
+        return recover_rate_limit(
             pool, has_retried_429=has_retried_429, error_context=error_context,
             api_key_hint=api_key_hint, credential_id=credential_id, rotate_and_swap=_rotate_and_swap,
         )

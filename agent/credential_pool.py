@@ -2140,6 +2140,8 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         # logs immediately.
         self._last_no_entries_log_at = None
 
+        from agent.anthropic_auth_policy import prefer_oauth_entries
+        available = prefer_oauth_entries(self.provider, available)
         if self._strategy == STRATEGY_RANDOM:
             entry = random.choice(available)
         elif self._strategy == STRATEGY_LEAST_USED and len(available) > 1:
@@ -2502,7 +2504,11 @@ def _normalize_pool_priorities(provider: str, entries: list[PooledCredential]) -
     )
     id_to_idx = {entry.id: idx for idx, entry in enumerate(entries)}
     changed = False
-    for new_priority, entry in enumerate([*manual_entries, *seeded_entries]):
+    ordered = [*manual_entries, *seeded_entries]
+    from agent.anthropic_auth_policy import oauth_first_enabled
+    if oauth_first_enabled():
+        ordered.sort(key=lambda entry: entry.auth_type != AUTH_TYPE_OAUTH)
+    for new_priority, entry in enumerate(ordered):
         if entry.priority != new_priority:
             entries[id_to_idx[entry.id]] = replace(entry, priority=new_priority)
             changed = True
@@ -2553,22 +2559,16 @@ def _seed_anthropic_singletons(seed: _Seeder) -> None:
     except ImportError:
         pass
 
-    # API-key vs OAuth is a user-visible choice at `hermes setup`. The API-key
-    # signal is ANTHROPIC_API_KEY set AND no OAuth env vars (the save_* helpers
-    # zero the other side). Then we MUST NOT seed autodiscovered OAuth tokens:
-    # rotation on a 401/429 would silently flip the session onto OAuth, which
-    # forces the Claude Code identity injection, `mcp_` tool-name rewrite and
-    # claude-cli User-Agent the user explicitly opted out of. Prefer
-    # ~/.hermes/.env over os.environ, as `_seed_from_env` does.
+    # API-only setup excludes discovered OAuth unless subscription-first was opted into; .env wins.
     _env_file = load_env()
 
     def _env_val(key: str) -> str:
         return (_env_file.get(key) or _get_secret(key, "") or "").strip()
 
     anthropic_oauth_env = _env_val("ANTHROPIC_TOKEN") or _env_val("CLAUDE_CODE_OAUTH_TOKEN")
-    if _env_val("ANTHROPIC_API_KEY") and not anthropic_oauth_env:
-        # Prune stale autodiscovered OAuth entries from a previous OAuth
-        # session so a transient 401 cannot revive them.
+    from agent.anthropic_auth_policy import oauth_first_enabled
+    if _env_val("ANTHROPIC_API_KEY") and not anthropic_oauth_env and not oauth_first_enabled():
+        # A transient 401 must not revive a previously abandoned OAuth login.
         seed.changed |= _retain_sources_not_in(seed.entries, {"hermes_pkce", "claude_code"})
         return
 
