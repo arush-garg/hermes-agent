@@ -595,6 +595,21 @@ class GatewaySlashCommandsMixin(
             return t("gateway.draining", count=active_agents)
         return EphemeralReply(t("gateway.restart.restarting"))
 
+    async def _handle_rate_command(self, event: MessageEvent) -> str:
+        """Handle /rate <1-5> [feedback] — record the user's verdict on this chat's session."""
+        from hermes_cli.ratings import run_rate_command
+        args = event.get_command_args() or ""
+        from gateway.config import Platform
+        source = event.source
+        session_id = None
+        if args.strip() and source is not None:
+            if source.platform == Platform.LOCAL:  # a local (Ink/Desktop/ACP) session: chat_id is its id
+                session_id = source.chat_id
+            else:
+                session_id = (await self.async_session_store.get_or_create_session(source)).session_id
+        platform = source.platform.value if source and source.platform else "gateway"
+        return run_rate_command(args, session_id=session_id, surface=platform)
+
     async def _handle_autoprune_command(self, event: MessageEvent) -> str:
         """Handle /autoprune — the low-disk auto-prune decision (same text as the CLI)."""
         from hermes_cli.prune_advisor import answered

@@ -161,6 +161,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                busy_policy="dispatch"),
     CommandDef("refine", "Review this conversation now and save lessons to memory/skills", "Session",
                args_hint="[focus instructions]"),
+    CommandDef("rate", "Rate this session 1-5 with optional feedback (feeds self-evolution)", "Session",
+               args_hint="<1-5> [feedback]", argument_mode="text", busy_policy="dispatch"),
     CommandDef("review", "Spawn an independent subagent to review the work just discussed (PR, code, docs)", "Session",
                args_hint="[review instructions]"),
     CommandDef("loop", "Re-run a prompt on a recurring interval in this session", "Session",

@@ -79,6 +79,7 @@
   "/q": null,
   "/queue": null,
   "/quit": "terminal",
+  "/rate": null,
   "/reasoning": null,
   "/redraw": "terminal",
   "/refine": null,

@@ -286,6 +286,12 @@ class CLICommandsSessionToolsMixin:
         from hermes_cli.slash_exec import CommandContext, execute_command
         _say_block(execute_command("autoprune", CommandContext(surface="cli", args=cmd.partition(" ")[2])).text)
 
+    def _handle_rate_command(self, cmd: str) -> None:
+        """/rate <1-5> [feedback] — save the user's verdict on this session for self-evolution."""
+        from hermes_cli.ratings import run_rate_command
+        _say_block(run_rate_command(cmd.partition(" ")[2], session_id=getattr(self, "session_id", None),
+                                    surface="cli", model=getattr(self, "model", None)))
+
     def _handle_profile_command(self):
         """Display active profile name and home directory."""
         from hermes_cli.slash_exec import CommandContext, execute_command

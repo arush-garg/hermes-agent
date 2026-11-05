@@ -26,7 +26,7 @@ narrower routes (`hermes_cli/gateway_chat_commands.py`).
 setting to this local session (its next turn and `config.get`), saving config.yaml only where the
 handler does; `client-local (cli_only)` commands are terminal/UI features of a client.
 
-107 registry commands: 29 control, 19 read, 59 refused.
+108 registry commands: 30 control, 19 read, 59 refused.
 
 | Command | Gateway (`slash.exec`) | Classic CLI | Ink | Desktop | ACP | Notes |
 |---|---|---|---|---|---|---|
@@ -95,6 +95,7 @@ handler does; `client-local (cli_only)` commands are terminal/UI features of a c
 | `/prompt` (/compose) | refused | HermesCLI._handle_prompt_compose_command | local | slash.exec: refused | slash.exec: refused | client-local (cli_only) |
 | `/queue` (/q) | refused | HermesCLI._cmd_queue | local | action: queue | prompt.submit |  |
 | `/quit` (/exit) | refused | HermesCLI._cmd_exit | local | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
+| `/rate` | control | HermesCLI._handle_rate_command | slash.exec | slash.exec | slash.exec |  |
 | `/reasoning` | control | HermesCLI._handle_reasoning_command | canonical route | action: reasoning | slash.exec | per-session setting (gateway handler) |
 | `/redraw` | refused | HermesCLI._cmd_redraw | local | unavailable: terminal | slash.exec: refused | client-local (cli_only) |
 | `/refine` | control | HermesCLI._handle_refine_command | slash.exec | slash.exec | slash.exec |  |
