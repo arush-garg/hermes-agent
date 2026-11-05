@@ -163,6 +163,10 @@ def _workspace_folder() -> str:
     """Absolute workspace root for ``${workspaceFolder}``: the session's authoritative root
     (terminal cwd / task override / $TERMINAL_CWD), else cwd."""
     try:
+        from agent.runtime_cwd import scoped_session_cwd
+        session_root = scoped_session_cwd()
+        if session_root and os.path.isabs(session_root) and os.path.isdir(session_root):
+            return session_root
         from tools.file_tools_paths import _authoritative_workspace_root
         root = _authoritative_workspace_root()
     except Exception:

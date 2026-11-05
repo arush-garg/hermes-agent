@@ -174,7 +174,15 @@ def session_inventory(authority, policy, agent, cwd):
                 info["skills"] = get_available_skills()
         with contextlib.suppress(Exception):
             from tools.mcp_tool_discovery import get_mcp_status
-            info["mcp_servers"] = get_mcp_status()
+            from tools.mcp_tool_config import _load_mcp_config
+            from agent.runtime_cwd import set_session_cwd, reset_session_cwd
+            token = set_session_cwd(cwd)
+            try:
+                # Status must describe this session's configured workspace, not the
+                # shared gateway's startup directory or another window's project.
+                info["mcp_servers"] = get_mcp_status(_load_mcp_config())
+            finally:
+                reset_session_cwd(token)
     with contextlib.suppress(Exception):
         from hermes_cli import __release_date__
         from hermes_cli.version_info import get_version_info

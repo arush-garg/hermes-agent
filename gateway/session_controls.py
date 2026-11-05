@@ -464,6 +464,25 @@ class AuthorityConnection:
                 if self.authority.db.get_session(sid) is None:
                     skills_prompt = await asyncio.to_thread(render_launch_skills, params, sid)
             # Host-bound client values apply only over the gateway's own ticketed attach (run_api).
+            # Gateway startup has no knowledge of this viewer's project. Discover its
+            # additive MCP servers under the session cwd before freezing toolsets;
+            # never let a project directory become a daemon-wide default.
+            project_cwd = params.get('cwd')
+            if isinstance(project_cwd, str) and project_cwd and Path(project_cwd).is_absolute():
+                from agent.runtime_cwd import set_session_cwd, reset_session_cwd
+                from tools.mcp_tool_config import _load_project_mcp_json
+                cwd_token = set_session_cwd(project_cwd)
+                try:
+                    project_names = list(_load_project_mcp_json())
+                    if project_names:
+                        from contextvars import copy_context
+                        from tools.mcp_oauth import suppress_interactive_oauth
+                        from tools.mcp_tool_discovery import discover_mcp_tools
+                        with suppress_interactive_oauth():
+                            await asyncio.get_running_loop().run_in_executor(
+                                None, copy_context().run, discover_mcp_tools, project_names)
+                finally:
+                    reset_session_cwd(cwd_token)
             ref = stage_local_session(self.authority, self.actor, params, skills_prompt=skills_prompt,
                                       client_local=self.native_owner,
                                       desktop_local=getattr(self.transport, 'desktop_local', False))

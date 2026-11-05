@@ -265,9 +265,16 @@ def stage_local_session(authority, actor, params, *, trusted_policy=None, truste
         with profile_env_scope():  # an alias's ``key_env`` / ``${VAR}`` key reads the same .env
             config = load_profile_config()
             params = resolve_launch_route(params, config)
-        # A client's session.create is the one caller whose named folder may select the coding posture.
-        policy = build_policy(params, config, private_secrets=private_secrets, workspace_posture=True,
-                              client_local=client_local)
+        # Resolve project-local MCP toolsets against THIS session's workspace, not the
+        # shared gateway's launch cwd (which may be the user's home). The token is
+        # context-local: another window creating a session cannot inherit this cwd.
+        from agent.runtime_cwd import set_session_cwd, reset_session_cwd
+        cwd_token = set_session_cwd(params.get('cwd') if isinstance(params.get('cwd'), str) else None)
+        try:
+            policy = build_policy(params, config, private_secrets=private_secrets, workspace_posture=True,
+                                  client_local=client_local)
+        finally:
+            reset_session_cwd(cwd_token)
         if params is not sent:  # resolved, even to a model of the alias's own name
             # Owner-stamped provenance (not create fields): a remote client cannot re-resolve the typed
             # `-m` alias against its own home, so resume and an exact retry compare a repeat against the

@@ -142,6 +142,86 @@ def test_project_servers_pass_suspicious_filter(tmp_path, monkeypatch):
     assert "proj" in real
 
 
+def test_session_workspace_beats_shared_gateway_home(tmp_path, monkeypatch):
+    """Project MCP discovery follows the session, not the shared gateway's cwd."""
+    from agent.runtime_cwd import set_session_cwd, reset_session_cwd
+    from tools.mcp_tool_config import _workspace_folder
+
+    home = tmp_path / "gateway-home"
+    home.mkdir()
+    _write_mcp_json(home, {"wrong-home": {"command": "echo"}})
+    monkeypatch.setenv("TERMINAL_CWD", str(home))
+    projects = []
+    for name in ("first", "second"):
+        project = tmp_path / name
+        project.mkdir()
+        _write_mcp_json(project, {name: {"command": "echo"}})
+        projects.append((project, name))
+
+    assert set(_load_project_mcp_json()) == {"wrong-home"}
+    for project, name in projects:
+        token = set_session_cwd(str(project))
+        try:
+            assert _workspace_folder() == str(project)
+            assert set(_load_project_mcp_json()) == {name}
+            from hermes_cli.tools_config import enabled_mcp_server_names
+            assert enabled_mcp_server_names({"mcp_servers": {}}) == {name}
+        finally:
+            reset_session_cwd(token)
+    assert set(_load_project_mcp_json()) == {"wrong-home"}
+
+
+def test_gateway_policy_selects_only_its_project_mcp(tmp_path, monkeypatch):
+    from gateway.session_policy import build_policy
+    from agent.runtime_cwd import set_session_cwd, reset_session_cwd
+
+    gateway_home = tmp_path / "daemon"
+    gateway_home.mkdir()
+    _write_mcp_json(gateway_home, {"home-only": {"command": "echo"}})
+    monkeypatch.setenv("TERMINAL_CWD", str(gateway_home))
+    config = {"platform_toolsets": {"cli": ["terminal"]}, "mcp_servers": {}}
+    for name in ("project-a", "project-b"):
+        project = tmp_path / name
+        project.mkdir()
+        _write_mcp_json(project, {name: {"command": "echo"}})
+        token = set_session_cwd(str(project))
+        try:
+            policy = build_policy({"source": "tui", "cwd": str(project), "model": "test"}, config)
+            assert name in policy.toolsets
+            assert "home-only" not in policy.toolsets
+        finally:
+            reset_session_cwd(token)
+
+
+def test_project_mcp_discovery_executor_keeps_workspace_scope(tmp_path):
+    import asyncio
+
+    first = tmp_path / "one"
+    first.mkdir()
+    _write_mcp_json(first, {"one-only": {"command": "echo"}})
+    second = tmp_path / "two"
+    second.mkdir()
+    _write_mcp_json(second, {"two-only": {"command": "echo"}})
+    observed = []
+
+    def fake_discover(names):
+        from tools.mcp_tool_config import _load_project_mcp_json
+        observed.append((tuple(names), tuple(_load_project_mcp_json())))
+        return []
+
+    # The creation path uses discovery in an executor. Test the same context-copy
+    # boundary without starting any MCP subprocess.
+    from agent.runtime_cwd import set_session_cwd, reset_session_cwd
+    from contextvars import copy_context
+    for project, name in ((first, "one-only"), (second, "two-only")):
+        token = set_session_cwd(str(project))
+        try:
+            asyncio.run(asyncio.to_thread(copy_context().run, fake_discover, [name]))
+        finally:
+            reset_session_cwd(token)
+    assert observed == [(("one-only",), ("one-only",)), (("two-only",), ("two-only",))]
+
+
 # ─── toolset allowlist (enabled_mcp_server_names) ────────────────────────────
 #
 # Project servers connect via _load_mcp_config, but the CLI/cron/ACP toolset allowlist is built
