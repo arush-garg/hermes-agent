@@ -49,6 +49,24 @@ def _quarantine_remaining(base_url: str) -> float:
     return ac._aux_unhealthy_until[key] - time.time()
 
 
+def test_omniroute_rate_limit_does_not_hide_sibling_models():
+    url = "http://localhost:20128/v1"
+    ac._quarantine_fallback_candidate(
+        "vision", "fallback_chain[0](omniroute)", "omniroute",
+        _plain_429("sonnet"), base_url=url, reason="rate limit",
+    )
+    assert not ac._is_provider_unhealthy("omniroute", url)
+
+
+def test_non_omniroute_rate_limit_keeps_short_quarantine():
+    url = "https://example.org/v1"
+    ac._quarantine_fallback_candidate(
+        "vision", "fallback_chain[0](custom)", "custom",
+        _plain_429("model"), base_url=url, reason="rate limit",
+    )
+    assert ac._is_provider_unhealthy("custom", url)
+
+
 def _client(base_url: str, create):
     client = MagicMock()
     client.base_url = base_url

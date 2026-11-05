@@ -4074,9 +4074,13 @@ def _quarantine_fallback_candidate(
     """The candidate cannot serve this walk (``reason`` = its ``_FALLBACK_REASONS`` capacity label,
     None = dead token): mark it unhealthy so the ordered re-walk skips it and the caller moves on to
     the next entry. Transient classes get a short hold, payment/quota and dead tokens the long one."""
-    _mark_provider_unhealthy(
-        fb_provider or fb_label, ttl=fallback_candidate_quarantine_ttl(reason),
-        base_url=base_url, reason=reason or "stale fallback credential")
+    # OmniRoute hosts independent model quotas behind one URL. A model's 429
+    # must not quarantine that URL and hide healthy siblings in this walk.
+    # Other providers retain the existing short endpoint quarantine.
+    if not (reason == "rate limit" and fb_provider.lower() == "omniroute"):
+        _mark_provider_unhealthy(
+            fb_provider or fb_label, ttl=fallback_candidate_quarantine_ttl(reason),
+            base_url=base_url, reason=reason or "stale fallback credential")
     why = f"is out of capacity ({reason})" if reason else "has a stale/unrefreshable credential"
     logger.warning("Auxiliary %s%s: fallback candidate %s %s (%s) — skipping to next fallback",
                    task or "call", tag, fb_label, why, fb_err)
