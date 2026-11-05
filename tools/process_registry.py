@@ -2577,16 +2577,19 @@ PROCESS_SCHEMA = {
     # (write-vs-submit is the one real trap: a lone \n on a Windows PTY is not Enter).
     # See #95681.
     "description": (
-        "Poll, wait on, send input to, or kill terminal(background=true) processes. "
-        "Completed results remain retrievable by session_id when resuming their owning conversation "
-        "(up to 7 days, newest 64 results per profile; rolling output tail). "
-        "poll: status + new output. log: full output, paged. wait: block "
-        "until exit or timeout (partial output on timeout). write vs "
-        "submit: submit appends Enter — use it to answer prompts; write "
-        "sends raw bytes, no newline. close: EOF stdin. kill: terminate. "
-        "handoff (subagents only): transfer a running process you started to your parent agent, which then "
-        "receives its completion; `data` = one sentence on its purpose. Subagent-owned processes are otherwise "
-        "killed when the subagent finishes and their notifications never reach the parent."
+        "Poll, wait on, send input to, or kill terminal(background=true) "
+        "processes started with `terminal`; it does not run commands itself (use "
+        "`terminal` for running programs, builds, git and package managers). "
+        "Completed results remain retrievable by session_id when resuming their "
+        "owning conversation (up to 7 days, newest 64 results per profile; "
+        "rolling output tail). poll: status + new output. log: full output, "
+        "paged. wait: block until exit or timeout (partial output on timeout). "
+        "write vs submit: submit appends Enter — use it to answer prompts; write "
+        "sends raw bytes, no newline. close: EOF stdin. kill: terminate. handoff "
+        "(subagents only): transfer a running process you started to your parent "
+        "agent, which then receives its completion; `data` = one sentence on its "
+        "purpose. Subagent-owned processes are otherwise killed when the subagent "
+        "finishes and their notifications never reach the parent."
     ),
     "parameters": {
         "type": "object",

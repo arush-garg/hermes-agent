@@ -51,10 +51,13 @@ def read_terminal_tool(
 READ_TERMINAL_SCHEMA = {
     "name": "read_terminal",
     "description": (
-        "Read the in-app terminal pane beside this chat. No args = visible "
-        "screen + total_lines; page scrollback with start_line (0 = oldest) "
-        "+ count. JSON: {total_lines, start, end, viewport_rows, cursor_row, "
-        "text}."
+        "Read the in-app terminal pane beside this chat (its visible screen and "
+        "scrollback). Use this only to see what is already displayed in that "
+        "pane; to view file contents use `read_file`, to find files or text use "
+        "`search_files`, and to run programs, builds, git or package managers use "
+        "`terminal`. No args = visible screen + total_lines; page scrollback with "
+        "start_line (0 = oldest) + count. JSON: {total_lines, start, end, "
+        "viewport_rows, cursor_row, text}."
     ),
     "parameters": {
         "type": "object",
