@@ -318,7 +318,9 @@ class CLIChatTurnMixin:
         except Exception:
             reset_current_session_key = None  # type: ignore[assignment]
             _approval_session_token = None
-        agent_message = turn.voice_prefix + message if turn.voice_prefix else message
+        # Voice turns: the transcript reaches the model inside an <input> block flagged as STT output.
+        from tools.voice_mode_transcript import wrap_stt_input
+        agent_message = turn.voice_prefix + wrap_stt_input(message) if turn.voice_prefix else message
         self.agent._voice_turn_pending = bool(turn.voice_prefix)  # auxiliary.voice_chat route
         # One-shot /model and /reload-skills notes; _prepend_note_to_message also handles
         # multimodal content-part lists (string concat raised TypeError with an image).

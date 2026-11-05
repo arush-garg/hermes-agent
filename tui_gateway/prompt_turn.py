@@ -724,6 +724,9 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
         prompt = ctx.message
     st.prompt_text = prompt if isinstance(prompt, str) else ""
     run_message: Any = _route_turn_images(agent, prompt, images) if images else prompt
+    if session.get("voice_turn"):  # STT transcript -> flagged <input> block (model input only; /steer never sets it)
+        from tools.voice_mode_transcript import wrap_stt_input
+        run_message = wrap_stt_input(run_message)
     from agent.notification_presentation import event_presentation_muted
     if not event_presentation_muted("message.delta", sid):
         st.tts_queue, st.thinking_started = _start_turn_voice()

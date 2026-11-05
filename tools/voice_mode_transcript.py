@@ -108,3 +108,28 @@ def voice_stop_hint() -> str:
     (CLI, TUI, desktop) uses this one owner instead of hardcoding the wording."""
     phrases = _load_voice_stop_phrases()
     return f'Say "{phrases[0]}" to end the voice chat.' if phrases else ""
+
+
+STT_INPUT_NOTE = ("Note: this message was dictated and transcribed with speech-to-text, so it may contain "
+                  "transcription errors (misheard words, homophones, missing punctuation). Use context to infer "
+                  "what was meant, or ask a clarifying question if it is genuinely ambiguous.")
+
+
+def _wrap_stt_text(text: str) -> str:
+    return f'<input source="speech-to-text">\n{STT_INPUT_NOTE}\n\n{text.strip()}\n</input>'
+
+
+def wrap_stt_input(message):
+    """Wrap a voice transcript (the MODEL INPUT only) in an ``<input>`` block flagging it as STT output.
+
+    Strings are wrapped whole; a multimodal part list gets its first text part wrapped (a new list —
+    the caller's parts are not mutated). Empty/whitespace or non-text input is returned unchanged.
+    Never applied to typed text or /steer corrections, which are always hand-typed."""
+    if isinstance(message, str):
+        return _wrap_stt_text(message) if message.strip() else message
+    if not isinstance(message, list):
+        return message
+    for i, part in enumerate(message):
+        if isinstance(part, dict) and part.get("type") == "text" and str(part.get("text") or "").strip():
+            return [*message[:i], {**part, "text": _wrap_stt_text(part["text"])}, *message[i + 1:]]
+    return message
