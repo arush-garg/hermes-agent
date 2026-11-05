@@ -4,7 +4,9 @@ import json
 
 import pytest
 
-from hermes_cli.gateway_client import GatewayClient, GatewayRPCError
+from websockets.exceptions import ConnectionClosedError
+
+from hermes_cli.gateway_client import GatewayClient, GatewayClientError, GatewayRPCError
 
 
 class _Socket:
@@ -24,6 +26,19 @@ class _Socket:
 
     async def __anext__(self):
         return await self.inbox.get()
+
+
+@pytest.mark.asyncio
+async def test_rpc_send_after_keepalive_close_reports_unknown_outcome():
+    class ClosedSocket(_Socket):
+        async def send(self, raw):
+            raise ConnectionClosedError(None, None)
+
+    async with GatewayClient(ClosedSocket(lambda req: None)) as client:
+        with pytest.raises(GatewayClientError, match="turn outcome is unknown") as failed:
+            await client.rpc("prompt.submit", input="test")
+        assert isinstance(failed.value.__cause__, ConnectionClosedError)
+        assert client.pending == {}
 
 
 @pytest.mark.asyncio

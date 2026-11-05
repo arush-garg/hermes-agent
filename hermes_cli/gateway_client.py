@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 import time
 
+from websockets.exceptions import ConnectionClosed
+
 # The owner's protocol name; session_contract is dependency-free (no config/plugins load).
 from gateway.session_contract import CANONICAL_GATEWAY_PROTOCOL as GATEWAY_WS_PROTOCOL
 
@@ -216,7 +218,14 @@ class GatewayClient:
         self.pending[rid] = future
         self.events.moved.set()  # a reader waiting on the consumer reads on toward this answer
         try:
-            await self.websocket.send(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}))
+            try:
+                await self.websocket.send(json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params}))
+            except (ConnectionClosed, OSError) as exc:
+                # The reader normally turns a lost socket into GatewayClientError, but
+                # send() can observe the close first (including a keepalive timeout).
+                # The request's admission is unknown: never retry it automatically.
+                raise GatewayClientError("Gateway disconnected; turn outcome is unknown. "
+                    "Resume the printed session ID to check whether it completed or was interrupted; do not resend the work.") from exc
             budget = DEFAULT_RPC_TIMEOUT if _timeout is None else _timeout
             return await asyncio.wait_for(future, None if budget == float("inf") else budget)
         finally:
@@ -310,8 +319,12 @@ async def connect_gateway(endpoint=None, subject=None, *, max_size=8 * 1024 * 10
         # The gateway is a loopback (or explicitly named) peer, never something to route through the
         # user's HTTP(S) proxy; websockets>=14 reads HTTP_PROXY/HTTPS_PROXY by default and a proxy that
         # cannot reach 127.0.0.1 turns every launch into a 10 s open timeout.
+        # Loopback detects a dead peer via FIN/RST. The library's 20 s client ping timeout
+        # otherwise drops healthy local sockets when the gateway event loop stalls on work.
+        from urllib.parse import urlsplit
+        loopback = (urlsplit(url).hostname or "").lower() in {"localhost", "127.0.0.1", "::1"}
         async with connect(url, subprotocols=protocols, open_timeout=10, max_size=max_size,
-                           proxy=None) as ws:
+                           proxy=None, ping_interval=None if loopback else 20) as ws:
             if protocols and ws.subprotocol != GATEWAY_WS_PROTOCOL:
                 raise GatewayClientError("Gateway protocol mismatch; update/restart required")
             async with GatewayClient(ws) as client:
