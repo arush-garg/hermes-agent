@@ -770,6 +770,7 @@ class AudioRecorder(_RecorderBase):
         # Hard cap, wired from voice.max_recording_seconds by the CLI before each recording; 0 = none.
         self._max_recording_seconds: float = 0.0
         self._peak_rms: int = 0  # for the speech-presence check in stop()
+        self._needs_device_refresh = False  # set when the stream delivered pure digital silence
         self._reset_detection_state()
 
     def _reset_detection_state(self) -> None:
@@ -935,12 +936,24 @@ class AudioRecorder(_RecorderBase):
             self._peak_rms = 0
             self._current_rms = 0
             self._on_silence_stop = on_silence_stop
+        if self._needs_device_refresh:
+            self._refresh_audio_devices(sd)
         self._sample_rate = _default_input_samplerate(sd)
         self._ensure_stream()
         self._open_live_session(self._sample_rate)
         with self._lock:
             self._recording = True
         logger.info("Voice recording started (rate=%d, channels=%d)", self._sample_rate, CHANNELS)
+
+    def _refresh_audio_devices(self, sd: Any) -> None:
+        """Drop the dead stream and re-initialise PortAudio. PortAudio snapshots the
+        device list at init, so after macOS reconfigures audio (e.g. AirPods connect)
+        the kept-alive stream yields zeros and device indexes are stale."""
+        logger.info("Audio input delivered pure silence -- refreshing audio devices")
+        self._close_stream_with_timeout()
+        sd._terminate()
+        sd._initialize()
+        self._needs_device_refresh = False
 
     def _close_stream_with_timeout(self, timeout: float = 3.0) -> None:
         """Close the stream with a timeout to prevent CoreAudio hangs."""
@@ -989,6 +1002,8 @@ class AudioRecorder(_RecorderBase):
             # here discarded valid speech on low-threshold setups (mic peaking
             # at RMS ~160 with voice.silence_threshold: 80, #84046).
             if self._peak_rms < self._silence_threshold:
+                # Exactly 0 is a dead stream, not a quiet room: real mics always have a noise floor.
+                self._needs_device_refresh = self._peak_rms == 0
                 logger.info("Recording too quiet (peak RMS=%d < %d), discarding",
                             self._peak_rms, self._silence_threshold)
                 return None
