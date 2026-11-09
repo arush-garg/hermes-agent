@@ -16,7 +16,9 @@ import { type GaugeStyle, hasUsageGauge, splitUsageGaugeLine } from '../lib/usag
 import type { Theme } from '../theme.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
+import { MessageImages } from './inlineImage.js'
 import { Md } from './markdown.js'
+import { PasteSections } from './pasteSections.js'
 import { StreamingMd } from './streamingMarkdown.js'
 import { ToolTrail } from './thinking.js'
 import { TodoPanel } from './todoPanel.js'
@@ -56,6 +58,7 @@ export const MessageLine = memo(function MessageLine({
   prev,
   reasoningActive = false,
   sections,
+  selected = false,
   t,
   timestamps = false,
   tools = []
@@ -147,6 +150,11 @@ export const MessageLine = memo(function MessageLine({
     )
   }
 
+  // A tool's image, hung under its trail line at the body indent.
+  if (msg.kind === 'image') {
+    return <MessageImages cols={cols} msg={msg} t={t} />
+  }
+
   // Timeline events (model switches, delegation completions) render as
   // dim ◈ markers with no gutter — not as opaque user messages.
   if (msg.kind === 'event') {
@@ -226,7 +234,7 @@ export const MessageLine = memo(function MessageLine({
       const [head, ...rest] = userDisplay(msg.text).split('[long message]')
 
       return (
-        <Text color={body}>
+        <Text color={body} inverse={selected}>
           {head}
           <Text color={t.color.muted} dimColor>
             {T.longMessage}
@@ -246,6 +254,7 @@ export const MessageLine = memo(function MessageLine({
         <Text
           {...(body ? { color: body } : {})}
           {...(typeof onUserMessageClick === 'function' ? { onClick: onUserMessageClick } : {})}
+          inverse={selected}
         >
           {segments.map((segment, i) =>
             segment.ref ? (
@@ -268,11 +277,7 @@ export const MessageLine = memo(function MessageLine({
   // against the prose around it.
   const isDiffSegment = msg.kind === 'diff'
 
-  // `display.timestamps`: dim [HH:MM] beside the gutter glyph on user and
-  // assistant rows only — event/trail/system chrome stays unstamped, matching
-  // the classic CLI which stamps its user/assistant labels (#41531).
-  const stamp =
-    timestamps && (msg.role === 'user' || msg.role === 'assistant') && !msg.kind ? fmtMsgTimestamp(msg.createdAt) : null
+  const stamp = timestamps ? messageStamp(msg) : null
 
   return (
     <Box
@@ -321,13 +326,21 @@ export const MessageLine = memo(function MessageLine({
 
       <Box>
         <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
-          <Text bold={msg.role === 'user'} color={prefix}>
+          <Text bold={msg.role === 'user'} color={prefix} inverse={selected}>
             {glyph}{' '}
           </Text>
         </NoSelect>
 
         <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>{content}</Box>
       </Box>
+
+      <MessageImages cols={cols} msg={msg} spaced t={t} />
+      <PasteSections
+        marginLeft={gutterWidth}
+        pastes={msg.pastes}
+        t={t}
+        width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}
+      />
     </Box>
   )
 })
@@ -351,6 +364,12 @@ function UsageGaugeRow({ t, text }: { t: Theme; text: string }) {
     </Box>
   )
 }
+
+// `display.timestamps`: dim [HH:MM] beside the gutter glyph on user and
+// assistant rows only — event/trail/system chrome stays unstamped, matching
+// the classic CLI which stamps its user/assistant labels (#41531).
+const messageStamp = (msg: Msg): null | string =>
+  (msg.role === 'user' || msg.role === 'assistant') && !msg.kind ? fmtMsgTimestamp(msg.createdAt) : null
 
 export const shouldShowResponseSeparator = (msg: Msg, showDetails: boolean): boolean =>
   msg.role === 'assistant' && showDetails && /\S/.test(msg.text)
@@ -382,6 +401,8 @@ interface MessageLineProps {
   prev?: Msg
   reasoningActive?: boolean
   sections?: SectionVisibility
+  /** Backtrack browsing has this prompt selected: drawn in reverse video. */
+  selected?: boolean
   t: Theme
   /** `display.timestamps` — dim [HH:MM] label on user/assistant rows. */
   timestamps?: boolean

@@ -21,7 +21,7 @@ Design one-off HTML artifacts (landing, deck, prototype).
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `design`, `html`, `prototype`, `ux`, `ui`, `creative`, `artifact`, `deck`, `motion`, `design-system` |
-| Related skills | [`design-md`](../../bundled/creative/creative-design-md.md), [`popular-web-designs`](../../bundled/creative/creative-popular-web-designs.md), [`excalidraw`](../../optional/creative/creative-excalidraw.md), [`architecture-diagram`](../../bundled/creative/creative-architecture-diagram.md) |
+| Related skills | [`design-md`](../../optional/creative/creative-design-md.md), [`popular-web-designs`](../../bundled/creative/creative-popular-web-designs.md), [`excalidraw`](../../optional/creative/creative-excalidraw.md), [`architecture-diagram`](../../bundled/creative/creative-architecture-diagram.md) |
 
 ## Reference: full SKILL.md
 
@@ -37,7 +37,7 @@ You are an expert designer operating in a CLI/API agent environment (not the hos
 
 - **claude-design** (this one): design process + taste for from-scratch artifacts (landing pages, prototypes, decks, component labs, motion studies).
 - **popular-web-designs**: 54 ready-to-paste design systems (Stripe, Linear, Vercel, Notion, etc.). Use when the user wants a known brand's look; let claude-design drive the process.
-- **design-md**: Google's DESIGN.md token spec format. Use only when the deliverable is a machine-readable token spec file, not a rendered artifact.
+- **design-md**: Google's DESIGN.md token spec format (an optional skill, installed with `hermes skills install official/creative/design-md`). Use only when the deliverable is a machine-readable token spec file, not a rendered artifact.
 
 Ignore hosted-only tool concepts from source Claude Design prompts (`done()`, `show_html()`, `questions_v2()`, preview panes, Tweaks toolbar protocols, `window.claude.complete()`, `/projects/...` paths, embedded tool schemas). Use the tools actually available in this environment.
 

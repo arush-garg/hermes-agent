@@ -1,0 +1,211 @@
+---
+title: "Design Md — Author/validate/export Google's DESIGN.md token spec files"
+sidebar_label: "Design Md"
+description: "Author/validate/export Google's DESIGN.md token spec files"
+---
+
+{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
+
+# Design Md
+
+Author/validate/export Google's DESIGN.md token spec files.
+
+## Skill metadata
+
+| | |
+|---|---|
+| Source | Optional — install with `hermes skills install official/creative/design-md` |
+| Path | `optional-skills/creative/design-md` |
+| Version | `1.1.0` |
+| Author | Hermes Agent |
+| License | MIT |
+| Platforms | linux, macos, windows |
+| Tags | `design`, `design-system`, `tokens`, `ui`, `accessibility`, `wcag`, `tailwind`, `dtcg`, `google` |
+| Related skills | [`popular-web-designs`](../../bundled/creative/creative-popular-web-designs.md), [`claude-design`](../../bundled/creative/creative-claude-design.md), [`excalidraw`](../../optional/creative/creative-excalidraw.md), [`architecture-diagram`](../../bundled/creative/creative-architecture-diagram.md) |
+
+## Reference: full SKILL.md
+
+:::info
+The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+:::
+
+# DESIGN.md Assistant Instructions
+
+You are working with DESIGN.md, Google's open spec (Apache-2.0, `google-labs-code/design.md`) for describing a visual identity to coding agents. One file combines YAML front matter (machine-readable design tokens) and a Markdown body (human-readable rationale in canonical sections).
+
+## Core Capabilities
+
+- **Author** new DESIGN.md files from a brand brief
+- **Lint** existing DESIGN.md files for structure, token references, and WCAG contrast
+- **Diff** two DESIGN.md files to detect regressions
+- **Export** to Tailwind or W3C DTCG JSON
+
+## Critical Workflow Rules
+
+1. **For authoring tasks (creating a new file):**
+   - You MUST use the `write_file` tool to actually create the file in the project root. Do not just output the file contents as a code block in your response.
+   - After writing, you MUST run `npx -y @google/design.md lint <filename>` to validate it.
+   - Parse the lint output (use `--format json` for structured findings) and FIX any errors (broken-ref, duplicate-section, invalid-color, invalid-dimension, invalid-typography) before returning.
+   - Address WCAG contrast warnings by adjusting colors or adding notes about contrast.
+   - Only after the file passes lint should you return the final path + a brief summary of what you built and any contrast/accessibility tradeoffs you made.
+
+2. **For lint tasks (validating an existing file):**
+   - Run `npx -y @google/design.md lint <file> --format json` and parse the output.
+   - Report findings structurally: list each rule violation with its severity (error/warning/info), the line/section it points to, and a concrete suggested fix.
+   - Do NOT fabricate lint output. If the CLI is not available, say so explicitly rather than guessing.
+
+3. **For diff tasks:** Run `npx -y @google/design.md diff <old> <new>` and explain regressions in plain language.
+
+4. **For export tasks:** Run `npx -y @google/design.md export --format <tailwind|dtcg> <file>` and write the output to a sibling file (`tailwind.theme.json` or `tokens.json`).
+
+## File Anatomy Requirements
+
+- **YAML front matter** (between `---` fences): must include `version: alpha` and `name:`; `colors:` strongly recommended.
+- **Markdown body**: sections in this canonical order (1-8, missing sections are fine, present ones MUST follow this order, duplicates are errors):
+  1. Overview (alias: Brand & Style)
+  2. Colors
+  3. Typography
+  4. Layout (alias: Layout & Spacing)
+  5. Elevation & Depth (alias: Elevation)
+  6. Shapes
+  7. Components
+  8. Do's and Don'ts
+
+- **Token reference syntax**: `{path.to.token}` — e.g., `{colors.primary}`, `{typography.h1.fontSize}`, `{rounded.md}`. References resolve by dotted path; `{primary}` alone does not work.
+
+## YAML Pitfalls (frequently catch agents)
+
+- **Hex colors MUST be quoted strings** in YAML, e.g., `primary: "#1A1C1E"`. Without quotes, `#` triggers YAML comment syntax or values get truncated.
+- **Negative dimensions MUST be quoted**, e.g., `letterSpacing: "-0.02em"`. Unquoted `-0.02em` parses as a YAML flow sequence.
+- **Spacing values with units** should be strings: `fontSize: "1rem"`, `padding: "12px 24px"`.
+- **Token references in YAML** are also strings: `backgroundColor: "{colors.tertiary}"`.
+
+## Component Property Whitelist
+
+Only these properties are allowed on a component entry; anything else is a `unknown-component-property` warning:
+`backgroundColor`, `textColor`, `typography`, `rounded`, `padding`, `size`, `height`, `width`.
+
+**Variants are sibling keys, not nested**: use `button-primary-hover`, not `button-primary.hover` or `button-primary: { hover: ... }`.
+
+## Token Type Formats
+
+| Type | Format | Example |
+|------|--------|---------|
+| Color | any CSS color (hex, `rgb()`, `oklch()`, named) | `"#1A1C1E"`, `"oklch(62% 0.18 250)"` |
+| Dimension | number + unit (`px`, `em`, `rem`) | `48px`, `-0.02em` |
+| Token reference | `{path.to.token}` | `{colors.primary}` |
+| Typography | object with `fontFamily`, `fontSize`, `fontWeight`, `lineHeight`, `letterSpacing`, `fontFeature`, `fontVariation` | see above |
+
+Component property whitelist: `backgroundColor`, `textColor`, `typography`,
+`rounded`, `padding`, `size`, `height`, `width`. Variants (hover, active,
+pressed) are **separate component entries** with related key names
+(`button-primary-hover`), not nested.
+
+## Canonical section order
+
+Sections are optional, but present ones should appear in this order. The
+linter flags out-of-order sections (`section-order`, warning) and duplicate
+headings — consumers per the spec reject duplicates, so fix both before
+returning the file.
+
+1. Overview (alias: Brand & Style)
+2. Colors
+3. Typography
+4. Layout (alias: Layout & Spacing)
+5. Elevation & Depth (alias: Elevation)
+6. Shapes
+7. Components
+8. Do's and Don'ts
+
+Unknown sections are preserved, not errored. Unknown token names are accepted
+if the value type is valid. Unknown component properties produce a warning.
+
+## Workflow: authoring a new DESIGN.md
+
+1. **Ask the user** (or infer) the brand tone, accent color, and typography
+   direction. If they provided a site, image, or vibe, translate it to the
+   token shape above.
+2. **Write `DESIGN.md`** in their project root using `write_file`. Always
+   include `name:` and `colors:`; other sections optional but encouraged.
+3. **Use token references** (`{colors.primary}`) in the `components:` section
+   instead of re-typing hex values. Keeps the palette single-source.
+4. **Lint it** (see below). Fix any broken references or WCAG failures
+   before returning.
+5. **If the user has an existing project**, also write Tailwind or DTCG
+   exports next to the file (`tailwind.theme.json`, `tokens.json`).
+
+## Lint Rule Reference (7 rules)
+
+The CLI is `@google/design.md` (Node). Use `npx` — no global install needed.
+
+```bash
+# Validate structure + token references + WCAG contrast
+npx -y @google/design.md lint DESIGN.md
+
+# Compare two versions, fail on regression (exit 1 = regression)
+npx -y @google/design.md diff DESIGN.md DESIGN-v2.md
+
+# Export to Tailwind v3 theme JSON (`tailwind` is a back-compat alias)
+npx -y @google/design.md export --format json-tailwind DESIGN.md > tailwind.theme.json
+
+# Export to a Tailwind v4 CSS @theme block (--color-*, --text-*, --radius-*, ...)
+npx -y @google/design.md export --format css-tailwind DESIGN.md > theme.css
+```
+
+Exit code 1 = errors found. Always check the exit code in CI-style lint tasks.
+
+## When to Use This Skill
+
+All commands accept `-` for stdin. `lint` returns exit 1 on errors (warnings
+alone exit 0). `export` exits 0 on a successful export regardless of lint
+findings in the source — run `lint` separately to gate on those. Output is
+JSON by default; parse it if you need to report findings structurally.
+
+On Windows, the `design.md` bin name can collide with the `.md` file
+association (silent no-op or the file opens in an editor). Use the dot-free
+alias: `npx -y -p @google/design.md designmd lint DESIGN.md`.
+
+### Lint rule reference (the 9 rules, as of CLI 0.3.0)
+
+- `broken-ref` (error) — `{colors.missing}` points at a non-existent token
+- `contrast-ratio` (warning) — component `textColor` vs `backgroundColor`
+  below WCAG AA (4.5:1)
+- `missing-primary` (warning) — colors defined but no `primary` token
+- `missing-typography` (warning) — colors defined but no typography tokens
+- `orphaned-tokens` (warning) — color tokens never referenced by a component
+- `section-order` (warning) — sections out of the canonical order
+- `unknown-key` (warning) — top-level YAML key that looks like a typo of a
+  schema key (`colours:` → `colors:`); custom extension keys stay silent
+- `token-summary`, `missing-sections` (info) — counts and absent optional
+  sections
+
+When the user cares about accessibility, call this out explicitly in your
+summary — WCAG findings are the most load-bearing reason to use the CLI.
+
+## Pitfalls
+
+- **Don't nest component variants.** `button-primary.hover` is wrong;
+  `button-primary-hover` as a sibling key is right.
+- **Hex colors must be quoted strings.** YAML will otherwise choke on `#` or
+  truncate values like `#1A1C1E` oddly.
+- **Negative dimensions need quotes too.** `letterSpacing: -0.02em` parses as
+  a YAML flow — write `letterSpacing: "-0.02em"`.
+- **Section order matters even though the linter only warns.** If the user
+  gives you prose in a random order, reorder it to match the canonical list
+  before saving — spec-compliant consumers expect it.
+- **Typography sub-property typos are silently dropped.** As of CLI 0.3.0 a
+  typo like `fontwight:` produces no finding and the value vanishes from
+  exports — double-check sub-property names against the schema
+  (`fontFamily`, `fontSize`, `fontWeight`, `lineHeight`, `letterSpacing`,
+  `fontFeature`, `fontVariation`).
+- **`version: alpha` is the current spec version** (as of Jul 2026, CLI
+  0.3.0). The spec is marked alpha — watch for breaking changes.
+- **Token references resolve by dotted path.** `{colors.primary}` works;
+  `{primary}` does not.
+
+## Spec source of truth
+
+- Repo: https://github.com/google-labs-code/design.md (Apache-2.0)
+- CLI: `@google/design.md` on npm (use `npx -y @google/design.md ...` — no global install)
+- Current spec version: `alpha` (as of Apr 2026) — spec is marked alpha, watch for breaking changes
+- License of generated DESIGN.md files: whatever the user's project uses; the spec itself is Apache-2.0
