@@ -210,6 +210,7 @@
     "plugins/model-providers/actual/__init__.py hermes_cli.auth.resolve_api_key_provider_credentials": 1,
     "plugins/model-providers/alibaba-coding-plan/__init__.py agent.reasoning_effort.dashscope_preserve_thinking_extras": 1,
     "plugins/model-providers/alibaba/__init__.py agent.reasoning_effort.dashscope_preserve_thinking_extras": 1,
+    "plugins/model-providers/anthropic/__init__.py agent.anthropic_credentials._is_oauth_token": 1,
     "plugins/model-providers/anthropic/__init__.py hermes_cli.models._ANTHROPIC_MODELS_MAX_PAGES": 1,
     "plugins/model-providers/anthropic/__init__.py hermes_cli.models._anthropic_models_url": 1,
     "plugins/model-providers/anthropic/__init__.py hermes_cli.models._anthropic_next_cursor": 1,

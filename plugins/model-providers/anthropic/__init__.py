@@ -2,7 +2,6 @@
 
 import json
 import logging
-import urllib.parse
 import urllib.request
 
 from hermes_cli.urllib_security import open_credentialed_url
@@ -18,50 +17,40 @@ class AnthropicProfile(ProviderProfile):
     def fetch_models(
         self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 8.0
     ) -> list[str] | None:
-        """List models for the active credential.
+        """Anthropic uses x-api-key header and anthropic-version. ``/v1/models`` is cursor-paginated
+        (default page 20, smaller than the live catalog), so follow ``has_more``/``last_id``.
 
-        Regular Console API keys (``sk-ant-api*``) authenticate with the
-        ``x-api-key`` header. OAuth / Claude Code subscription tokens
-        (``sk-ant-oat*``, ``cc-*``, JWTs) are rejected by ``x-api-key`` with
-        ``401 invalid x-api-key`` — they must use ``Authorization: Bearer``
-        plus the OAuth beta header. Without this branch, selecting the
-        ``anthropic`` provider with an OAuth token fails to list any models.
-        """
+        OAuth / Claude Code subscription tokens (``sk-ant-oat*``, ``cc-*``, JWTs) are rejected by
+        ``x-api-key`` with ``401 invalid x-api-key``: they authenticate with ``Authorization: Bearer``
+        plus the OAuth beta header, or no models list for the ``anthropic`` provider on OAuth."""
         if not api_key:
             return None
+        from hermes_cli.models import _ANTHROPIC_MODELS_MAX_PAGES, _anthropic_models_url, _anthropic_next_cursor
         try:
-            from agent.anthropic_adapter import _is_oauth_token
+            from agent.anthropic_credentials import _is_oauth_token
             is_oauth = _is_oauth_token(api_key)
         except Exception:
             is_oauth = api_key.startswith(("sk-ant-oat", "cc-", "eyJ"))
+        auth = ((("Authorization", f"Bearer {api_key}"), ("anthropic-beta", "oauth-2025-04-20")) if is_oauth
+                else (("x-api-key", api_key),))
+
+        def _page(after_id: str | None):
+            req = urllib.request.Request(_anthropic_models_url(base_url, after_id=after_id))
+            for k, v in (*auth, ("anthropic-version", "2023-06-01"), ("Accept", "application/json")):
+                req.add_header(k, v)
+            with open_credentialed_url(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode())
+
         try:
-            endpoint = f"{(base_url or self.base_url or 'https://api.anthropic.com').rstrip('/')}/v1/models"
-
-            def _page(after_id: str | None) -> dict:
-                query = urllib.parse.urlencode({"after_id": after_id}) if after_id else ""
-                req = urllib.request.Request(f"{endpoint}?{query}" if query else endpoint)
-                if is_oauth:
-                    req.add_header("Authorization", f"Bearer {api_key}")
-                    req.add_header("anthropic-beta", "oauth-2025-04-20")
-                else:
-                    req.add_header("x-api-key", api_key)
-                req.add_header("anthropic-version", "2023-06-01")
-                req.add_header("Accept", "application/json")
-                with open_credentialed_url(req, timeout=timeout) as resp:
-                    payload = json.loads(resp.read().decode())
-                return payload if isinstance(payload, dict) else {}
-
             models: list[str] = []
             seen_cursors: set[str] = set()
             cursor: str | None = None
-            for _ in range(100):
+            for _ in range(_ANTHROPIC_MODELS_MAX_PAGES):
                 data = _page(cursor)
                 models.extend(m["id"] for m in data.get("data", []) if isinstance(m, dict) and "id" in m)
-                next_cursor = str(data.get("last_id") or "").strip() if data.get("has_more") else ""
-                if not next_cursor or next_cursor in seen_cursors:
+                cursor = _anthropic_next_cursor(data, seen_cursors)
+                if cursor is None:
                     break
-                seen_cursors.add(next_cursor)
-                cursor = next_cursor
             return list(dict.fromkeys(models))
         except Exception as exc:
             logger.debug("fetch_models(anthropic): %s", exc)
