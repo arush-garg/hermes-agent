@@ -82,6 +82,24 @@ class TestDecideImageInputMode:
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
 
 
+    def test_capability_mode_native_for_vision_model_despite_aux_backend(self):
+        """image_input_mode: capability ignores the explicit aux backend for
+        routing — a vision-capable main model gets pixels."""
+        cfg = {"agent": {"image_input_mode": "capability"},
+               "auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
+        with patch("agent.image_routing._lookup_supports_vision", return_value=True):
+            assert decide_image_input_mode("anthropic", "claude-sonnet-4", cfg) == "native"
+
+    def test_capability_mode_text_for_non_vision_model(self):
+        cfg = {"agent": {"image_input_mode": "capability"},
+               "auxiliary": {"vision": {"provider": "openrouter", "model": "google/gemini-2.5-flash"}}}
+        for verdict in (False, None):
+            with patch("agent.image_routing._lookup_supports_vision", return_value=verdict):
+                assert decide_image_input_mode("groq", "openai/gpt-oss-120b", cfg) == "text"
+
+    def test_capability_mode_is_case_insensitive(self):
+        assert _coerce_mode("Capability") == "capability"
+
     def test_none_config_is_auto(self):
         with patch("agent.image_routing._lookup_supports_vision", return_value=True):
             assert decide_image_input_mode("anthropic", "claude-sonnet-4", None) == "native"

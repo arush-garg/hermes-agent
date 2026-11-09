@@ -307,7 +307,8 @@ DEFAULT_CONFIG = {
         "local_stream_stale_timeout": 900,
         # How user-attached images reach the main model (gateway, TUI, CLI /attach). "auto" = native
         # when the model reports supports_vision=True AND auxiliary.vision.provider is not
-        # explicitly set, else text; "native" = always attach (non-vision models error at the
+        # explicitly set, else text; "capability" = native iff supports_vision, ignoring an explicit
+        # auxiliary.vision (which then only describes images for text-only models); "native" = always attach (non-vision models error at the
         # provider or get a last-chance text fallback); "text" = always pre-analyze with
         # vision_analyze and prepend the description. vision_analyze stays a tool regardless.
         "image_input_mode": "auto",
