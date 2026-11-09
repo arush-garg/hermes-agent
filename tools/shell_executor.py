@@ -117,6 +117,7 @@ def execute_shell_command(
 
     if is_posix:
         kwargs["executable"] = "/bin/bash"
+        # detached-spawn: ok — awaited via communicate(); on timeout the whole group is SIGKILLed below
         kwargs["preexec_fn"] = os.setsid  # isolate process group  # windows-footgun: ok (POSIX-only branch)
     else:
         # Windows: prevent the console window from flashing
