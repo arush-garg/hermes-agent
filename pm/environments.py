@@ -39,6 +39,10 @@ def install_state_dir(project_root: Path) -> Path:
     return installs_root() / install_key(project_root)
 
 
+# The source checkout this module runs from (pm/ sits one level below the root).
+_SOURCE_ROOT = Path(__file__).resolve().parents[1]
+
+
 def _live_checkout_under_pytest(root: Path) -> bool:
     """True when ``root`` is this source checkout and the suite is running.
 
@@ -53,7 +57,7 @@ def _live_checkout_under_pytest(root: Path) -> bool:
         # `_pytest` in sys.modules too: tests that patch os.environ with clear=True drop PYTEST_CURRENT_TEST
         # mid-test, and the probe would then read the operator's real home.
         return (("PYTEST_CURRENT_TEST" in os.environ or "_pytest" in sys.modules)
-                and Path(root).resolve() == Path(__file__).resolve().parent.parent)
+                and Path(root).resolve() == _SOURCE_ROOT)
     except OSError:
         return False
 
@@ -617,7 +621,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Print the composed activation environment.")
     parser.add_argument("--format", choices=["json", *_SHELL_DIALECTS], default="json")
     options = parser.parse_args(argv)
-    env = activation_environment(Path(__file__).resolve().parents[1])
+    env = activation_environment(_SOURCE_ROOT)
     print(json.dumps(env) if options.format == "json" else shell_exports(env, options.format))
 
 
