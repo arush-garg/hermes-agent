@@ -19,7 +19,7 @@ def _make_base_fixture(monkeypatch, budget_max=1, continuation_limit=3, compacte
         messages=messages, conversation_history=[], active_system_prompt="system",
         effective_task_id="test-task", turn_id="test-turn", current_turn_user_idx=0,
         should_review_memory=False, plugin_user_context=None, ext_prefetch_cache=None,
-        preflight_compression_blocked=False,
+        preflight_compression_blocked=False, plugin_block_message="",
     )
     agent = SimpleNamespace(
         iteration_budget=budget, max_iterations=1, api_mode="chat_completions",
