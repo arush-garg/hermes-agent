@@ -518,6 +518,11 @@ class CLIInfoMixin:
         prompt waiting for the next turn instead of acting now, without interrupting the run."""
         return self._busy_inline_command(text, has_images, ("goal", "subgoal", "yolo"))
 
+    def _should_handle_readonly_command_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when /id should run on the UI thread while the agent runs. It only reads
+        ``session_id``; queued it would wait out the whole turn before answering."""
+        return self._busy_inline_command(text, has_images, ("id",))
+
     def _should_handle_stop_command_inline(self, text: str, has_images: bool = False) -> bool:
         """Return True when /stop should be dispatched while the agent runs: its ``CommandDef`` declares
         ``busy_policy="interrupt_then_dispatch"``, and queued it would only run after the turn it stops."""

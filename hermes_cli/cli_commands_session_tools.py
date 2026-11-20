@@ -327,8 +327,17 @@ class CLICommandsSessionToolsMixin:
         self._pending_input.put(remaining)
 
     def _handle_id_command(self) -> None:
-        """Display the current session ID (usable for transcript pulls mid-session)."""
-        _cp(f"  Session ID: {self.session_id}")
+        """Show the current session ID (usable for transcript pulls mid-session) in the /btw
+        side-result panel. Mid-turn it is dispatched inline from the UI thread, so the panel is
+        painted from a daemon thread (the /btw worker) and the foreground turn is never touched.
+        Without a live app (slash worker, tests) it prints synchronously so the output is captured."""
+        from hermes_cli.cli_commands_mixin import _print_side_result_panel
+        session_id = self.session_id
+        panel = dict(header_lines=["  🆔 /id"], title_suffix="(session id)",
+                     empty_note="  (No session ID yet)")
+        if getattr(self, "_app", None) is None:
+            return _print_side_result_panel(self, body=session_id, **panel)
+        self._side_worker(lambda: session_id, name="session-id", fail_label="/id", **panel).start()
 
 
 def _stop_background_work() -> None:

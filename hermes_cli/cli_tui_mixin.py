@@ -1452,7 +1452,7 @@ class CLITuiMixin:
         buf.reset(append_to_history=True)
 
     def _tui_enter_inline_command(self, event, text: str, has_images: bool) -> bool:
-        """Run /model, /steer, /bg, /btw, /stop, /goal, /subgoal, /yolo directly on the UI thread; True when handled.
+        """Run /model, /steer, /bg, /btw, /stop, /goal, /subgoal, /yolo, /id directly on the UI thread; True when handled.
 
         /model needs the prompt_toolkit terminal-handoff helpers of the interactive pickers.
         /steer, /bg and /btw while the agent runs must not queue through _pending_input: the
@@ -1473,7 +1473,8 @@ class CLITuiMixin:
         elif (self._should_handle_steer_command_inline(text, has_images=has_images)
               or self._should_handle_background_command_inline(text, has_images=has_images)
               or self._should_handle_stop_command_inline(text, has_images=has_images)
-              or self._should_handle_session_state_command_inline(text, has_images=has_images)):
+              or self._should_handle_session_state_command_inline(text, has_images=has_images)
+              or self._should_handle_readonly_command_inline(text, has_images=has_images)):
             self.process_command(text)
         else:
             return False

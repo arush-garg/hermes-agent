@@ -36,5 +36,7 @@ def test_id_command_prints_session_id(capsys, monkeypatch):
     c = cli.HermesCLI.__new__(cli.HermesCLI)
     c.session_id = "sess-abc123"
     c._pending_resume_sessions = None
+    c._app = None  # no live TUI: the panel prints synchronously
+    c.final_response_markdown = "strip"
     assert c.process_command("/id") is True
     assert any("sess-abc123" in line for line in printed)
