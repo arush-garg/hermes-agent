@@ -204,9 +204,11 @@ class CellAuthority:
     refused instead of running under a stale approval/session/turn identity.
     """
 
-    def __init__(self, task_id: str):
+    def __init__(self, task_id: str, deferred=None):
         import contextvars
         self.task_id = task_id
+        # The cell's DeferredScope (tools/code_execution_deferred.py): deferred calls carry its toolset scope.
+        self.deferred = deferred
         self.ctx = contextvars.copy_context()
         self.active = True
         # ((getter, setter), captured value) per thread-local prompt callback (approval, sudo, vault unlock…)
@@ -239,8 +241,9 @@ class CellAuthority:
                     setter(cb)
             except Exception:
                 previous = None
+        scope = self.deferred.dispatch_kwargs if self.deferred and tool_name in self.deferred.names else {}
         try:
-            return handle_function_call(tool_name, tool_args, task_id=self.task_id)
+            return handle_function_call(tool_name, tool_args, task_id=self.task_id, **scope)
         finally:
             if previous is not None:
                 try:
@@ -291,6 +294,7 @@ class SessionKernel:
         self.raw, self.stderr = _BoundedBuffer(), _BoundedBuffer()
         self.execution_count, self.last_used = 0, time.monotonic()
         self.cell_authority: Optional[CellAuthority] = None
+        self.deferred = None  # the current cell's DeferredScope; read per RPC request
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -455,7 +459,7 @@ def _rpc_forever(kernel: SessionKernel, max_tool_calls: int,
     while not kernel.stop_event.is_set():
         _rpc_server_loop(kernel.server_sock, "", kernel.tool_call_log, kernel.tool_call_counter,
                          max_tool_calls, sandbox_tools, kernel.stop_event, kernel.rpc_token,
-                         dispatch=_dispatch)
+                         dispatch=_dispatch, deferred_scope=lambda: kernel.deferred)
 
 
 def _stdout_reader(kernel: SessionKernel) -> None:
@@ -571,14 +575,16 @@ def _parent_process_handle(child_env: dict[str, str]):
 
 
 def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
-           sandbox_tools: frozenset, max_tool_calls: int, task_id: str = "") -> None:
+           sandbox_tools: frozenset, max_tool_calls: int, task_id: str = "",
+           deferred_tools: frozenset = frozenset()) -> None:
     from tools.code_execution_env import _build_child_env
     from tools.code_execution_tool import generate_hermes_tools_module
     kernel.tmpdir = tempfile.mkdtemp(prefix="hermes_kernel_")
     kernel.rpc_token = secrets.token_urlsafe(32)
     kernel.sentinel = "@@HERMES-KERNEL-" + secrets.token_urlsafe(16) + "@@"
     rpc_endpoint = _bind_rpc_socket(kernel)
-    for name, src in (("hermes_tools.py", generate_hermes_tools_module(list(sandbox_tools))),
+    stubs = generate_hermes_tools_module(list(sandbox_tools), deferred_tools=deferred_tools)
+    for name, src in (("hermes_tools.py", stubs),
                       ("hermes_kernel_runner.py", KERNEL_RUNNER_SOURCE)):
         Path(kernel.tmpdir, name).write_text(src, encoding="utf-8")
     child_env = _build_child_env(rpc_endpoint=rpc_endpoint, rpc_token=kernel.rpc_token,
@@ -807,17 +813,23 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
 def execute_in_session_kernel(
     code: str, *, task_id: str, mode: str, child_python: str, child_cwd: str,
     sandbox_tools: frozenset, timeout: int, max_tool_calls: int, reset: bool, is_interrupted,
+    deferred=None,
 ) -> str:
     """Run one cell in the (owner, mode, python, cwd, tools) session kernel. The owner is the
-    session key (``_resolve_owner``), not the per-turn task id, so state survives across turns."""
-    key = (_resolve_owner(task_id) or "", mode, child_python, child_cwd, tuple(sorted(sandbox_tools)))
+    session key (``_resolve_owner``), not the per-turn task id, so state survives across turns.
+    ``deferred`` (a DeferredScope or None) joins the key's tool set: the kernel's generated stubs
+    list exactly its names, so a different allowed set never reuses this kernel."""
+    deferred_tools = deferred.names if deferred is not None else frozenset()
+    key = (_resolve_owner(task_id) or "", mode, child_python, child_cwd,
+           tuple(sorted(sandbox_tools | deferred_tools)))
     exec_start = time.monotonic()
     from agent.delegation_context import is_delegated_child_context
     kernel, state_reset = _acquire_kernel(key, reset, pinned=is_delegated_child_context())
     try:
         return _run_cell(kernel, key, code, task_id=task_id, child_python=child_python, child_cwd=child_cwd,
                          sandbox_tools=sandbox_tools, timeout=timeout, max_tool_calls=max_tool_calls,
-                         is_interrupted=is_interrupted, exec_start=exec_start, state_reset=state_reset)
+                         is_interrupted=is_interrupted, exec_start=exec_start, state_reset=state_reset,
+                         deferred=deferred)
     finally:
         with _REGISTRY.lock:
             kernel.attached -= 1
@@ -831,22 +843,23 @@ def execute_in_session_kernel(
 
 def _run_cell(kernel: SessionKernel, key: tuple, code: str, *, task_id: str, child_python: str,
               child_cwd: str, sandbox_tools: frozenset, timeout: int, max_tool_calls: int,
-              is_interrupted, exec_start: float, state_reset: bool) -> str:
+              is_interrupted, exec_start: float, state_reset: bool, deferred=None) -> str:
     reused = kernel.proc is not None
     # Captured on the calling thread BEFORE the cell runs (the snapshot a per-call RPC thread
     # would get) and installed on the kernel so RPC dispatches under THIS cell's identity.
-    authority = CellAuthority(task_id)
+    authority = CellAuthority(task_id, deferred)
     with kernel.lock:
         try:
             if kernel.proc is None:
                 _spawn(kernel, task_id=task_id, child_python=child_python, child_cwd=child_cwd,
-                       sandbox_tools=sandbox_tools, max_tool_calls=max_tool_calls)
+                       sandbox_tools=sandbox_tools, max_tool_calls=max_tool_calls,
+                       deferred_tools=deferred.names if deferred is not None else frozenset())
             assert kernel.proc is not None and kernel.proc.stdin is not None
             # Per-cell tool budget: the RPC loop enforces counter < max; reset without restarting.
             kernel.tool_call_counter[0] = 0
             kernel.cell_log_start = len(kernel.tool_call_log)
             kernel.raw.drain(), kernel.stderr.drain()  # raw output leaked between cells belongs to no cell
-            kernel.cell_authority = authority
+            kernel.cell_authority, kernel.deferred = authority, deferred
             kernel.proc.stdin.write((json.dumps({"id": uuid.uuid4().hex, "code": code}) + "\n").encode("utf-8"))
             kernel.proc.stdin.flush()
             status, payload = _await_cell(kernel, timeout, is_interrupted)

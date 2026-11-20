@@ -1887,6 +1887,12 @@ code_execution:
   # scrubbing, tool whitelist, and output redaction are identical either way.
   # kernel_idle_timeout: 1800   # Reap kernels idle longer than this (seconds)
   # max_session_kernels: 4      # Process-wide LRU cap on live kernels
+  # Opted-in deferred/MCP tools local cells may call via hermes_tools.call_tool(name, **kwargs):
+  # case-sensitive fnmatch globs over tool names ([] = off). The denylist (execute_code,
+  # delegate_task, clarify, memory, send_message, tool_search bridge, connectors__*, ...)
+  # and untrusted MCP servers never match. Local terminal backend only.
+  # deferred_tools: ["mcp__browseros__*", "process_manage"]
+  # max_deferred_tool_calls: 25  # Per-cell budget (1..200); also counts toward max_tool_calls
 
 # =============================================================================
 # Subagent Delegation

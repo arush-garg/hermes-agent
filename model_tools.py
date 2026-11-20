@@ -529,6 +529,10 @@ def _compute_tool_definitions(enabled_toolsets: Optional[list[str]] = None, disa
     from tools.kanban_toolset_context import scoped_kanban_toolset_selection
     with scoped_kanban_toolset_selection(enabled_toolsets):
         filtered_tools = _apply_dynamic_schemas(registry.get_definitions(tools_to_include, quiet=quiet_mode))
+    # Opted-in deferred tools (code_execution.deferred_tools) are resolved against this exact
+    # granted set, before tool_search collapses it; off/empty leaves execute_code byte-identical.
+    from tools.code_execution_deferred import with_deferred_execute_code
+    filtered_tools = with_deferred_execute_code(filtered_tools)
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
 
@@ -856,7 +860,8 @@ def _approval_observability(ids: _CallIds):
 
 
 def _execute_tool(function_name: str, function_args: dict[str, Any], original_args: dict[str, Any], ids: _CallIds,
-                  *, user_task: Optional[str], enabled_tools: Optional[list[str]], skip_tool_execution_middleware: bool) -> Any:
+                  *, user_task: Optional[str], enabled_tools: Optional[list[str]], skip_tool_execution_middleware: bool,
+                  enabled_toolsets: Optional[list[str]] = None, disabled_toolsets: Optional[list[str]] = None) -> Any:
     """Run the registry handler (through tool-execution middleware unless skipped)
     with the approval observability context bound for the duration."""
     dispatch_kwargs: dict[str, Any] = {
@@ -865,6 +870,9 @@ def _execute_tool(function_name: str, function_args: dict[str, Any], original_ar
         # Prefer the caller's list so subagents can't overwrite the parent's
         # tool set via the process-global.
         dispatch_kwargs["enabled_tools"] = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+        # The session's grant scopes the deferred tools a cell may call (tools/code_execution_deferred.py).
+        dispatch_kwargs["enabled_toolsets"] = enabled_toolsets
+        dispatch_kwargs["disabled_toolsets"] = disabled_toolsets
     else:
         dispatch_kwargs["user_task"] = user_task
 
@@ -969,8 +977,6 @@ def handle_function_call(
                     parsed = json.loads(result) if isinstance(result, str) else result
                 except (ValueError, TypeError):
                     parsed = {"error": {"code": "PARSE_ERROR", "message": f"Failed to parse result: {result}"}}
-                # Extract error status
-                has_error = isinstance(parsed, dict) and "error" in parsed
                 parsed_results.append({
                     "index": i,
                     "name": call["name"],
@@ -1022,7 +1028,8 @@ def handle_function_call(
         # duration_ms (monotonic) is exposed to post_tool_call / transform_tool_result.
         start = time.monotonic()
         result = _execute_tool(function_name, function_args, original_args, ids, user_task=user_task,
-                               enabled_tools=enabled_tools, skip_tool_execution_middleware=skip_tool_execution_middleware)
+                               enabled_tools=enabled_tools, skip_tool_execution_middleware=skip_tool_execution_middleware,
+                               enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets)
         duration_ms = _elapsed_ms(start)
         _emit(result, duration_ms=duration_ms)
         return _apply_transform_tool_result_hook(function_name, function_args, result, duration_ms, ids)

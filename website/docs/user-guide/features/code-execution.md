@@ -219,6 +219,36 @@ When your script calls a function like `web_search("query")`:
 
 This means tool calls inside scripts behave identically to normal tool calls — same rate limits, same error handling, same capabilities. The only restriction is that `terminal()` is foreground-only (no `background` or `pty` parameters).
 
+## Calling MCP and deferred tools from scripts
+
+By default a script can only call the built-in helpers listed above. To let it loop over MCP tools (or other deferred tools such as `process_manage`) in one cell instead of one model round trip per call, opt specific tools in by name:
+
+```yaml
+# ~/.hermes/config.yaml
+code_execution:
+  deferred_tools: ["mcp__browseros__*", "process_manage"]  # fnmatch globs, case-sensitive; [] = off
+  max_deferred_tool_calls: 25  # per-cell budget for these calls (1..200)
+```
+
+When at least one granted tool matches, `hermes_tools` gains three helpers and the `execute_code` description gains one sentence listing the allowed names:
+
+```python
+from hermes_tools import call_tool, list_deferred_tools, describe_tool
+
+print(list_deferred_tools())                     # sorted allowed names
+print(describe_tool("mcp__browseros__tabs"))     # {"name", "description", "parameters"}
+tabs = call_tool("mcp__browseros__tabs", action="list")  # parsed JSON, or the raw string
+```
+
+Rules:
+
+- **Session scope.** Only tools this session is granted match, whether they are model-visible or deferred behind `tool_search`. A tool outside the session's enabled/disabled toolsets is refused.
+- **Denylist.** Agent-loop, interaction, persistence and messaging tools are never callable, whatever the patterns say: `execute_code`, `delegate_task`, `clarify`, `memory`, `skill_manage`, `cronjob`/`cronjob_manage`, `send_message`, `manage_connections`, the `tool_search`/`tool_describe`/`tool_call` bridge, `add_monitor`/`delete_monitors`, `todo`/`todo_list`, `context_notes`, `sessions_peers`, and every hosted `connectors__*` tool. Tools on an MCP server with `trust: untrusted` are excluded too.
+- **Same pipeline.** Each call is dispatched by its real name through `handle_function_call`, so `pre_tool_call`/`post_tool_call` hooks, middleware and approval prompts run exactly as for a direct call.
+- **Budget.** Each deferred call counts toward `max_deferred_tool_calls` and also toward `max_tool_calls`. Past the deferred budget a call returns `Deferred tool call limit reached (N). Call to '<name>' blocked ...` without running.
+- **Local only.** The feature applies to the local terminal backend. On docker, ssh, modal and other remote backends no helpers are generated and the host refuses those names.
+- The host-side RPC handler enforces the allowed set; the generated helpers are a convenience, not the boundary. The session kernel is keyed by the allowed set, so changing the config gets a fresh kernel.
+
 ## Error Handling
 
 When a script fails, the agent receives structured error information:

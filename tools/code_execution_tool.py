@@ -192,14 +192,16 @@ def _sandbox_failure_hint(stderr_text: str, enabled_tools=None) -> Optional[str]
 
 
 def generate_hermes_tools_module(enabled_tools: list[str],
-                                 transport: str = "uds") -> str:
+                                 transport: str = "uds", deferred_tools=()) -> str:
     """Source of the hermes_tools.py stub module for SANDBOX_ALLOWED_TOOLS ∩ *enabled_tools*.
-    ``transport``: ``"uds"`` (local socket client) or ``"file"`` (file RPC, remote backends)."""
+    ``transport``: ``"uds"`` (local socket client) or ``"file"`` (file RPC, remote backends).
+    A non-empty *deferred_tools* adds call_tool / list_deferred_tools / describe_tool."""
+    from tools.code_execution_deferred import deferred_helpers_source
     header = _FILE_TRANSPORT_HEADER if transport == "file" else _UDS_TRANSPORT_HEADER
     return header + "\n".join(
         f"def {name}({sig}):\n    {doc}\n    return _call({name!r}, {args_expr})\n"
         for name, (sig, doc, args_expr) in sorted(_TOOL_STUBS.items()) if name in set(enabled_tools)
-    )
+    ) + deferred_helpers_source(deferred_tools)
 
 
 # ---- Shared helpers section (embedded in both transport headers) ----------
@@ -709,12 +711,16 @@ def execute_code(
     task_id: Optional[str] = None,
     enabled_tools: Optional[list[str]] = None,
     reset: bool = False,
+    enabled_toolsets: Optional[list[str]] = None,
+    disabled_toolsets: Optional[list[str]] = None,
 ) -> str:
     """Run Python in the session's persistent kernel (local) or on the remote terminal backend,
     with RPC access to a subset of Hermes tools; returns the JSON result string. "Sandbox" means
     the security envelope (env scrubbing, tool whitelist + call budget, output redaction), not an
     isolation jail: default `project` mode runs in the session's cwd with the project venv.
-    ``enabled_tools`` ∩ SANDBOX_ALLOWED_TOOLS; ``reset`` kills the existing kernel first."""
+    ``enabled_tools`` ∩ SANDBOX_ALLOWED_TOOLS; ``reset`` kills the existing kernel first.
+    ``enabled_toolsets``/``disabled_toolsets`` are the session's grant: they scope the opted-in
+    deferred tools (tools/code_execution_deferred.py) a local cell may call."""
     if not SANDBOX_AVAILABLE:
         return tool_error("execute_code sandbox is unavailable in this environment. "
                           "Use normal tool calls (terminal, read_file, write_file, ...) instead.")
@@ -790,6 +796,7 @@ def execute_code(
     # Session kernels are always on locally (one interpreter per conversation); the guards above
     # already ran for this cell, and the kernel path shares env builder, RPC server and redaction.
     from tools.code_kernel import execute_in_session_kernel
+    from tools.code_execution_deferred import build_deferred_scope
     _cfg = _load_config()
     _mode = _get_execution_mode()
     return record_execution_backend("code", "local", execute_in_session_kernel(
@@ -799,6 +806,7 @@ def execute_code(
         timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
         max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
         reset=bool(reset), is_interrupted=_is_interrupted,
+        deferred=build_deferred_scope(enabled_toolsets, disabled_toolsets),
     ))
 
 
@@ -879,9 +887,10 @@ _TOOL_DOC_LINES = [
 
 
 def build_execute_code_schema(enabled_sandbox_tools: set | None = None,
-                              mode: str | None = None) -> dict:
+                              mode: str | None = None, deferred_tools=None) -> dict:
     """execute_code schema listing only *enabled_sandbox_tools* — a disabled tool (e.g. web off)
-    must not appear or the model keeps trying it. ``mode`` (None → config) picks the cwd sentence."""
+    must not appear or the model keeps trying it. ``mode`` (None → config) picks the cwd sentence.
+    Non-empty *deferred_tools* (the resolved opted-in set) appends exactly one sentence."""
     if enabled_sandbox_tools is None:
         enabled_sandbox_tools = SANDBOX_ALLOWED_TOOLS
     if mode is None:
@@ -927,6 +936,9 @@ def build_execute_code_schema(enabled_sandbox_tools: set | None = None,
         "json.loads for terminal() output; shell_quote(s) — shlex.quote for "
         "dynamic shell args; retry(fn, max_attempts=3, delay=2) — exponential backoff."
     )
+    if deferred_tools:
+        from tools.code_execution_deferred import deferred_schema_sentence
+        description += "\n\n" + deferred_schema_sentence(deferred_tools)
     return {
         "name": "execute_code",
         "description": description,
@@ -962,7 +974,9 @@ def _execute_code_handler(args: dict, **kwargs) -> str:
         return tool_error(f"execute_code received a {type(code).__name__} in 'code', but it "
                           "requires Python source as a string. Retry as execute_code(code=\"...\").")
     return execute_code(code=code or "", task_id=kwargs.get("task_id"),
-                        enabled_tools=kwargs.get("enabled_tools"), reset=bool(args.get("reset", False)))
+                        enabled_tools=kwargs.get("enabled_tools"), reset=bool(args.get("reset", False)),
+                        enabled_toolsets=kwargs.get("enabled_toolsets"),
+                        disabled_toolsets=kwargs.get("disabled_toolsets"))
 
 
 registry.register(

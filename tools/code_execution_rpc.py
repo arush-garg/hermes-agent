@@ -86,17 +86,27 @@ def _rpc_token_ok(request: dict, rpc_token: str) -> bool:
 
 def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_counter: list,
                         max_tool_calls: int, dispatch, tool_call_log: list, call_start: float,
-                        where: str) -> str:
+                        where: str, deferred=None) -> str:
     """Enforce allow-list + budget, then dispatch one authenticated request. Only a dispatched
-    call consumes budget and is logged; refusals are free."""
+    call consumes budget and is logged; refusals are free. ``deferred`` is the cell's
+    ``DeferredScope`` (tools/code_execution_deferred.py) or None: a deferred name is callable only
+    when it is in that scope, and spends its separate budget as well as ``max_tool_calls``."""
+    from tools.code_execution_deferred import DESCRIBE_RPC_NAME
     tool_name = request.get("tool", "")
     tool_args = request.get("args", {})
-    if tool_name not in allowed_tools:
+    if deferred is not None and tool_name == DESCRIBE_RPC_NAME:
+        return deferred.describe(tool_args)
+    granted = deferred if deferred is not None and tool_name in deferred.names else None
+    if tool_name not in allowed_tools and granted is None:
+        available = allowed_tools | deferred.names if deferred is not None else allowed_tools
         return tool_error(f"Tool '{tool_name}' is not available in execute_code. "
-                          f"Available: {', '.join(sorted(allowed_tools))}")
+                          f"Available: {', '.join(sorted(available))}")
     if tool_call_counter[0] >= max_tool_calls:
         return tool_error(f"Tool call limit reached ({max_tool_calls}). "
                           "No more tool calls allowed in this execution.")
+    limit_error = granted.limit_error(tool_name) if granted is not None else None
+    if limit_error:
+        return limit_error
     if tool_name == "terminal" and isinstance(tool_args, dict):
         for param in _TERMINAL_BLOCKED_PARAMS:
             tool_args.pop(param, None)
@@ -110,11 +120,27 @@ def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_co
     tool_call_counter[0] += 1
     entry = {"tool": tool_name, "args_preview": str(tool_args)[:80],
              "duration": round(time.monotonic() - call_start, 2)}
+    if granted is not None:
+        granted.calls += 1
+        entry["deferred"] = True
     error = _result_error(result)
     if error:
         entry["error"] = error
     tool_call_log.append(entry)
     return result
+
+
+def _frame(resp) -> str:
+    """``resp`` as one newline-free JSON line for the stub's newline framing. A result that is
+    not single-line JSON (plain or multi-line text, pretty-printed JSON) goes out as a JSON string,
+    which the stub's ``_call`` unwraps back to the parsed value or the raw text."""
+    if isinstance(resp, str) and "\n" not in resp:
+        try:
+            json.loads(resp)
+            return resp
+        except ValueError:
+            pass
+    return json.dumps(resp, ensure_ascii=False)
 
 
 def _result_error(result) -> str:
@@ -138,11 +164,13 @@ def tool_errors_since(tool_call_log: list, start: int = 0) -> list:
 
 def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: list,
                      tool_call_counter: list, max_tool_calls: int, allowed_tools: frozenset,
-                     stop_event: threading.Event, rpc_token: str, dispatch=None):
+                     stop_event: threading.Event, rpc_token: str, dispatch=None,
+                     deferred_scope=None):
     """Accept one client and serve newline-delimited JSON requests until it disconnects, idles
     300s, or the call limit is reached. ``tool_call_counter`` is a mutable ``[int]``. ``dispatch``
     overrides how an allowed, budgeted call runs: per-call sandboxes use the default (the thread
     carries the cell's context); session kernels rebind each call to the CURRENT cell's authority.
+    ``deferred_scope`` returns the CURRENT cell's ``DeferredScope`` (or None) per request.
     """
     if dispatch is None:
         dispatch = _default_dispatch(task_id)
@@ -182,8 +210,9 @@ def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: li
                         request, allowed_tools=allowed_tools, tool_call_counter=tool_call_counter,
                         max_tool_calls=max_tool_calls, dispatch=dispatch, tool_call_log=tool_call_log,
                         call_start=call_start, where="sandbox",
+                        deferred=deferred_scope() if deferred_scope is not None else None,
                     ) if _rpc_token_ok(request, rpc_token) else tool_error("Unauthorized RPC request")
-                conn.sendall((resp + "\n").encode())
+                conn.sendall((_frame(resp) + "\n").encode())
     except TimeoutError:
         logger.debug("RPC listener socket timeout")
     except OSError as e:
