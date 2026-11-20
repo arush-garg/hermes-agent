@@ -194,9 +194,11 @@ def deferred_schema_sentence(names: Iterable[str]) -> str:
     ordered = sorted(names)
     listed = ", ".join(ordered[:_SCHEMA_NAME_LIMIT])
     more = f", +{len(ordered) - _SCHEMA_NAME_LIMIT} more" if len(ordered) > _SCHEMA_NAME_LIMIT else ""
-    return ("Opted-in deferred tools are callable with `from hermes_tools import call_tool, "
-            "list_deferred_tools, describe_tool` as call_tool(name, **kwargs) (describe_tool(name) "
-            f"returns parameters; separate per-cell budget): {listed}{more}.")
+    return ("Opted-in deferred tools (batch 3+ already-decided calls to them, such as a loop over "
+            "pages, tabs or items, in ONE execute_code cell instead of one tool_call per step) are "
+            "callable with `from hermes_tools import call_tool, list_deferred_tools, describe_tool` "
+            "as call_tool(name, **kwargs) (describe_tool(name) returns parameters; separate per-cell "
+            f"budget): {listed}{more}.")
 
 
 def with_deferred_execute_code(tool_defs: list[dict]) -> list[dict]:
