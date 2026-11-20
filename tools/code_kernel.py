@@ -459,7 +459,14 @@ def _rpc_forever(kernel: SessionKernel, max_tool_calls: int,
     while not kernel.stop_event.is_set():
         _rpc_server_loop(kernel.server_sock, "", kernel.tool_call_log, kernel.tool_call_counter,
                          max_tool_calls, sandbox_tools, kernel.stop_event, kernel.rpc_token,
-                         dispatch=_dispatch, deferred_scope=lambda: kernel.deferred)
+                         dispatch=_dispatch, deferred_scope=lambda: _live_scope(kernel))
+
+
+def _live_scope(kernel: SessionKernel):
+    """The running cell's DeferredScope, or None once that cell settled (its authority retired):
+    a thread a cell left running must not read schemas or names after the cell ends."""
+    authority = kernel.cell_authority
+    return kernel.deferred if authority is not None and authority.active else None
 
 
 def _stdout_reader(kernel: SessionKernel) -> None:
@@ -576,14 +583,14 @@ def _parent_process_handle(child_env: dict[str, str]):
 
 def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
            sandbox_tools: frozenset, max_tool_calls: int, task_id: str = "",
-           deferred_tools: frozenset = frozenset()) -> None:
+           deferred_helpers: bool = False) -> None:
     from tools.code_execution_env import _build_child_env
     from tools.code_execution_tool import generate_hermes_tools_module
     kernel.tmpdir = tempfile.mkdtemp(prefix="hermes_kernel_")
     kernel.rpc_token = secrets.token_urlsafe(32)
     kernel.sentinel = "@@HERMES-KERNEL-" + secrets.token_urlsafe(16) + "@@"
     rpc_endpoint = _bind_rpc_socket(kernel)
-    stubs = generate_hermes_tools_module(list(sandbox_tools), deferred_tools=deferred_tools)
+    stubs = generate_hermes_tools_module(list(sandbox_tools), deferred_helpers=deferred_helpers)
     for name, src in (("hermes_tools.py", stubs),
                       ("hermes_kernel_runner.py", KERNEL_RUNNER_SOURCE)):
         Path(kernel.tmpdir, name).write_text(src, encoding="utf-8")
@@ -810,6 +817,10 @@ def _cell_result(kernel: SessionKernel, key: tuple, status: str, payload: dict[s
     return result
 
 
+# Joins the kernel key's tool tuple when a cell has a deferred scope (the kernel has the helpers).
+_DEFERRED_KEY_MARKER = "<deferred-helpers>"
+
+
 def execute_in_session_kernel(
     code: str, *, task_id: str, mode: str, child_python: str, child_cwd: str,
     sandbox_tools: frozenset, timeout: int, max_tool_calls: int, reset: bool, is_interrupted,
@@ -817,11 +828,12 @@ def execute_in_session_kernel(
 ) -> str:
     """Run one cell in the (owner, mode, python, cwd, tools) session kernel. The owner is the
     session key (``_resolve_owner``), not the per-turn task id, so state survives across turns.
-    ``deferred`` (a DeferredScope or None) joins the key's tool set: the kernel's generated stubs
-    list exactly its names, so a different allowed set never reuses this kernel."""
-    deferred_tools = deferred.names if deferred is not None else frozenset()
-    key = (_resolve_owner(task_id) or "", mode, child_python, child_cwd,
-           tuple(sorted(sandbox_tools | deferred_tools)))
+    ``deferred`` (a DeferredScope or None) adds only a presence marker to the key: the helpers
+    embed no names (the host answers from the current cell's scope), so a tool set that changes
+    between cells (an MCP server reconnecting) keeps the kernel and its state, while off and on
+    never share a kernel (only one has the helpers)."""
+    tools_key = tuple(sorted(sandbox_tools)) + ((_DEFERRED_KEY_MARKER,) if deferred is not None else ())
+    key = (_resolve_owner(task_id) or "", mode, child_python, child_cwd, tools_key)
     exec_start = time.monotonic()
     from agent.delegation_context import is_delegated_child_context
     kernel, state_reset = _acquire_kernel(key, reset, pinned=is_delegated_child_context())
@@ -853,7 +865,7 @@ def _run_cell(kernel: SessionKernel, key: tuple, code: str, *, task_id: str, chi
             if kernel.proc is None:
                 _spawn(kernel, task_id=task_id, child_python=child_python, child_cwd=child_cwd,
                        sandbox_tools=sandbox_tools, max_tool_calls=max_tool_calls,
-                       deferred_tools=deferred.names if deferred is not None else frozenset())
+                       deferred_helpers=deferred is not None)
             assert kernel.proc is not None and kernel.proc.stdin is not None
             # Per-cell tool budget: the RPC loop enforces counter < max; reset without restarting.
             kernel.tool_call_counter[0] = 0
@@ -876,6 +888,7 @@ def _run_cell(kernel: SessionKernel, key: tuple, code: str, *, task_id: str, chi
             return _error_result(str(exc), tool_calls_made=kernel.tool_call_counter[0],
                                  duration=round(time.monotonic() - exec_start, 2))
         finally:
-            # The cell has settled on every path: its tool authority retires with it, so
-            # nothing the cell left running can dispatch under it.
+            # The cell has settled on every path: its tool authority and deferred scope retire
+            # with it, so nothing the cell left running can dispatch or describe under them.
+            kernel.deferred = None
             authority.retire()

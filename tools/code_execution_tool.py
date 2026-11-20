@@ -192,16 +192,16 @@ def _sandbox_failure_hint(stderr_text: str, enabled_tools=None) -> Optional[str]
 
 
 def generate_hermes_tools_module(enabled_tools: list[str],
-                                 transport: str = "uds", deferred_tools=()) -> str:
+                                 transport: str = "uds", deferred_helpers: bool = False) -> str:
     """Source of the hermes_tools.py stub module for SANDBOX_ALLOWED_TOOLS ∩ *enabled_tools*.
     ``transport``: ``"uds"`` (local socket client) or ``"file"`` (file RPC, remote backends).
-    A non-empty *deferred_tools* adds call_tool / list_deferred_tools / describe_tool."""
+    *deferred_helpers* adds call_tool / list_deferred_tools / describe_tool."""
     from tools.code_execution_deferred import deferred_helpers_source
     header = _FILE_TRANSPORT_HEADER if transport == "file" else _UDS_TRANSPORT_HEADER
     return header + "\n".join(
         f"def {name}({sig}):\n    {doc}\n    return _call({name!r}, {args_expr})\n"
         for name, (sig, doc, args_expr) in sorted(_TOOL_STUBS.items()) if name in set(enabled_tools)
-    ) + deferred_helpers_source(deferred_tools)
+    ) + deferred_helpers_source(deferred_helpers)
 
 
 # ---- Shared helpers section (embedded in both transport headers) ----------

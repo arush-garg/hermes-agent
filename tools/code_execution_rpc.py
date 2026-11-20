@@ -91,11 +91,15 @@ def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_co
     call consumes budget and is logged; refusals are free. ``deferred`` is the cell's
     ``DeferredScope`` (tools/code_execution_deferred.py) or None: a deferred name is callable only
     when it is in that scope, and spends its separate budget as well as ``max_tool_calls``."""
-    from tools.code_execution_deferred import DESCRIBE_RPC_NAME
+    from tools.code_execution_deferred import PSEUDO_RPC_NAMES
     tool_name = request.get("tool", "")
     tool_args = request.get("args", {})
-    if deferred is not None and tool_name == DESCRIBE_RPC_NAME:
-        return deferred.describe(tool_args)
+    if not isinstance(tool_name, str):
+        return tool_error("Tool name must be a string")
+    if not isinstance(tool_args, dict):
+        tool_args = {}
+    if deferred is not None and tool_name in PSEUDO_RPC_NAMES:
+        return deferred.pseudo_call(tool_name, tool_args)
     granted = deferred if deferred is not None and tool_name in deferred.names else None
     if tool_name not in allowed_tools and granted is None:
         available = allowed_tools | deferred.names if deferred is not None else allowed_tools
@@ -107,7 +111,7 @@ def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_co
     limit_error = granted.limit_error(tool_name) if granted is not None else None
     if limit_error:
         return limit_error
-    if tool_name == "terminal" and isinstance(tool_args, dict):
+    if tool_name == "terminal":
         for param in _TERMINAL_BLOCKED_PARAMS:
             tool_args.pop(param, None)
     # Silence handler status prints so they don't leak into the CLI spinner.
@@ -162,6 +166,25 @@ def tool_errors_since(tool_call_log: list, start: int = 0) -> list:
     return [{"tool": e["tool"], "error": e["error"]} for e in tool_call_log[start:] if e.get("error")][:5]
 
 
+def _answer_line(line: bytes, *, rpc_token: str, deferred_scope, **handler_kwargs) -> str:
+    """The response to one request line. Any exception becomes a ``tool_error`` so one malformed
+    request (a list as the tool name, a non-object body) never kills the serving thread."""
+    call_start = time.monotonic()
+    try:
+        request = json.loads(line.decode())
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        return tool_error(f"Invalid RPC request: {exc}")
+    try:
+        if not _rpc_token_ok(request, rpc_token):
+            return tool_error("Unauthorized RPC request")
+        return _handle_rpc_request(request, call_start=call_start, where="sandbox",
+                                   deferred=deferred_scope() if deferred_scope is not None else None,
+                                   **handler_kwargs)
+    except Exception as exc:
+        logger.error("Tool call failed in %s: %s", "sandbox", exc, exc_info=True)
+        return tool_error(f"RPC request failed: {type(exc).__name__}: {exc}")
+
+
 def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: list,
                      tool_call_counter: list, max_tool_calls: int, allowed_tools: frozenset,
                      stop_event: threading.Event, rpc_token: str, dispatch=None,
@@ -200,18 +223,11 @@ def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: li
                 line = line.strip()
                 if not line:
                     continue
-                call_start = time.monotonic()
-                try:
-                    request = json.loads(line.decode())
-                except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                    resp = tool_error(f"Invalid RPC request: {exc}")
-                else:
-                    resp = _handle_rpc_request(
-                        request, allowed_tools=allowed_tools, tool_call_counter=tool_call_counter,
-                        max_tool_calls=max_tool_calls, dispatch=dispatch, tool_call_log=tool_call_log,
-                        call_start=call_start, where="sandbox",
-                        deferred=deferred_scope() if deferred_scope is not None else None,
-                    ) if _rpc_token_ok(request, rpc_token) else tool_error("Unauthorized RPC request")
+                resp = _answer_line(
+                    line, rpc_token=rpc_token, deferred_scope=deferred_scope, allowed_tools=allowed_tools,
+                    tool_call_counter=tool_call_counter, max_tool_calls=max_tool_calls, dispatch=dispatch,
+                    tool_call_log=tool_call_log,
+                )
                 conn.sendall((_frame(resp) + "\n").encode())
     except TimeoutError:
         logger.debug("RPC listener socket timeout")

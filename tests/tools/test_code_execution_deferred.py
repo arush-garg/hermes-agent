@@ -3,12 +3,13 @@
 Behaviour pinned here: the feature is off by default (no helpers, unchanged schema, raw RPC
 refused); the resolver's globs, denylist, trust and backend rules; session scoping; and the
 end-to-end path through a REAL session kernel with a fake MCP tool in the registry: results,
-the separate deferred budget, the shared max_tool_calls budget, kernel keying by allowed set,
+the separate deferred budget, the shared max_tool_calls budget, kernel keying by helper presence,
 and byte-stable schemas.
 """
 
 import json
 import os
+import time
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -358,19 +359,134 @@ class TestBudgetInterplay:
 # ---- 6. Kernel keying -------------------------------------------------------------------------
 
 class TestKernelKeying:
-    def test_different_allowed_sets_get_different_kernels(self, fake_tools):
-        code = "from hermes_tools import list_deferred_tools\nprint(list_deferred_tools())"
+    def test_a_changed_allowed_set_keeps_the_kernel_and_its_state(self, fake_tools):
+        """An MCP server reconnecting with more tools must not silently swap the kernel."""
+        code = "from hermes_tools import list_deferred_tools, call_tool\nprint(list_deferred_tools())"
         with _config(deferred_tools=[FAKE]):
-            narrow = _run(code)
+            narrow = _run("x = 41\n" + code)
         with _config(deferred_tools=["mcp__fake__*"]):
-            wide = _run(code)
+            wide = _run(code + f"\nprint(x + 1, call_tool({OTHER!r}, text='new')['tool'])")
         assert narrow["output"].strip() == str([FAKE])
-        assert wide["output"].strip() == str([FAKE, OTHER])
-        assert wide["kernel"]["reused"] is False
+        assert wide["status"] == "success", wide
+        assert wide["output"].split("\n")[:2] == [str([FAKE, OTHER]), f"42 {OTHER}"]
+        assert wide["kernel"]["reused"] is True and wide["kernel"]["state_reset"] is False
+        assert len(_KERNELS) == 1
+
+    def test_list_deferred_tools_is_free_and_not_logged(self, fake_tools):
+        code = "from hermes_tools import list_deferred_tools\nfor _ in range(5): list_deferred_tools()"
+        with _config(deferred_tools=["mcp__fake__*"], max_tool_calls=1):
+            out = _run(code)
+        assert out["status"] == "success" and out["tool_calls_made"] == 0, out
+        assert next(iter(_KERNELS.values())).tool_call_log == []
+
+    def test_off_and_on_use_different_kernels(self, fake_tools):
+        with _config():
+            off = _run("x = 1\nimport hermes_tools\nprint(hasattr(hermes_tools, 'call_tool'))")
+        with _config(deferred_tools=[FAKE]):
+            on = _run("import hermes_tools\nprint(hasattr(hermes_tools, 'call_tool'), 'x' in globals())")
+        assert off["output"].strip() == "False"
+        assert on["output"].strip() == "True False" and on["kernel"]["reused"] is False
         assert len(_KERNELS) == 2
-        stubs = {k.tmpdir: open(os.path.join(k.tmpdir, "hermes_tools.py"), encoding="utf-8").read()
+        stubs = {open(os.path.join(k.tmpdir, "hermes_tools.py"), encoding="utf-8").read()
                  for k in _KERNELS.values()}
-        assert len(set(stubs.values())) == 2
+        assert len(stubs) == 2 and not any(FAKE in s for s in stubs)
+
+
+# ---- Review fixes: malformed requests, denylist breadth, stale scope ----------------------------
+
+class TestMalformedRequests:
+    def test_non_string_names_and_args_are_refused_without_spending_budget(self):
+        scope, counter, log = DeferredScope(frozenset({FAKE}), 25, {FAKE: _schema(FAKE)}), [0], []
+        bad_name = _handle_rpc_request(
+            {"tool": [FAKE], "args": {}}, allowed_tools=SANDBOX_ALLOWED_TOOLS, tool_call_counter=counter,
+            max_tool_calls=50, dispatch=lambda n, a: "{}", tool_call_log=log, call_start=0.0, where="test",
+            deferred=scope)
+        assert json.loads(bad_name)["error"] == "Tool name must be a string"
+        assert json.loads(scope.describe({"name": [FAKE]}))["error"].startswith("Tool '[")
+        seen = []
+        _handle_rpc_request(
+            {"tool": FAKE, "args": ["not", "a", "dict"]}, allowed_tools=SANDBOX_ALLOWED_TOOLS,
+            tool_call_counter=counter, max_tool_calls=50, dispatch=lambda n, a: seen.append(a) or "{}",
+            tool_call_log=log, call_start=0.0, where="test", deferred=scope)
+        assert seen == [{}] and counter == [1] and scope.calls == 1
+
+    def test_bad_calls_in_a_real_kernel_return_errors_and_the_cell_keeps_going(self, fake_tools):
+        code = ("from hermes_tools import call_tool, describe_tool, list_deferred_tools\n"
+                "a = call_tool(['x'])\nb = describe_tool(list_deferred_tools())\n"
+                f"c = call_tool({FAKE!r}, text='after')\n"
+                "print(sorted(a), sorted(b), c['echo'])")
+        with _config(deferred_tools=["mcp__fake__*"], timeout=30):
+            out = _run(code)
+        assert out["status"] == "success", out
+        assert out["output"].strip() == "['error'] ['error'] after"
+        assert out["duration_seconds"] < 10 and fake_tools == [(FAKE, {"text": "after"})]
+
+    def test_a_handler_exception_never_kills_the_rpc_loop(self, fake_tools, monkeypatch):
+        from tools import code_execution_rpc
+        real = code_execution_rpc._handle_rpc_request
+
+        def flaky(request, **kw):
+            if request.get("args", {}).get("text") == "boom":
+                raise RuntimeError("boom")
+            return real(request, **kw)
+        monkeypatch.setattr(code_execution_rpc, "_handle_rpc_request", flaky)
+        code = (f"from hermes_tools import call_tool\nprint(call_tool({FAKE!r}, text='boom')['error'])\n"
+                f"print(call_tool({FAKE!r}, text='ok')['echo'])")
+        with _config(deferred_tools=["mcp__fake__*"], timeout=30):
+            out = _run(code)
+        assert out["status"] == "success", out
+        assert out["output"].split("\n")[:2] == ["RPC request failed: RuntimeError: boom", "ok"]
+
+
+class TestDenylistBreadth:
+    DENIED_NAMES = {"session_search", "react_to_message", "a2a_call", "a2a_orchestrate", "manage_catalog",
+                    "browser_vault", "get_delegate_result", "feishu_drive_reply_comment",
+                    "feishu_drive_add_comment"}
+    DENIED_STARTS = ("connectors__", "discord", "kanban_", "a2a_")
+
+    def test_star_over_the_real_registry_resolves_nothing_denied(self):
+        from model_tools import _AGENT_LOOP_TOOLS  # importing model_tools discovers every built-in tool
+        names = set(registry.get_all_tool_names())
+        assert {"session_search", "discord", "kanban_create", "browser_vault"} <= names
+        got = resolve_deferred_tools(names, ["*"], backend_is_local=True, is_untrusted=lambda _n: False)
+        assert got, "the real registry should still resolve ordinary tools"
+        denied = self.DENIED_NAMES | DENIED_TOOLS | _AGENT_LOOP_TOOLS | BUILTINS
+        for name in sorted(names):
+            if name in denied or name.startswith(self.DENIED_STARTS):
+                assert name not in got, name
+            else:
+                assert name in got, name
+
+    def test_denylist_members_and_types(self):
+        assert isinstance(DENIED_TOOLS, frozenset) and isinstance(DENIED_PREFIXES, tuple)
+        assert self.DENIED_NAMES - {"session_search"} <= DENIED_TOOLS
+        assert set(self.DENIED_STARTS) <= set(DENIED_PREFIXES)
+        assert deferred_mod.is_denied("session_search") and not deferred_mod.is_denied("web_search")
+
+
+class TestStaleScope:
+    def test_describe_from_a_thread_outliving_its_cell_is_refused(self, fake_tools):
+        code = ("import json, threading, time\nfrom hermes_tools import describe_tool, list_deferred_tools\n"
+                "def late():\n    time.sleep(1.5)\n"
+                f"    d, l = describe_tool({FAKE!r}), list_deferred_tools()\n"
+                "    open('late.json', 'w').write(json.dumps([d, l]))\n"
+                "threading.Thread(target=late, daemon=True).start()\nimport os\nprint(os.getcwd())")
+        with _config(deferred_tools=["mcp__fake__*"]):
+            out = _run(code)
+        assert out["status"] == "success", out
+        assert next(iter(_KERNELS.values())).deferred is None
+        path = os.path.join(out["output"].strip(), "late.json")
+        for _ in range(40):
+            if os.path.exists(path):
+                break
+            time.sleep(0.25)
+        try:
+            described, listed = json.loads(open(path, encoding="utf-8").read())
+        finally:
+            os.remove(path)
+        for refused in (described, listed):
+            assert refused["error"].startswith("Tool '__"), refused
+            assert "is not available in execute_code" in refused["error"]
 
 
 # ---- 7. Prompt-cache stability ----------------------------------------------------------------

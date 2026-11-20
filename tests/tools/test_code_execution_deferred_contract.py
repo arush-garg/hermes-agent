@@ -319,7 +319,7 @@ def test_reused_kernel_uses_each_cells_approval_callback_and_budget(local_config
     assert second["kernel"]["reused"] is True
 
 
-def test_kernel_identity_includes_effective_deferred_set(local_config, fake_tools, kernel):
+def test_kernel_identity_tracks_helper_presence(local_config, fake_tools, kernel):
     enabled = (*TOOLSETS, "mcp-fake-write")
     local_config(deferred_tools=[ECHO])
     _, first = _cell("""
@@ -329,14 +329,22 @@ def test_kernel_identity_includes_effective_deferred_set(local_config, fake_tool
         print(json.dumps(list_deferred_tools()))
     """, enabled=enabled)
     local_config(deferred_tools=[WRITE])
-    changed, (names, old_state) = _cell("""
+    changed, (names, kept_state) = _cell("""
         import json
         from hermes_tools import list_deferred_tools
         print(json.dumps([list_deferred_tools(), globals().get('marker')]))
     """, enabled=enabled)
     assert first == [ECHO]
-    assert names == [WRITE] and old_state is None
-    assert changed["kernel"]["reused"] is False
+    assert names == [WRITE] and kept_state == 123
+    assert changed["kernel"]["reused"] is True and changed["kernel"]["state_reset"] is False
+    local_config()
+    off, (has_helpers, off_state) = _cell("""
+        import json
+        import hermes_tools
+        print(json.dumps([hasattr(hermes_tools, 'call_tool'), globals().get('marker')]))
+    """, enabled=enabled)
+    assert has_helpers is False and off_state is None
+    assert off["kernel"]["reused"] is False
 
 
 def test_schema_opt_in_is_one_stable_bounded_append(local_config, fake_tools):

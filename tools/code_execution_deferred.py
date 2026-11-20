@@ -21,22 +21,28 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
-# Never callable from code, whatever the patterns say: agent-loop, user-interaction,
-# persistence/scheduling, outward messaging and the tool_search bridge itself.
+# Never callable from code, whatever the patterns say: agent-loop and agent spawning,
+# user-interaction, persistence/scheduling/installs, outward messaging, credentials and the
+# tool_search bridge itself. ``is_denied`` also refuses model_tools._AGENT_LOOP_TOOLS.
 DENIED_TOOLS = frozenset({
     "execute_code", "delegate_task", "clarify", "memory", "skill_manage", "cronjob",
     "cronjob_manage", "send_message", "manage_connections", "tool_search", "tool_describe",
     "tool_call", "add_monitor", "delete_monitors", "todo", "todo_list", "context_notes",
-    "sessions_peers",
+    "sessions_peers", "react_to_message", "a2a_call", "a2a_orchestrate", "manage_catalog",
+    "browser_vault", "get_delegate_result", "feishu_drive_reply_comment", "feishu_drive_add_comment",
 })
-# Hosted connector accounts are outward-facing.
-DENIED_PREFIXES: tuple[str, ...] = ("connectors__",)
+# Hosted connector accounts and Discord are outward-facing; kanban_* schedules and spawns
+# agents; a2a_* talks to other agents.
+DENIED_PREFIXES: tuple[str, ...] = ("connectors__", "discord", "kanban_", "a2a_")
 
 DEFAULT_MAX_DEFERRED_CALLS = 25
 _MAX_DEFERRED_CALLS_RANGE = (1, 200)
 _SCHEMA_NAME_LIMIT = 12
-# Host-side pseudo tool behind describe_tool(): served from the session schema, never dispatched.
+# Host-side pseudo tools behind describe_tool() / list_deferred_tools(): answered from the
+# CURRENT cell's scope, never dispatched, free (no budget, not logged).
 DESCRIBE_RPC_NAME = "__describe_tool__"
+LIST_RPC_NAME = "__list_deferred_tools__"
+PSEUDO_RPC_NAMES = frozenset({DESCRIBE_RPC_NAME, LIST_RPC_NAME})
 _MCP_PREFIX = "mcp__"
 
 
@@ -61,8 +67,11 @@ def _is_untrusted_mcp_tool(name: str) -> bool:
                for key, level in list(core._server_trust_levels.items()))
 
 
-def _denied(name: str) -> bool:
-    return name in DENIED_TOOLS or name.startswith(DENIED_PREFIXES)
+def is_denied(name: str) -> bool:
+    """True for a name code may never call: DENIED_TOOLS, DENIED_PREFIXES, or a tool only the
+    agent loop can run (``model_tools._AGENT_LOOP_TOOLS``, e.g. session_search)."""
+    from model_tools import _AGENT_LOOP_TOOLS
+    return name in DENIED_TOOLS or name in _AGENT_LOOP_TOOLS or name.startswith(DENIED_PREFIXES)
 
 
 def resolve_deferred_tools(session_tool_names: Iterable[str], patterns: Iterable[str], *,
@@ -78,7 +87,7 @@ def resolve_deferred_tools(session_tool_names: Iterable[str], patterns: Iterable
     return frozenset(
         name for name in set(session_tool_names or ())
         if isinstance(name, str) and any(fnmatch.fnmatchcase(name, p) for p in patterns)
-        and not _denied(name) and name not in SANDBOX_ALLOWED_TOOLS and not untrusted(name)
+        and not is_denied(name) and name not in SANDBOX_ALLOWED_TOOLS and not untrusted(name)
     )
 
 
@@ -150,9 +159,15 @@ class DeferredScope:
         return tool_error(f"Deferred tool call limit reached ({self.max_calls}). Call to '{tool_name}' "
                           "blocked; no more deferred tool calls are allowed in this execution.")
 
+    def pseudo_call(self, tool_name: str, args: Any) -> str:
+        """Answer one host pseudo-call (``PSEUDO_RPC_NAMES``) from this scope."""
+        if tool_name == LIST_RPC_NAME:
+            return json.dumps(sorted(self.names))
+        return self.describe(args)
+
     def describe(self, args: Any) -> str:
         name = args.get("name") if isinstance(args, dict) else None
-        if name not in self.names:
+        if not isinstance(name, str) or name not in self.names:
             return tool_error(f"Tool '{name}' is not a deferred tool available in execute_code. "
                               f"Available: {', '.join(sorted(self.names))}")
         fn = self.schemas.get(name, {})
@@ -206,9 +221,6 @@ _HELPERS_TEMPLATE = '''
 # Opted-in deferred tools (code_execution.deferred_tools)
 # ---------------------------------------------------------------------------
 
-_DEFERRED_TOOL_NAMES = {names!r}
-
-
 def call_tool(name, /, **kwargs):
     """Call one opted-in deferred tool with kwargs as its arguments. Returns the parsed
     JSON result (dict), or the raw string when the result is not JSON."""
@@ -216,8 +228,8 @@ def call_tool(name, /, **kwargs):
 
 
 def list_deferred_tools():
-    """Sorted names callable through call_tool()."""
-    return list(_DEFERRED_TOOL_NAMES)
+    """Sorted names callable through call_tool() in this cell."""
+    return _call({list_name!r}, {{}})
 
 
 def describe_tool(name):
@@ -226,7 +238,8 @@ def describe_tool(name):
 '''
 
 
-def deferred_helpers_source(names: Iterable[str]) -> str:
-    """hermes_tools source for call_tool / list_deferred_tools / describe_tool ('' when empty)."""
-    ordered = sorted(names)
-    return _HELPERS_TEMPLATE.format(names=ordered, describe=DESCRIBE_RPC_NAME) if ordered else ""
+def deferred_helpers_source(enabled: bool) -> str:
+    """hermes_tools source for call_tool / list_deferred_tools / describe_tool ('' when off).
+    It embeds no names: both list and describe ask the host for the CURRENT cell's scope, so
+    one kernel serves a tool set that changes between cells."""
+    return _HELPERS_TEMPLATE.format(list_name=LIST_RPC_NAME, describe=DESCRIBE_RPC_NAME) if enabled else ""

@@ -235,19 +235,21 @@ When at least one granted tool matches, `hermes_tools` gains three helpers and t
 ```python
 from hermes_tools import call_tool, list_deferred_tools, describe_tool
 
-print(list_deferred_tools())                     # sorted allowed names
+print(list_deferred_tools())                     # sorted names allowed in this cell
 print(describe_tool("mcp__browseros__tabs"))     # {"name", "description", "parameters"}
 tabs = call_tool("mcp__browseros__tabs", action="list")  # parsed JSON, or the raw string
 ```
 
+Tool results that are not JSON (plain or multi-line text) are returned to the script as strings, for these helpers and the built-in ones alike.
+
 Rules:
 
 - **Session scope.** Only tools this session is granted match, whether they are model-visible or deferred behind `tool_search`. A tool outside the session's enabled/disabled toolsets is refused.
-- **Denylist.** Agent-loop, interaction, persistence and messaging tools are never callable, whatever the patterns say: `execute_code`, `delegate_task`, `clarify`, `memory`, `skill_manage`, `cronjob`/`cronjob_manage`, `send_message`, `manage_connections`, the `tool_search`/`tool_describe`/`tool_call` bridge, `add_monitor`/`delete_monitors`, `todo`/`todo_list`, `context_notes`, `sessions_peers`, and every hosted `connectors__*` tool. Tools on an MCP server with `trust: untrusted` are excluded too.
+- **Denylist.** Agent-loop, agent-spawning, interaction, persistence, messaging and credential tools are never callable, whatever the patterns say: `execute_code`, `delegate_task`, `get_delegate_result`, `session_search`, `clarify`, `memory`, `skill_manage`, `cronjob`/`cronjob_manage`, `send_message`, `react_to_message`, `feishu_drive_reply_comment`/`feishu_drive_add_comment`, `manage_connections`, `manage_catalog`, `browser_vault`, the `tool_search`/`tool_describe`/`tool_call` bridge, `add_monitor`/`delete_monitors`, `todo`/`todo_list`, `context_notes`, `sessions_peers`, and every tool starting with `connectors__`, `discord`, `kanban_` or `a2a_`. Tools on an MCP server with `trust: untrusted` are excluded too.
 - **Same pipeline.** Each call is dispatched by its real name through `handle_function_call`, so `pre_tool_call`/`post_tool_call` hooks, middleware and approval prompts run exactly as for a direct call.
 - **Budget.** Each deferred call counts toward `max_deferred_tool_calls` and also toward `max_tool_calls`. Past the deferred budget a call returns `Deferred tool call limit reached (N). Call to '<name>' blocked ...` without running.
 - **Local only.** The feature applies to the local terminal backend. On docker, ssh, modal and other remote backends no helpers are generated and the host refuses those names.
-- The host-side RPC handler enforces the allowed set; the generated helpers are a convenience, not the boundary. The session kernel is keyed by the allowed set, so changing the config gets a fresh kernel.
+- The host-side RPC handler enforces the allowed set; the generated helpers are a convenience, not the boundary. The allowed set is re-resolved for every cell, and `list_deferred_tools()`/`describe_tool()` answer from the current cell, so the kernel and its variables survive when the set changes (for example an MCP server reconnecting with more tools). Turning the feature on or off switches to a different kernel.
 
 ## Error Handling
 
