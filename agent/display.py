@@ -1149,7 +1149,7 @@ def _cute_fallback_row(tool_name: str, args: dict) -> _CuteRow:
     return _CuteRow(f"┊ {emoji} {tool_name[:9]:9} {detail}", emoji, tool_name, detail)
 
 
-def get_tool_row_parts(tool_name: str, args: dict | None, result: str | None = None, *, is_error: bool = False):
+def get_tool_row_parts(tool_name: str, args: dict | None, result: str | dict | None = None, *, is_error: bool = False):
     """``[(emoji, verb, detail, failure), ...]`` for one completed call: the parts the ``┊`` line
     uses, without its padding. ``failure`` is None for a row that succeeded, else that row's
     suffix (``" [exit 1]"``, possibly ``""``); batch calls mark the entry that failed."""
@@ -1259,6 +1259,17 @@ def _cute_process_manage(a: dict, _r) -> str:
     return _cute_row("⚙️ ", "proc", t("display.cute.process_list") if action == "list" else f"{action} {sid}")
 
 
+def _cute_vision_analyze(a: dict, r) -> str:
+    # A native attach (vision_tools meta.native_vision) puts the pixels in the main model's own
+    # context, so the row names the file; the question row is the aux-model analysis lane.
+    data = r if isinstance(r, dict) else safe_json_loads(r)
+    meta = data.get("meta") if isinstance(data, dict) else None
+    if not (isinstance(meta, dict) and meta.get("native_vision")):
+        return _cute_row("👁️ ", "vision", _cute_trunc(a.get("question", "")))
+    src = str(a.get("image_url", "") or "")
+    return _cute_row("👁️ ", "view", _cute_trunc(src.split(",", 1)[0]) if src.startswith("data:") else _cute_path(src))
+
+
 _SCROLL_ARROWS = {"down": "↓", "up": "↑", "right": "→", "left": "←"}
 
 
@@ -1297,7 +1308,7 @@ _CUTE_LINES = {
         _cute_row("🗣️ ", "voices", _cute_trunc((a.get("find_voices") or {}).get("query") or "browse"))
         if isinstance(a.get("find_voices"), dict)
         else _cute_row("🔊", "speak", _cute_trunc(a.get("text", "")))),
-    "vision_analyze": lambda a, r: _cute_row("👁️ ", "vision", _cute_trunc(a.get("question", ""))),
+    "vision_analyze": _cute_vision_analyze,
     "send_message": lambda a, r: _cute_row("📨", "send", f"{a.get('target', '?')}: \"{_cute_trunc(a.get('message', ''))}\""),
     "cronjob_manage": _cute_cronjob,
     "execute_code": _cute_execute_code,
@@ -1346,7 +1357,7 @@ def _bridge_row_suffixes(rows: int, result: Any, call_suffix: str) -> list[str]:
     return suffixes
 
 
-def _get_cute_tool_message(tool_name: str, args: dict, duration: float, result: str | None = None) -> str:
+def _get_cute_tool_message(tool_name: str, args: dict, duration: float, result: str | dict | None = None) -> str:
     args = redact_tool_args_for_display(tool_name, args) or args
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
     render = _CUTE_LINES.get(tool_name)
@@ -1361,7 +1372,7 @@ def _get_cute_tool_message(tool_name: str, args: dict, duration: float, result: 
     return "\n  ".join(f"{row}{suffix}".replace("┊", prefix, 1) for row, suffix in zip(rows, suffixes))
 
 
-def get_cute_tool_message(tool_name: str, args: dict, duration: float, result: str | None = None) -> str:
+def get_cute_tool_message(tool_name: str, args: dict, duration: float, result: str | dict | None = None) -> str:
     """Render a completion label without letting cosmetic failures escape."""
     try:
         return _get_cute_tool_message(tool_name, args, duration, result=result)

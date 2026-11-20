@@ -3473,6 +3473,7 @@ display:
       press: "按键"
       images: "图片"
       vision: "视觉"
+      view: "查看"
       plan: "规划"
       recall: "回忆"
       memory: "记忆"

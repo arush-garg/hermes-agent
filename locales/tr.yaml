@@ -3473,6 +3473,7 @@ display:
       press: "bas"
       images: "görseller"
       vision: "görü"
+      view: "bak"
       plan: "plan"
       recall: "hatırla"
       memory: "bellek"

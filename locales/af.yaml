@@ -3473,6 +3473,7 @@ display:
       press: "druk"
       images: "beelde"
       vision: "visie"
+      view: "bekyk"
       plan: "beplan"
       recall: "herroep"
       memory: "geheue"

@@ -3473,6 +3473,7 @@ display:
       press: "presionar"
       images: "imágenes"
       vision: "visión"
+      view: "ver"
       plan: "plan"
       recall: "recordar"
       memory: "memoria"

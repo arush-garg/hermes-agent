@@ -3473,6 +3473,7 @@ display:
       press: "нажатие"
       images: "картинки"
       vision: "анализ"
+      view: "просмотр"
       plan: "план"
       recall: "история"
       memory: "память"

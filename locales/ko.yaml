@@ -3473,6 +3473,7 @@ display:
       press: "키 누름"
       images: "이미지"
       vision: "시각"
+      view: "보기"
       plan: "계획"
       recall: "회상"
       memory: "메모리"

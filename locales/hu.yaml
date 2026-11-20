@@ -3490,6 +3490,7 @@ display:
       press: "billentyű"
       images: "képek"
       vision: "látás"
+      view: "néz"
       plan: "terv"
       recall: "emlék"
       memory: "memória"

@@ -3579,6 +3579,7 @@ display:
       press: "press"
       images: "images"
       vision: "vision"
+      view: "view"
       plan: "plan"
       recall: "recall"
       memory: "memory"

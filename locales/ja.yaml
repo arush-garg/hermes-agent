@@ -3473,6 +3473,7 @@ display:
       press: "キー押下"
       images: "画像"
       vision: "画像解析"
+      view: "画像表示"
       plan: "計画"
       recall: "想起"
       memory: "メモリ"

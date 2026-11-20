@@ -3790,6 +3790,7 @@ display:
       press: "touche"
       images: "images"
       vision: "vision"
+      view: "voir"
       plan: "plan"
       recall: "rappel"
       memory: "mémoire"
