@@ -296,6 +296,12 @@ def _route_one(provider: DelegationProvider, declared: dict[str, dict[str, Any]]
         error = _param_error(index, name, value, declared[name])
         if error:
             raise DelegationRouteError(error)
+    if provider.name != "default" and (task.get("model") is not None or task.get("provider") is not None):
+        # Precedence: an explicit per-task model/provider pin (the user named the model) wins over any
+        # backend's named routes, exactly as on the default backend; route names/defaults apply only unpinned.
+        from agent.delegation_registry import get_active_provider
+        provider = get_active_provider({**config, "backend": "default"})
+        params = {}
     # Include per-task model/provider pins in the payload so providers can honor them.
     # These are reserved for core but must be visible to the routing decision.
     payload = {
