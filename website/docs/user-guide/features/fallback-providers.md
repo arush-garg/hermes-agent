@@ -167,6 +167,24 @@ the provider's host *and* neutral internet endpoints to tell the two apart:
   **resumes on the same provider** when the link returns. Probes run every
   `probe_interval_s` seconds; Esc (or `/stop`) aborts the wait.
 
+"Internet up" also requires a neutral **hostname** (`dns_probe_hosts`, default
+`dns.google` / `one.one.one.one`) to resolve: the IP-literal probes bypass DNS, so a
+resolver-only outage would otherwise look like a provider outage. Errors only the
+local host can produce (`EADDRNOTAVAIL` "Can't assign requested address",
+`ENETDOWN`, `ENETUNREACH`, `EHOSTUNREACH`) pause after the first failure, like DNS
+errors.
+
+Two more guards keep a flaky link from stranding a turn on a weaker model:
+
+- **Cross-provider circuit breaker.** If a second, different provider host fails with
+  the same transport kind (DNS/TCP/timeout) within `breaker_window_s` (default 60 s)
+  of the previous one, Hermes stops walking the fallback chain and waits until the
+  current provider's host answers again.
+- **Mid-turn primary restore.** After a fallback caused by a transport failure (never
+  for HTTP errors such as 4xx, quota or auth), Hermes re-dials the primary's host every
+  `primary_restore_interval_s` (default 150 s) and switches back at the next API-call
+  boundary once it answers, instead of waiting for the next turn. `/keep` still pins.
+
 Two resume behaviors protect your context and your bill:
 
 - **Cache-warmth check.** Prompt caches usually stay warm ~30 minutes. If the
@@ -187,6 +205,9 @@ agent:
     probe_interval_s: 10        # seconds between probes while paused
     probe_timeout_s: 3          # per-probe socket timeout
     probe_hosts: ["1.1.1.1:443", "8.8.8.8:53"]  # neutral "host:port" endpoints
+    dns_probe_hosts: ["dns.google", "one.one.one.one"]  # must resolve; [] disables
+    breaker_window_s: 60        # same-kind failure on a 2nd host within this = local; 0 off
+    primary_restore_interval_s: 150  # mid-turn primary re-probe after transport fallback; 0 off
     max_pause_s: 1800           # 0 = wait indefinitely until interrupted
     cache_warm_window_s: 1800   # outage longer than this triggers the compaction check
     resume_keep_provider: true  # pin the provider for the resume cycle

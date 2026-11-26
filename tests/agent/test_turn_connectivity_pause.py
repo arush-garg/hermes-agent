@@ -87,7 +87,7 @@ def probe_stub(monkeypatch):
             raise kind
         return kind
 
-    def probe_connectivity(provider_host, probe_hosts=None, timeout_s=3.0):
+    def probe_connectivity(provider_host, probe_hosts=None, timeout_s=3.0, dns_probe_hosts=None):
         state["calls"] += 1
         state["hosts_seen"].append(provider_host)
         idx = min(state["calls"] - 1, len(state["outcomes"]) - 1)
@@ -225,7 +225,7 @@ def test_missing_base_url_uses_probe_fallback_host(fake_time, monkeypatch):
 
     calls = []
 
-    def _flaky_down_then_up(provider_host, probe_hosts=None, timeout_s=3.0):
+    def _flaky_down_then_up(provider_host, probe_hosts=None, timeout_s=3.0, dns_probe_hosts=None):
         calls.append(provider_host)
         return ProbeOutcome(False, False) if len(calls) == 1 else ProbeOutcome(True, True)
 
@@ -278,7 +278,7 @@ def test_long_outage_breaks_with_rebuilt_messages(probe_stub, fake_time):
     agent = FakeAgent()
     rs = _transported(TurnRetryState())
 
-    def slow_probe(provider_host, probe_hosts=None, timeout_s=3.0):
+    def slow_probe(provider_host, probe_hosts=None, timeout_s=3.0, dns_probe_hosts=None):
         mod_state = sys.modules["agent.connectivity_probe"]._state
         mod_state["calls"] += 1
         if mod_state["calls"] == 2:

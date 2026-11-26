@@ -35,10 +35,17 @@ def bind_route_entry(agent: Any, entry: dict[str, Any], provider: str, model: st
     if base_url_hint and base_url_host_matches(base_url_hint, "ollama.com") and not api_key_hint:
         from agent.secret_scope import get_secret
         api_key_hint = get_secret("OLLAMA_API_KEY") or None
-    # raw_codex=True: the main agent needs direct responses.stream() access for Codex providers.
-    client, _resolved_model = resolve_provider_client(
-        provider, model=model, raw_codex=True, explicit_base_url=base_url_hint, explicit_api_key=api_key_hint,
-        api_mode=api_mode)
+    if provider == "claude-cli":
+        # The CLI client drives the live agent's tools through an in-process MCP bridge, so it
+        # needs the agent handle — the aux resolver's profile.create_client path has none and
+        # used to return None ("provider not configured") for every claude-cli fallback.
+        from agent.claude_cli_client import ClaudeCLIClient
+        client = ClaudeCLIClient(agent=agent, api_key=api_key_hint, base_url=base_url_hint)
+    else:
+        # raw_codex=True: the main agent needs direct responses.stream() access for Codex providers.
+        client, _resolved_model = resolve_provider_client(
+            provider, model=model, raw_codex=True, explicit_base_url=base_url_hint, explicit_api_key=api_key_hint,
+            api_mode=api_mode)
     if client is None:
         return None
     if provider == "moa":
@@ -152,3 +159,4 @@ def reinstall_primary_runtime(
     agent._fallback_activated = False
     agent._fallback_index = 0
     agent._rate_limit_backoff_count = 0
+    agent._transport_fallback = None  # back on the primary: nothing left to restore mid-turn

@@ -147,6 +147,18 @@ DEFAULT_CONFIG = {
             "probe_timeout_s": 3,
             # Neutral "host:port" endpoints proving the internet works.
             "probe_hosts": ["1.1.1.1:443", "8.8.8.8:53"],
+            # Neutral hostnames; one must resolve for the network to count as up (the
+            # IP-literal probes above bypass DNS, so a resolver-only outage would read as
+            # a provider outage and walk the fallback chain). [] disables the DNS check.
+            "dns_probe_hosts": ["dns.google", "one.one.one.one"],
+            # Cross-provider circuit breaker: two distinct provider hosts failing with the
+            # same transport kind (dns/tcp/timeout) within this many seconds = local loss;
+            # stop walking the fallback chain and pause instead. 0 disables.
+            "breaker_window_s": 60,
+            # After a transport-caused fallback, re-dial the primary host this often (s)
+            # mid-turn and restore it at the next API-call boundary once it answers.
+            # 0 disables (fallback then stays until the next turn).
+            "primary_restore_interval_s": 150,
             # Max seconds to stay paused before falling back to the normal recovery
             # ladder. 0 = wait indefinitely until interrupted.
             "max_pause_s": 1800,

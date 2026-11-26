@@ -85,6 +85,7 @@ def _connectivity_pause_detour(
     try:
         from agent import connectivity_probe as _probe
         from agent import turn_connectivity_pause as _pause
+        from agent import turn_transport_failover as _failover
     except ImportError:
         return None
     kind = _probe.classify_transport_failure(api_error)
@@ -92,12 +93,28 @@ def _connectivity_pause_detour(
         _pause.note_transport_failure(_retry, kind)
     else:
         _pause.reset_transport_failures(_retry)
+        _failover.clear_transport_failure(agent)
         return None
     pauses_before = int(getattr(_retry, "connectivity_pauses", 0) or 0)
-    verdict = _pause.enter_connectivity_pause(
-        agent, api_error, _retry, messages=messages,
-        conversation_history=conversation_history, api_call_count=api_call_count,
-    )
+    host = _probe.provider_host_for(agent)
+    previous = _failover.record_transport_failure(agent, kind, host)
+    if _failover.breaker_tripped(agent, kind, host, previous):
+        # A second provider host just failed the same way as the last one: the
+        # ladder is walking a dead local link. Stop it and wait in place.
+        logger.warning(
+            "%sCircuit breaker: %s failure on %s right after %s on %s — treating as "
+            "local connectivity loss instead of walking the fallback chain.",
+            getattr(agent, "log_prefix", ""), kind, host, previous[0], previous[1],
+        )
+        verdict = _pause.enter_breaker_pause(
+            agent, _retry, messages=messages,
+            conversation_history=conversation_history, api_call_count=api_call_count,
+        )
+    else:
+        verdict = _pause.enter_connectivity_pause(
+            agent, api_error, _retry, messages=messages,
+            conversation_history=conversation_history, api_call_count=api_call_count,
+        )
     if verdict is None or getattr(verdict, "action", None) == "fallthrough":
         return None
     if verdict.action == "continue" and int(getattr(_retry, "connectivity_pauses", 0) or 0) <= pauses_before:
@@ -386,6 +403,7 @@ def settle_unrecovered_error(
     treated as non-retryable (#31273)."""
     from agent.conversation_loop import _arm_fallback_restart, _credential_refresh_profile
     from agent.provider_route_hooks import ask_on_error_path
+    from agent.turn_transport_failover import activate_fallback_tracked
 
     # Post-outage resume pin (the /keep path): agent/turn_connectivity_pause.py sets
     # ``agent._connectivity_resume_keep`` on resume; while set, this turn stays on the
@@ -471,7 +489,7 @@ def settle_unrecovered_error(
                 # survives the turn boundary — restore_primary_runtime consumes it. The
                 # within-turn guard itself stays one-shot.
                 agent._keep_on_fallback_this_turn = True
-            elif agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
+            elif activate_fallback_tracked(agent, api_error, reason=classified.reason, reset_at=reset_at):
                 # Direct ``return _verdict("break")`` is load-bearing: the restart handler
                 # re-runs the pre-API preflight against the fallback's context window.
                 active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)
@@ -515,7 +533,7 @@ def settle_unrecovered_error(
             # survives the turn boundary — restore_primary_runtime consumes it. The
             # within-turn guard itself stays one-shot.
             agent._keep_on_fallback_this_turn = True
-        elif agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
+        elif activate_fallback_tracked(agent, api_error, reason=classified.reason, reset_at=reset_at):
             # Direct ``return _verdict("break")`` is load-bearing: the restart handler
             # re-runs the pre-API preflight against the fallback's context window.
             active_system_prompt = _arm_fallback_restart(agent, api_messages, active_system_prompt, _retry)

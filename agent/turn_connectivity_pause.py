@@ -37,6 +37,8 @@ Config contract (wiring: ``agent.connectivity_pause`` in config.yaml →
 - ``probe_timeout_s`` (3): per-probe socket timeout.
 - ``probe_hosts`` (["1.1.1.1:443", "8.8.8.8:53"]): neutral endpoints proving
   the local network is up.
+- ``dns_probe_hosts`` (["dns.google", "one.one.one.one"]): neutral hostnames
+  one of which must resolve for the network to count as up ([] disables).
 - ``max_pause_s`` (1800): pause cap; cron runs are capped at 300 instead.
 - ``cache_warm_window_s`` (1800): outages longer than this resume through the
   pre-API preflight (compaction check), mirroring the fallback restart.
@@ -71,6 +73,7 @@ _DEFAULTS: Dict[str, Any] = {
     "probe_interval_s": 10.0,
     "probe_timeout_s": 3.0,
     "probe_hosts": ("1.1.1.1:443", "8.8.8.8:53"),
+    "dns_probe_hosts": ("dns.google", "one.one.one.one"),
     "max_pause_s": 1800.0,
     "cache_warm_window_s": 1800.0,
 }
@@ -156,11 +159,23 @@ def _probe(agent: Any, provider_host: str, cfg: Dict[str, Any]) -> Any:
     """Late import; raises only if the probe module itself is broken."""
     from agent.connectivity_probe import probe_connectivity
 
+    dns_hosts = cfg.get("dns_probe_hosts", _DEFAULTS["dns_probe_hosts"])
     return probe_connectivity(
         provider_host,
         probe_hosts=list(cfg.get("probe_hosts") or _DEFAULTS["probe_hosts"]),
         timeout_s=_num(cfg, "probe_timeout_s", minimum=0.1),
+        dns_probe_hosts=list(dns_hosts) if isinstance(dns_hosts, (list, tuple)) else None,
     )
+
+
+def _definitive_local(exc: BaseException) -> bool:
+    try:
+        from agent.connectivity_probe import is_definitive_local_failure
+
+        return is_definitive_local_failure(exc)
+    except Exception:
+        logger.debug("is_definitive_local_failure failed; keeping the debounce", exc_info=True)
+        return False
 
 
 def enter_connectivity_pause(
@@ -188,10 +203,12 @@ def enter_connectivity_pause(
     if kind not in _LOCAL_LOSS_KINDS:
         return PauseVerdict("continue")
 
-    # Debounce: strong DNS failures are unambiguous enough to fast-path after
-    # one; other transport kinds need consecutive_failures in a row (the hook
-    # counted this failure already via note_transport_failure).
-    needed = 1 if kind == "dns" else max(0, int(_num(cfg, "consecutive_failures", minimum=0)))
+    # Debounce: strong DNS failures and definitive local errnos (no source
+    # address, interface down, no route) are unambiguous enough to fast-path
+    # after one; other transport kinds need consecutive_failures in a row (the
+    # hook counted this failure already via note_transport_failure).
+    fast_path = kind == "dns" or _definitive_local(exc)
+    needed = 1 if fast_path else max(0, int(_num(cfg, "consecutive_failures", minimum=0)))
     seen = int(getattr(retry_state, "consecutive_transport_failures", 0) or 0)
     if seen < needed:
         logger.debug(
@@ -226,6 +243,29 @@ def enter_connectivity_pause(
     )
 
 
+def enter_breaker_pause(
+    agent: Any,
+    retry_state: Any,
+    *,
+    messages: list[dict[str, Any]] | None = None,
+    conversation_history: Any = None,
+    api_call_count: int = 0,
+) -> PauseVerdict:
+    """Cross-provider circuit breaker: two distinct provider hosts failed with the
+    same transport kind in quick succession, which is a local outage whatever
+    the neutral probes say. Skip the confirmation probe and wait until the
+    current provider host itself answers (its dial includes DNS resolution)."""
+    cfg = _pause_config(agent)
+    provider_host = _provider_host(agent)
+    if not cfg.get("enabled", True) or not provider_host:
+        return PauseVerdict("continue")
+    return _wait_for_connectivity(
+        agent, retry_state, cfg, provider_host,
+        messages=messages, conversation_history=conversation_history,
+        api_call_count=api_call_count, require_provider=True,
+    )
+
+
 def _wait_for_connectivity(
     agent: Any,
     retry_state: Any,
@@ -235,9 +275,11 @@ def _wait_for_connectivity(
     messages: Optional[List[Dict[str, Any]]],
     conversation_history: Any,
     api_call_count: int,
+    require_provider: bool = False,
 ) -> PauseVerdict:
     """Blocking pause loop: re-probe every probe_interval_s until connectivity
-    returns, an interrupt arrives, or the cap expires."""
+    returns, an interrupt arrives, or the cap expires. ``require_provider``
+    (breaker path) resumes only once the provider host itself is reachable."""
     cap = _num(cfg, "max_pause_s", minimum=0.0)
     if str(getattr(agent, "platform", "") or "") == "cron":
         cap = min(cap, _CRON_PAUSE_CAP_S)
@@ -299,7 +341,7 @@ def _wait_for_connectivity(
         except Exception:
             logger.debug("Connectivity re-probe failed; still waiting", exc_info=True)
             continue
-        if outcome.provider_reachable or outcome.network_reachable:
+        if outcome.provider_reachable or (outcome.network_reachable and not require_provider):
             return _resume_after_pause(agent, retry_state, cfg, started)
 
 

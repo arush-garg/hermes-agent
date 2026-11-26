@@ -108,6 +108,7 @@ class IterationPrep:
     messages: Any
     request_logger: Any
     current_turn_user_idx: Any
+    active_system_prompt: Any = None
 
 
 # Retire hidden interrupt placeholders whose text the model echoes on replay
@@ -143,6 +144,7 @@ def _neutralise_replay_echo_ghosts(seq: list[dict[str, Any]]) -> tuple[list[dict
 
 def prepare_iteration(
     agent: Any, *, messages: Any, api_call_count: Any, user_message: Any = None, current_turn_user_idx: Any = None,
+    active_system_prompt: Any = None,
 ) -> IterationPrep:
     """Prepare ``messages`` for this iteration in the original order. Every mutation here is
     cache-safe by construction: steer text is appended as a new (not yet persisted) user row, the ghost-row
@@ -154,6 +156,15 @@ def prepare_iteration(
     if getattr(agent, "_nous_wire_pending", None):
         from agent.nous_wire import apply_pending_wire_switch
         apply_pending_wire_switch(agent)
+
+    # Mid-turn primary restore after a transport-caused fallback: this is the API-call
+    # boundary (previous call finished, nothing in flight, request not yet built), so the
+    # request below is assembled for the restored provider. The restore reinstalls the
+    # primary's byte-identical system prompt; re-sync the in-flight copy to match.
+    from agent.turn_transport_failover import maybe_restore_primary_mid_turn
+    if maybe_restore_primary_mid_turn(agent):
+        from agent.conversation_loop import _sync_failover_system_message
+        active_system_prompt = _sync_failover_system_message(agent, None, active_system_prompt)
 
     # Fire step_callback for gateway hooks (agent:step event).
     if agent.step_callback is not None:
@@ -254,7 +265,7 @@ def prepare_iteration(
         current_turn_user_idx = _reanchored_idx
     return IterationPrep(
         action="fallthrough", messages=messages, request_logger=request_logger,
-        current_turn_user_idx=current_turn_user_idx,
+        current_turn_user_idx=current_turn_user_idx, active_system_prompt=active_system_prompt,
     )
 
 

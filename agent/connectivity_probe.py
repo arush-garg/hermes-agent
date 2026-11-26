@@ -17,6 +17,7 @@ import errno
 import logging
 import re
 import socket
+import threading
 from dataclasses import dataclass
 from typing import Any, Iterator
 from urllib.parse import urlsplit
@@ -35,8 +36,8 @@ OTHER = "other"
 
 __all__ = [
     "DNS", "TCP", "TIMEOUT", "TLS_CERT", "HTTP", "OTHER",
-    "ProbeOutcome", "classify_transport_failure", "probe_connectivity",
-    "provider_host_for",
+    "ProbeOutcome", "classify_transport_failure", "dns_resolves",
+    "is_definitive_local_failure", "probe_connectivity", "provider_host_for",
 ]
 
 # Carries an HTTP response: auth failures, billing/quota, rate limits, policy
@@ -77,13 +78,24 @@ _TCP_MESSAGE_PATTERNS = (
     "broken pipe", "epipe",
     "network is unreachable", "network unreachable", "enetunreach",
     "no route to host", "ehostunreach", "ehostdown", "enetdown",
-    "connection error",
+    "can't assign requested address", "cannot assign requested address",
+    "eaddrnotavail", "connection error",
+)
+# The host itself has no usable route/source address: the interface is down or
+# has no IP (Wi-Fi dropped). No remote party is involved, so these are
+# definitive local-loss signals that skip the pause debounce.
+_DEFINITIVE_LOCAL_ERRNOS = frozenset({
+    errno.EADDRNOTAVAIL, errno.ENETDOWN, errno.ENETUNREACH, errno.EHOSTUNREACH,
+})
+_DEFINITIVE_LOCAL_PATTERNS = (
+    "can't assign requested address", "cannot assign requested address",
+    "eaddrnotavail", "network is down", "network is unreachable",
+    "no route to host",
 )
 _TCP_ERRNOS = frozenset({
     errno.ECONNREFUSED, errno.ECONNRESET, errno.EPIPE,
-    errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN,
     errno.EHOSTDOWN, errno.ECONNABORTED, errno.ENETRESET,
-})
+}) | _DEFINITIVE_LOCAL_ERRNOS
 _TCP_EXC_TYPES = (
     ConnectionRefusedError, ConnectionResetError,
     ConnectionAbortedError, BrokenPipeError,
@@ -152,6 +164,17 @@ def classify_transport_failure(exc: BaseException) -> str:
     return OTHER
 
 
+def is_definitive_local_failure(exc: BaseException) -> bool:
+    """True when the chain carries an errno/message that only the local host can
+    produce (no source address, interface down, no route). Such failures skip the
+    consecutive-failure debounce; an HTTP-bearing error never qualifies."""
+    if classify_transport_failure(exc) != TCP:
+        return False
+    if any(getattr(part, "errno", None) in _DEFINITIVE_LOCAL_ERRNOS for part in _iter_chain(exc)):
+        return True
+    return _has_patterns(_message_of(exc), _DEFINITIVE_LOCAL_PATTERNS)
+
+
 @dataclass(frozen=True)
 class ProbeOutcome:
     provider_reachable: bool
@@ -159,6 +182,10 @@ class ProbeOutcome:
 
 
 _DEFAULT_NEUTRAL_PROBES = ("1.1.1.1:443", "8.8.8.8:53")
+# Neutral hostnames that must resolve for the network to count as usable. The
+# IP-literal probes above bypass DNS, so a resolver-only outage (the common
+# Wi-Fi captive/reassociation failure) would otherwise read as "network up".
+_DEFAULT_DNS_PROBES = ("dns.google", "one.one.one.one")
 _PROVIDER_PROBE_PORT = 443
 _MIN_TIMEOUT_S = 0.5
 # Last-resort provider host when the agent has no usable base_url (documented in
@@ -192,10 +219,39 @@ def _tcp_reachable(host: str, port: int, timeout_s: float) -> bool:
         return False
 
 
+def _resolve_once(host: str, box: list) -> None:
+    try:
+        socket.getaddrinfo(host, None)
+        box.append(True)
+    except Exception as exc:  # health: allow BLE001 -- any resolver failure is the probe's "down" answer
+        logger.debug("connectivity DNS probe %s failed: %r", host, exc)
+        box.append(False)
+
+
+def dns_resolves(hosts: list[str], timeout_s: float) -> bool:
+    """True when at least one of ``hosts`` resolves within ``timeout_s`` each.
+
+    ``getaddrinfo`` has no timeout of its own, so each lookup runs on a daemon
+    thread that is abandoned (not killed) when it overruns. An empty list means
+    the DNS check is disabled and always passes."""
+    if not hosts:
+        return True
+    for host in hosts:
+        box: list = []
+        # health: allow HX012 -- a bare getaddrinfo; reads no profile-scoped state
+        worker = threading.Thread(target=_resolve_once, args=(host, box), daemon=True)
+        worker.start()
+        worker.join(max(float(timeout_s or 0.0), _MIN_TIMEOUT_S))
+        if box and box[0]:
+            return True
+    return False
+
+
 def probe_connectivity(
     provider_host: str,
     probe_hosts: list[str] | None = None,
     timeout_s: float = 3.0,
+    dns_probe_hosts: list[str] | None = None,
 ) -> ProbeOutcome:
     """Dial the provider host and neutral internet endpoints; never raises.
 
@@ -205,6 +261,10 @@ def probe_connectivity(
     true when at least one answers. Interpretation: provider up → normal retry;
     provider down + network up → provider outage (existing fallback path); both
     down → local connectivity loss. Worst case blocks ~``timeout_s`` per host.
+
+    ``network_reachable`` additionally requires one ``dns_probe_hosts`` name
+    (default dns.google / one.one.one.one) to resolve: IP-up/DNS-down is a
+    local outage too. ``dns_probe_hosts=[]`` disables the DNS check.
     """
     timeout = max(float(timeout_s or 0.0), _MIN_TIMEOUT_S)
     neutral = list(probe_hosts) if probe_hosts else list(_DEFAULT_NEUTRAL_PROBES)
@@ -224,6 +284,9 @@ def probe_connectivity(
         if _tcp_reachable(target[0], target[1], timeout):
             network_reachable = True
             break
+    if network_reachable and not provider_reachable:
+        dns_hosts = list(_DEFAULT_DNS_PROBES) if dns_probe_hosts is None else list(dns_probe_hosts)
+        network_reachable = dns_resolves(dns_hosts, timeout)
     return ProbeOutcome(
         provider_reachable=provider_reachable,
         network_reachable=network_reachable,

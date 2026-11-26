@@ -1331,6 +1331,24 @@ def _cp_number(raw: Any, default: float) -> float:
     return value if value > 0 else default
 
 
+def _cp_non_negative(raw: Any, default: float) -> float:
+    """``float(raw)`` when a non-negative number (0 = feature off), else ``default``."""
+    if isinstance(raw, bool):
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 0 else default
+
+
+def _cp_dns_hosts(raw: Any, default: list) -> list:
+    """Hostname list; ``[]`` is a valid opt-out, anything not a list keeps the default."""
+    if not isinstance(raw, list):
+        return list(default)
+    return [h for h in (str(h).strip() for h in raw) if h]
+
+
 def _cp_flag(raw: Any, default: bool) -> bool:
     """Boolean coercion that fails closed to ``default``: recognized spellings map
     to a bool, anything else (garbage strings, containers) keeps the default rather
@@ -1385,6 +1403,13 @@ def resolve_connectivity_pause_settings(section: dict[str, Any]) -> dict[str, An
             section.get("probe_timeout_s", defaults["probe_timeout_s"]),
             defaults["probe_timeout_s"]),
         "probe_hosts": probe_hosts,
+        "dns_probe_hosts": _cp_dns_hosts(
+            section.get("dns_probe_hosts", defaults["dns_probe_hosts"]), defaults["dns_probe_hosts"]),
+        "breaker_window_s": _cp_non_negative(
+            section.get("breaker_window_s", defaults["breaker_window_s"]), defaults["breaker_window_s"]),
+        "primary_restore_interval_s": _cp_non_negative(
+            section.get("primary_restore_interval_s", defaults["primary_restore_interval_s"]),
+            defaults["primary_restore_interval_s"]),
         # 0 = wait indefinitely until interrupted (validated non-negative above).
         "max_pause_s": max_pause_s,
         "cache_warm_window_s": _cp_number(

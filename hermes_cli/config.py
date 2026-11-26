@@ -1074,12 +1074,20 @@ def _validate_connectivity_pause(cp: Any, issues: list[ConfigIssue]) -> None:
             _issue(issues, "error",
                    f"agent.connectivity_pause.{key} must be a positive number, got {val!r}",
                    f"Set agent.connectivity_pause.{key} to a positive number of seconds")
-    if "max_pause_s" in cp:
-        val = cp["max_pause_s"]
-        if isinstance(val, bool) or not isinstance(val, (int, float)) or val < 0:
+    for key, zero_means in (("max_pause_s", "wait indefinitely"), ("breaker_window_s", "disabled"),
+                            ("primary_restore_interval_s", "disabled")):
+        val = cp.get(key)
+        if key in cp and (isinstance(val, bool) or not isinstance(val, (int, float)) or val < 0):
             _issue(issues, "error",
-                   f"agent.connectivity_pause.max_pause_s must be a non-negative number, got {val!r}",
-                   "Set agent.connectivity_pause.max_pause_s to seconds (0 = wait indefinitely)")
+                   f"agent.connectivity_pause.{key} must be a non-negative number, got {val!r}",
+                   f"Set agent.connectivity_pause.{key} to seconds (0 = {zero_means})")
+    if "dns_probe_hosts" in cp:
+        names = cp["dns_probe_hosts"]
+        if not isinstance(names, list) or any(not isinstance(h, str) or not h.strip() for h in names):
+            _issue(issues, "error",
+                   f"agent.connectivity_pause.dns_probe_hosts must be a list of hostnames, got {names!r}",
+                   "Set agent.connectivity_pause.dns_probe_hosts, e.g.:\n"
+                   "  dns_probe_hosts: [\"dns.google\", \"one.one.one.one\"]   ([] disables the DNS check)")
     if "probe_hosts" in cp:
         hosts = cp["probe_hosts"]
         if (not isinstance(hosts, list) or not hosts

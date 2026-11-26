@@ -126,6 +126,9 @@ def _install_fake_create_connection(monkeypatch: pytest.MonkeyPatch, up: set[tup
         raise ConnectionRefusedError(111, "Connection refused")
 
     monkeypatch.setattr(socket, "create_connection", fake)
+    # Neutral-hostname DNS resolves in these matrix tests; DNS-down cases live in
+    # tests/agent/test_connectivity_dns_and_breaker.py.
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: [("ok",)])
     return calls
 
 

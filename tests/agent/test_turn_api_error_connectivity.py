@@ -591,6 +591,7 @@ def test_nous_pre_call_guard_honors_resume_pin(monkeypatch):
 _CONNECTIVITY_PAUSE_KEYS = {
     "enabled", "consecutive_failures", "probe_interval_s", "probe_timeout_s",
     "probe_hosts", "max_pause_s", "cache_warm_window_s", "resume_keep_provider",
+    "dns_probe_hosts", "breaker_window_s", "primary_restore_interval_s",
 }
 
 
